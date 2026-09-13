@@ -33,6 +33,9 @@ enum ShellConfiguration {
         return values.map { "\($0.key)=\($0.value)" }
     }
     static func escapedPath(_ path: String) -> String { "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    static func displayDirectory(_ path: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
+    }
     static func localDirectory(fromOSC value: String) -> String? {
         guard let url = URL(string: value), url.isFileURL,
               url.host == nil || url.host == "" || url.host == "localhost" || url.host == ProcessInfo.processInfo.hostName,
@@ -48,6 +51,9 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
     private var size = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
     var onExit: (@MainActor @Sendable (Int32?) -> Void)?
     var onFailure: (@MainActor @Sendable (String) -> Void)?
+    var onActivity: (@MainActor @Sendable () -> Void)?
+    private let activityLock = NSLock()
+    private var lastActivityForward = Date.distantPast
     func updateSize(columns: Int, rows: Int) -> winsize {
         lock.lock()
         defer { lock.unlock() }
@@ -56,7 +62,18 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
         return size
     }
     func getWindowSize() -> winsize { lock.lock(); defer { lock.unlock() }; return size }
-    func dataReceived(slice: ArraySlice<UInt8>) { surface?.feed(byteArray: slice) }
+    func dataReceived(slice: ArraySlice<UInt8>) {
+        surface?.feed(byteArray: slice)
+        // Throttled leading edge (at most one hop per 200ms): the session
+        // debounces these into a trailing cwd refresh, so `cd` shows up in
+        // ~150ms instead of waiting for the backup poll.
+        activityLock.lock()
+        let now = Date()
+        let shouldForward = now.timeIntervalSince(lastActivityForward) >= 0.2
+        if shouldForward { lastActivityForward = now }
+        activityLock.unlock()
+        if shouldForward, let callback = onActivity { Task { @MainActor in callback() } }
+    }
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         let callback = onExit
         Task { @MainActor in callback?(exitCode) }
@@ -79,6 +96,8 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     private(set) var surface: GenesisTerminalView?
     private(set) var process: LocalProcess?
     private var adapter: ProcessAdapter?
+    private var cwdPollTimer: Timer?
+    private var cwdDebounceTask: Task<Void, Never>?
 
     init(descriptor: TabDescriptor) {
         id = descriptor.id
@@ -115,6 +134,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
             self.state = .failed(message)
             self.surface?.feed(text: "\r\nUnable to start shell: \(message)\r\n")
         }
+        adapter.onActivity = { [weak self] in self?.scheduleCwdRefresh() }
         _ = adapter.updateSize(columns: surface.terminalDimensions.cols, rows: surface.terminalDimensions.rows)
         let process = LocalProcess(delegate: adapter, directDelivery: true)
         process.killEscalationDelay = 0.7
@@ -125,9 +145,14 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         let shell = ShellConfiguration.loginShell
         process.startProcess(executable: shell, args: [], environment: ShellConfiguration.environment,
                              execName: "-" + URL(fileURLWithPath: shell).lastPathComponent, currentDirectory: directory)
+        startCwdPolling()
     }
     func close() {
         guard state != .closed else { return }
+        cwdPollTimer?.invalidate()
+        cwdPollTimer = nil
+        cwdDebounceTask?.cancel()
+        cwdDebounceTask = nil
         directory = currentDirectory
         state = .closed
         if let process, process.running { ProcessInspection.hangupJobs(shell: process.shellPid) }
@@ -153,6 +178,43 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
         self.title = String(title.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(256))
         if self.title.isEmpty { self.title = "Local" }
+        // Titles are usually sent alongside a prompt redraw, so the shell cwd
+        // has likely just changed too. Opportunistically re-read it: shells
+        // that don't emit OSC 7 (e.g. zsh with TERM_PROGRAM=Genesis, which
+        // disables Apple's precmd hook) would otherwise leave the header stale.
+        refreshDirectoryFromProcess()
+    }
+    /// Kernel truth for the shell's cwd. Used as a fallback when the shell
+    /// doesn't report OSC 7, otherwise the header keeps showing the tab's
+    /// starting directory (e.g. ~/terminals after cd ~/genesis).
+    func refreshDirectoryFromProcess() {
+        guard state == .running, let process, process.running,
+              let actual = ProcessInspection.directory(pid: process.shellPid),
+              actual != directory else { return }
+        directory = actual
+    }
+    private func startCwdPolling() {
+        cwdPollTimer?.invalidate()
+        // Lightweight backup: one proc_pidinfo per tick per tab. The primary
+        // path is activity-driven (see onActivity/scheduleCwdRefresh), so this
+        // only matters for cwd changes with zero pty output.
+        cwdPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshDirectoryFromProcess() }
+        }
+    }
+    /// Coalesced trailing refresh after pty output. `cd` changes the cwd
+    /// before the redrawn prompt arrives, so waiting ~150ms after activity
+    /// reads the new directory — without it the echo of the command itself
+    /// would trigger a refresh of the still-old cwd.
+    func scheduleCwdRefresh() {
+        guard state == .running, cwdDebounceTask == nil else { return }
+        cwdDebounceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch { return }
+            self?.cwdDebounceTask = nil
+            self?.refreshDirectoryFromProcess()
+        }
     }
     func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
         if let directory, let path = ShellConfiguration.localDirectory(fromOSC: directory) { self.directory = path }

@@ -124,26 +124,37 @@ final class GenesisWindowRestoration: NSObject, NSWindowRestoration {
 }
 
 
-struct WindowGlassBackdrop: NSViewRepresentable {
-    @Environment(\.colorScheme) private var colorScheme
+/// Backdrop glass whose tint follows the view's own effective appearance,
+/// not just the SwiftUI `colorScheme` environment. Both paths set the same
+/// values: SwiftUI calls `updateNSView` on environment changes, AppKit calls
+/// `viewDidChangeEffectiveAppearance` on the view itself. Driving the tint
+/// from `effectiveAppearance` keeps the AppKit glass in sync with the
+/// SwiftUI chrome even if the two invalidations race.
+final class ThemedGlassView: NSGlassEffectView {
+    func refreshTint() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        tintColor = isDark
+            ? NSColor.black.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.12)
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshTint()
+    }
+}
 
-    func makeNSView(context: Context) -> NSGlassEffectView {
-        let view = NSGlassEffectView()
+struct WindowGlassBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> ThemedGlassView {
+        let view = ThemedGlassView()
         view.style = .regular
         view.cornerRadius = 0
-        updateTint(of: view)
+        view.refreshTint()
         return view
     }
 
-    func updateNSView(_ nsView: NSGlassEffectView, context: Context) {
+    func updateNSView(_ nsView: ThemedGlassView, context: Context) {
         nsView.cornerRadius = 0
-        updateTint(of: nsView)
-    }
-
-    private func updateTint(of view: NSGlassEffectView) {
-        view.tintColor = colorScheme == .dark
-            ? NSColor.black.withAlphaComponent(0.18)
-            : NSColor.white.withAlphaComponent(0.12)
+        nsView.refreshTint()
     }
 }
 
@@ -202,13 +213,29 @@ struct TerminalToolbarHeader: View {
         HStack(spacing: 8) {
             SidebarTile(symbol: model.selectedTab?.kind == .settings ? "gearshape.fill" : "terminal", size: 22)
             VStack(alignment: .leading, spacing: 1) {
-                Text(model.selectedTab?.title ?? "Local").font(.system(size: 13, weight: .semibold))
-                Text(model.selectedTab?.kind == .settings ? "Preferences" : URL(fileURLWithPath: ShellConfiguration.loginShell).lastPathComponent + " — " + (model.selectedTab?.directory ?? ""))
+                Text(model.selectedTab?.title ?? "Local")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(subtitle)
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .lineLimit(1)
-        .frame(width: 185, height: 34, alignment: .leading)
+        // Flexible width: takes all space up to the navigation capsule instead
+        // of truncating at a fixed 185pt. fixedSize(vertical:) keeps the two
+        // lines from being vertically clipped.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var subtitle: String {
+        guard model.selectedTab?.kind != .settings else { return "Preferences" }
+        let shell = URL(fileURLWithPath: ShellConfiguration.loginShell).lastPathComponent
+        let directory = model.selectedTab.map { ShellConfiguration.displayDirectory($0.directory) } ?? ""
+        return "\(shell) — \(directory)"
     }
 }
 

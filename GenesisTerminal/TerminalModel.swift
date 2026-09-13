@@ -87,6 +87,9 @@ final class TerminalModel: ObservableObject {
         if history.count > 100 { history.removeFirst() }
         historyIndex = history.count - 1
         selectedID = id
+        // Show fresh cwd immediately when switching tabs instead of waiting
+        // for the next poll or output.
+        tabs.first { $0.id == id }?.refreshDirectoryFromProcess()
     }
 
     func cycle(_ offset: Int) {

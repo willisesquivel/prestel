@@ -9,15 +9,41 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
         let stored = UserDefaults.standard.double(forKey: "terminalFontSize")
         font = .monospacedSystemFont(ofSize: stored == 0 ? 13 : min(32, max(9, stored)), weight: .regular)
         optionAsMetaKey = UserDefaults.standard.bool(forKey: "optionAsMeta")
-        configureNativeColors()
-        backgroundOpacity = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0
+        refreshColorsForCurrentAppearance()
         scrollerStyle = NSScroller.preferredScrollerStyle
         notifyUpdateChanges = true
         registerForDraggedTypes([.fileURL, .string])
     }
+    /// Re-resolves dynamic system colors for the current effective appearance.
+    ///
+    /// `NSColor.textColor.withAlphaComponent(_)` (and `textBackgroundColor`
+    /// with alpha) freezes to a static color resolved in whatever appearance
+    /// was current at call time — verified: a 0.5-alpha textBackgroundColor
+    /// stays white in DarkAqua, and textColor with alpha 1 stays black in
+    /// DarkAqua. SwiftTerm's `backgroundOpacity` setter works exactly that
+    /// way, so the frozen `terminal.foregroundColor/backgroundColor` RGBs and
+    /// color caches must be refreshed every time the appearance changes.
+    /// Without this the SwiftUI chrome (driven by `colorScheme`, which *does*
+    /// update — the detail surface in your screenshot did flip to light)
+    /// diverges from the terminal, leaving e.g. white dark-mode text on a
+    /// light detail surface until relaunch.
+    func refreshColorsForCurrentAppearance() {
+        configureNativeColors()
+        backgroundOpacity = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        refreshColorsForCurrentAppearance()
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         scrollerStyle = NSScroller.preferredScrollerStyle
+        // Background tabs are detached (no window), so they never receive
+        // viewDidChangeEffectiveAppearance. Refresh on re-attach so a tab
+        // created in dark mode shows correct colors when selected in light.
+        if window != nil {
+            refreshColorsForCurrentAppearance()
+        }
     }
     override func copy(_ sender: Any) {
         guard selectionActive else { return }

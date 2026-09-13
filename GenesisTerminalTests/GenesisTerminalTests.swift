@@ -97,6 +97,33 @@ struct GenesisTerminalTests {
         #expect(!primary.contains("ALT"))
     }
 
+    @Test func appearanceChangeRefreshesTerminalAndGlass() {
+        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        view.applyPreferences()
+        view.feed(byteArray: Array("theme".utf8)[...])
+
+        // Simulate macOS flipping light -> dark -> light while running.
+        // Background tabs are detached (no window); the refresh must be safe
+        // there and must keep the surface usable.
+        for name in [NSAppearance.Name.aqua, .darkAqua, .aqua] {
+            view.appearance = NSAppearance(named: name)
+            view.viewDidChangeEffectiveAppearance()
+            view.viewDidMoveToWindow()
+            let text = view.terminalStateSnapshot().visibleRows.map(\.text).joined(separator: "\n")
+            #expect(text.contains("theme"))
+        }
+
+        // Glass tint follows the view's own effective appearance so AppKit
+        // and SwiftUI chrome can't diverge into a half-light/half-dark state.
+        let glass = ThemedGlassView()
+        glass.appearance = NSAppearance(named: .darkAqua)
+        glass.refreshTint()
+        #expect(abs((glass.tintColor?.cgColor.alpha ?? -1) - 0.18) < 0.001)
+        glass.appearance = NSAppearance(named: .aqua)
+        glass.viewDidChangeEffectiveAppearance()
+        #expect(abs((glass.tintColor?.cgColor.alpha ?? -1) - 0.12) < 0.001)
+    }
+
     @Test func markedTextIsNotSentBeforeCommitAndClipboardIsDenied() async throws {
         let session = TerminalSession(descriptor: TabDescriptor())
         session.start()
@@ -160,6 +187,31 @@ struct GenesisTerminalTests {
         try await eventually { ([pid] + children).allSatisfy { kill($0, 0) == -1 && errno == ESRCH } }
         #expect(session.state == .closed)
         #expect(session.surface == nil)
+    }
+
+    @Test func headerDirectoryFollowsShellWithoutOSC7() async throws {
+        // Regression: header showed the tab's starting directory (e.g.
+        // ~/terminals) after `cd ~/genesis` because zsh with
+        // TERM_PROGRAM=Genesis never sends OSC 7. The session must fall back
+        // to kernel truth via proc_pidinfo — and fast, not just via the 2s
+        // backup poll.
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/"))
+        session.start()
+        defer { session.close() }
+        session.process?.send(data: Array("cd /private/tmp; printf 'HDR_%s\\n' READY\r".utf8)[...])
+        try await eventually { buffer(session).contains("HDR_READY") }
+        try await eventually { session.currentDirectory == "/private/tmp" }
+        // A follow-up command's output must push the header well before the
+        // 2s backup poll would. (Its echo-triggered debounced refresh reads
+        // the already-changed cwd.)
+        session.process?.send(data: Array("printf 'HDR2_%s\\n' DONE\r".utf8)[...])
+        try await eventually { buffer(session).contains("HDR2_DONE") }
+        let deadline = ContinuousClock.now + .milliseconds(1500)
+        while session.directory != "/private/tmp", ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(session.directory == "/private/tmp")
+        #expect(ShellConfiguration.displayDirectory(FileManager.default.homeDirectoryForCurrentUser.path) == "~")
     }
 
     private func buffer(_ session: TerminalSession) -> String {

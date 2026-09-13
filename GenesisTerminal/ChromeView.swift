@@ -100,11 +100,6 @@ struct NavigationCapsule: View {
                 lineWidth: 0.5
             )
         }
-        .shadow(
-            color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.10),
-            radius: 14,
-            y: 8
-        )
         .accessibilityElement(children: .contain)
     }
 }
