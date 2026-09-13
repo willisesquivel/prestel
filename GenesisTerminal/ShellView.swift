@@ -2,20 +2,18 @@ import AppKit
 import SwiftUI
 
 struct ShellView: View {
-    @StateObject private var model = TerminalModel()
+    @ObservedObject var model: TerminalModel
+    var closeTab: (UUID) -> Void = { _ in }
     @State private var sidebarResizeStartWidth: CGFloat?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
-            let detailX = model.isSidebarVisible
+            let detailX = model.sidebarVisible
                 ? model.sidebarWidth
                 : ShellMetrics.detailInset
             let detailWidth = size.width - detailX - ShellMetrics.detailInset
-            let navCenterX = model.isSidebarVisible
-                ? model.sidebarWidth + 14 + ShellMetrics.navigationWidth / 2
-                : size.width - ShellMetrics.chromeTrailing - ShellMetrics.navigationWidth / 2
 
             ZStack(alignment: .topLeading) {
                 WindowGlassBackdrop()
@@ -38,20 +36,20 @@ struct ShellView: View {
                     .offset(x: detailX, y: ShellMetrics.detailInset)
                     .animation(
                         .smooth(duration: ShellMetrics.sidebarAnimationDuration),
-                        value: model.isSidebarVisible
+                        value: model.sidebarVisible
                     )
 
-                SidebarView(model: model, width: model.sidebarWidth)
+                SidebarView(model: model, width: model.sidebarWidth, closeTab: closeTab)
                     .frame(height: size.height)
-                    .offset(x: model.isSidebarVisible ? 0 : -model.sidebarWidth)
-                    .allowsHitTesting(model.isSidebarVisible)
-                    .accessibilityHidden(!model.isSidebarVisible)
+                    .offset(x: model.sidebarVisible ? 0 : -model.sidebarWidth)
+                    .allowsHitTesting(model.sidebarVisible)
+                    .accessibilityHidden(!model.sidebarVisible)
                     .animation(
                         .smooth(duration: ShellMetrics.sidebarAnimationDuration),
-                        value: model.isSidebarVisible
+                        value: model.sidebarVisible
                     )
 
-                if model.isSidebarVisible {
+                if model.sidebarVisible {
                     SidebarResizeHandle(
                         height: size.height
                     ) { translation in
@@ -70,19 +68,7 @@ struct ShellView: View {
                     .accessibilityHidden(true)
                 }
 
-                ManualTrafficLights(sidebarVisible: model.isSidebarVisible)
 
-                GlassEffectContainer(spacing: ShellMetrics.chromeGap) {
-                    NavigationCapsule(model: model)
-                        .position(
-                            x: navCenterX,
-                            y: ShellMetrics.chromeTop + ShellMetrics.navigationHeight / 2
-                        )
-                        .animation(
-                            .smooth(duration: ShellMetrics.sidebarAnimationDuration),
-                            value: model.isSidebarVisible
-                        )
-                }
             }
         }
         .ignoresSafeArea()
@@ -140,94 +126,6 @@ private final class SidebarResizeNSView: NSView {
     }
 }
 
-private struct ManualTrafficLights: View {
-    let sidebarVisible: Bool
-    @State private var isHoveringGroup = false
-
-    private var left: CGFloat {
-        sidebarVisible
-            ? ShellMetrics.trafficExpandedLeft
-            : ShellMetrics.trafficCollapsedLeft
-    }
-
-    private var top: CGFloat {
-        sidebarVisible
-            ? ShellMetrics.trafficExpandedTop
-            : ShellMetrics.trafficCollapsedTop
-    }
-
-    var body: some View {
-        HStack(spacing: ShellMetrics.trafficLightSpacing) {
-            TrafficLightButton(
-                color: Color(red: 1.00, green: 0.37, blue: 0.34),
-                symbol: "xmark",
-                label: "Close",
-                showsSymbol: isHoveringGroup
-            ) {
-                NSApp.keyWindow?.performClose(nil)
-            }
-
-            TrafficLightButton(
-                color: Color(red: 1.00, green: 0.74, blue: 0.18),
-                symbol: "minus",
-                label: "Minimize",
-                showsSymbol: isHoveringGroup
-            ) {
-                NSApp.keyWindow?.miniaturize(nil)
-            }
-
-            TrafficLightButton(
-                color: Color(red: 0.16, green: 0.78, blue: 0.31),
-                symbol: "plus",
-                label: "Zoom",
-                showsSymbol: isHoveringGroup
-            ) {
-                NSApp.keyWindow?.zoom(nil)
-            }
-        }
-        .onHover { isHoveringGroup = $0 }
-        .offset(x: left, y: top)
-        .animation(
-            .smooth(duration: ShellMetrics.sidebarAnimationDuration),
-            value: sidebarVisible
-        )
-    }
-}
-
-private struct TrafficLightButton: View {
-    let color: Color
-    let symbol: String
-    let label: String
-    let showsSymbol: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Circle()
-                .fill(color)
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.black.opacity(0.13), lineWidth: 0.5)
-                }
-                .overlay {
-                    if showsSymbol {
-                        Image(systemName: symbol)
-                            .font(.system(size: 5.5, weight: .black))
-                            .foregroundStyle(Color.black.opacity(0.55))
-                    }
-                }
-                .frame(
-                    width: ShellMetrics.trafficLightDiameter,
-                    height: ShellMetrics.trafficLightDiameter
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .accessibilityLabel(label)
-    }
-}
-
 private struct TerminalDetailSurface: View {
     @ObservedObject var model: TerminalModel
     @Environment(\.colorScheme) private var colorScheme
@@ -251,7 +149,16 @@ private struct TerminalDetailSurface: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
 
-            TerminalView(model: model)
+            Group {
+                if model.selectedTab?.kind == .settings { GenesisSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) } }
+                else {
+                    VStack(spacing: 0) {
+                        TerminalToolbar(model: model)
+                        TerminalSurface(model: model)
+                    }
+                }
+            }
+                .padding(.bottom, 10)
                 .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
         }
         .overlay {
@@ -261,6 +168,6 @@ private struct TerminalDetailSurface: View {
                     lineWidth: 0.5
                 )
         }
-        .accessibilityLabel("\(model.selectedSession?.title ?? "Settings") terminal")
+        .accessibilityLabel("\(model.selectedTab?.title ?? "Local") terminal")
     }
 }

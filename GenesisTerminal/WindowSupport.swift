@@ -1,5 +1,134 @@
 import AppKit
+import Combine
 import SwiftUI
+
+@MainActor
+final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
+    let model: TerminalModel
+    private var hosting: NSHostingController<ShellView>!
+    var onClose: ((UUID) -> Void)?
+    private var updates: AnyCancellable?
+    private var selectionUpdates: AnyCancellable?
+    private var pendingRefresh = false
+    private var savedForQuit: WindowDescriptor?
+
+    init(model: TerminalModel) {
+        self.model = model
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 650),
+                              styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable], backing: .buffered, defer: false)
+        super.init(window: window)
+        hosting = NSHostingController(rootView: ShellView(model: model, closeTab: { [weak self] id in self?.requestCloseTab(id) }))
+        window.contentViewController = hosting
+        window.setContentSize(NSSize(width: 960, height: 650))
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.delegate = self
+        window.minSize = NSSize(width: 760, height: 540)
+        window.title = "Genesis"
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+        window.isReleasedWhenClosed = false
+        window.tabbingMode = .disallowed
+        window.identifier = .init("Genesis.\(model.id.uuidString)")
+        window.isRestorable = true
+        window.restorationClass = GenesisWindowRestoration.self
+        updates = model.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }
+        selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.refresh(); self?.focusTerminal() }
+        }
+        refresh()
+        DispatchQueue.main.async { [weak self] in self?.positionWindowControls() }
+    }
+    required init?(coder: NSCoder) { fatalError("Use init(model:)") }
+    private func scheduleRefresh() {
+        guard !pendingRefresh else { return }
+        pendingRefresh = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = false
+            self.refresh()
+        }
+    }
+    func refresh() {
+        for tab in model.tabs { tab.start() }
+        let tab = model.selectedTab
+        window?.title = "\(tab?.title ?? "Terminal") — Genesis"
+        window?.invalidateRestorableState()
+        AppDelegate.current?.commandRevision &+= 1
+    }
+    func focusTerminal() {
+        guard window?.isKeyWindow == true, let surface = model.selectedTab?.surface else { return }
+        window?.makeFirstResponder(surface)
+    }
+    @objc func newTab(_ sender: Any?) { model.newTab() }
+    @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
+    func requestCloseTab(_ id: UUID) {
+        guard let tab = model.tabs.first(where: { $0.id == id }) else { return }
+        if model.tabs.count == 1 { window?.performClose(nil); return }
+        guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
+        model.closeTab(id)
+    }
+    @objc func closeTerminalWindow(_ sender: Any?) { window?.performClose(sender) }
+    @objc func nextTab(_ sender: Any?) { model.cycle(1) }
+    @objc func previousTab(_ sender: Any?) { model.cycle(-1) }
+    @objc func reopenClosedTab(_ sender: Any?) { model.reopenClosedTab() }
+    @objc func clearScrollback(_ sender: Any?) { model.selectedTab?.surface?.clearScrollback() }
+    @objc func toggleSidebar(_ sender: Any?) { model.sidebarVisible.toggle() }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(reopenClosedTab(_:)): return !model.recentlyClosed.isEmpty
+        case #selector(nextTab(_:)), #selector(previousTab(_:)): return model.tabs.count > 1
+        case #selector(clearScrollback(_:)), #selector(closeTab(_:)): return model.selectedTab != nil
+        default: return true
+        }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        CloseConfirmation.confirm(tabs: model.tabs.filter(\.hasActiveJobs), action: "Close Window")
+    }
+    func windowWillClose(_ notification: Notification) {
+        updates = nil
+        selectionUpdates = nil
+        model.closeAll()
+        onClose?(model.id)
+    }
+    func windowDidBecomeKey(_ notification: Notification) {
+        AppDelegate.current?.commandRevision &+= 1
+        if window?.firstResponder === window { focusTerminal() }
+    }
+    func windowDidResignKey(_ notification: Notification) { AppDelegate.current?.commandRevision &+= 1 }
+    func positionWindowControls() {
+        guard window?.styleMask.contains(.fullScreen) == false else { return }
+        for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+            guard let button = window?.standardWindowButton(kind), let parent = button.superview else { continue }
+            button.setFrameSize(NSSize(width: 12, height: 12))
+            button.setFrameOrigin(NSPoint(x: 18 + CGFloat(index) * 20, y: parent.bounds.height - 28))
+        }
+    }
+    func windowDidResize(_ notification: Notification) {
+        positionWindowControls()
+        window?.invalidateRestorableState()
+    }
+    func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
+        let descriptor = savedForQuit ?? model.descriptor
+        if let data = try? JSONEncoder().encode(descriptor) { state.encode(data as NSData, forKey: "Genesis.window") }
+    }
+    func preserveForQuit() { savedForQuit = model.descriptor }
+
+
+}
+
+@MainActor
+final class GenesisWindowRestoration: NSObject, NSWindowRestoration {
+    static func restoreWindow(withIdentifier identifier: NSUserInterfaceItemIdentifier, state: NSCoder, completionHandler: @escaping (NSWindow?, (any Error)?) -> Void) {
+        guard let data = state.decodeObject(of: NSData.self, forKey: "Genesis.window") as Data?,
+              let descriptor = try? JSONDecoder().decode(WindowDescriptor.self, from: data),
+              let app = AppDelegate.current else { completionHandler(nil, nil); return }
+        let controller = app.createWindow(restoration: descriptor, show: false)
+        completionHandler(controller.window, nil)
+    }
+}
+
 
 struct WindowGlassBackdrop: NSViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
@@ -26,9 +155,9 @@ struct WindowGlassBackdrop: NSViewRepresentable {
 
 // MARK: - Shell metrics
 //
-// Genesis chrome: glass backdrop, search capsule, sidebar rows, navigation
-// capsule, traffic lights, inset detail surface. The baseline window is sized
-// so a terminal fits while keeping at least 320pt for the detail area.
+// Genesis chrome: glass backdrop, search capsule, sidebar rows, native window
+// controls, inset detail surface. The baseline window is sized so a terminal
+// fits while keeping at least 320pt for the detail area.
 
 enum ShellMetrics {
     static let baselineWidth: CGFloat = 960
@@ -71,4 +200,35 @@ enum ShellMetrics {
     static let trafficLightSpacing: CGFloat = 8
 
     static let sidebarAnimationDuration: TimeInterval = 0.30
+}
+
+struct TerminalToolbarHeader: View {
+    @ObservedObject var model: TerminalModel
+    var body: some View {
+        HStack(spacing: 8) {
+            SidebarTile(symbol: model.selectedTab?.kind == .settings ? "gearshape.fill" : "terminal", size: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.selectedTab?.title ?? "Local").font(.system(size: 13, weight: .semibold))
+                Text(model.selectedTab?.kind == .settings ? "Preferences" : URL(fileURLWithPath: ShellConfiguration.loginShell).lastPathComponent + " — " + (model.selectedTab?.directory ?? ""))
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1)
+        .frame(width: 185, height: 34, alignment: .leading)
+    }
+}
+
+struct TerminalToolbar: View {
+    @ObservedObject var model: TerminalModel
+    var body: some View {
+        HStack(spacing: 12) {
+            TerminalToolbarHeader(model: model)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Terminal toolbar")
+    }
 }

@@ -3,10 +3,13 @@ import SwiftUI
 struct SidebarView: View {
     @ObservedObject var model: TerminalModel
     let width: CGFloat
+    var closeTab: (UUID) -> Void
     @FocusState private var focusedTarget: SidebarFocusTarget?
 
     var body: some View {
         VStack(spacing: 0) {
+            // Search capsule sits below the native titlebar with the same top
+            // clearance as before, so rows never slide under window controls.
             SidebarSearchField(text: $model.searchText)
                 .frame(width: width - ShellMetrics.sidebarHorizontalInset * 2)
                 .padding(.top, 42)
@@ -14,30 +17,18 @@ struct SidebarView: View {
 
             ScrollView(.vertical) {
                 VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                    ForEach(model.filteredSessions()) { session in
+                    ForEach(model.filteredTabs) { session in
                         SidebarRow(
                             title: session.title,
-                            symbol: "terminal",
-                            isSelected: model.selection == .session(session.id),
+                            symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+                            isSelected: model.selectedID == session.id,
                             width: width - ShellMetrics.sidebarHorizontalInset * 2,
-                            help: "\(session.title) — \(session.cwd)"
+                            help: "\(session.title) — \(session.directory)"
                         ) {
-                            model.select(.session(session.id))
+                            model.select(session.id)
                         }
                         .focused($focusedTarget, equals: .item(session.id))
-                    }
-
-                    if model.isSettingsVisibleInFilter {
-                        SidebarRow(
-                            title: "Settings",
-                            symbol: "gearshape.fill",
-                            isSelected: model.selection == .settings,
-                            width: width - ShellMetrics.sidebarHorizontalInset * 2,
-                            help: "Settings"
-                        ) {
-                            model.select(.settings)
-                        }
-                        .focused($focusedTarget, equals: .settings)
+                        .contextMenu { Button("Close Tab") { closeTab(session.id) } }
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -46,6 +37,8 @@ struct SidebarView: View {
             }
             .scrollIndicators(.hidden)
         }
+        .scrollClipDisabled()
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .frame(width: width)
     }
 }

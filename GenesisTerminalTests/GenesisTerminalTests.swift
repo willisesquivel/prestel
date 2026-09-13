@@ -1,91 +1,173 @@
+import AppKit
+import Darwin
+import SwiftTerm
 import Testing
 @testable import GenesisTerminal
 
+@Suite(.serialized)
 @MainActor
 struct GenesisTerminalTests {
-    @Test func startsWithExactlyOneSession() {
+    @Test func independentModelsAndFilteringPreserveSessions() {
+        let a = TerminalModel()
+        let b = TerminalModel()
+        let first = a.selectedTab!
+        a.newTab()
+        a.newTab()
+        b.newTab()
+        b.newTab()
+        let bSelection = b.selectedID
+        a.select(first.id)
+        a.searchText = "no-match"
+        #expect(a.filteredTabs.isEmpty)
+        #expect(a.tabs.count == 3)
+        #expect(b.tabs.count == 3)
+        #expect(b.selectedID == bSelection)
+        #expect(Set((a.tabs + b.tabs).map(\.id)).count == 6)
+        #expect(a.tabs.first === first)
+        #expect(first.process == nil)
+        a.searchText = ""
+        #expect(a.filteredTabs.count == 3)
+    }
+
+    @Test func navigationAndRecentlyClosedAreBounded() {
         let model = TerminalModel()
-        #expect(model.sessions.count == 1)
-        #expect(model.selectedSession != nil)
-        #expect(!model.isShowingSettings)
+        let first = model.selectedID!
+        let second = model.newTab()
+        model.cycle(1)
+        #expect(model.selectedID == first)
+        model.cycle(-1)
+        #expect(model.selectedID == second.id)
+        model.navigate(-1)
+        #expect(model.selectedID == first)
+        model.closeTab(second.id)
+        model.reopenClosedTab()
+        #expect(model.selectedID != second.id)
+        #expect(model.tabs.count == 2)
+        for _ in 0..<25 {
+            let tab = model.newTab()
+            model.closeTab(tab.id)
+        }
+        #expect(model.recentlyClosed.count == 20)
+        #expect(model.tabs.allSatisfy { $0.state == .ready })
     }
 
-    @Test func navigationHistoryTracksSelections() {
+    @Test func restorationIsOnlyLightweightContext() throws {
         let model = TerminalModel()
-        let second = model.addSession(kind: .terminal, title: "Dev", cwd: "~/Lume", gitRef: "6ed58ac4")
-        model.select(.session(second.id))
-        #expect(model.selection == .session(second.id))
-        #expect(model.canGoBack)
-
-        model.goBack()
-        #expect(model.selectedSession?.id == model.sessions.first?.id)
-        #expect(model.canGoForward)
-
-        model.goForward()
-        #expect(model.selection == .session(second.id))
+        model.newTab(directory: "/private/tmp")
+        model.sidebarVisible = false
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let descriptor = try JSONDecoder().decode(WindowDescriptor.self, from: encoded)
+        let restored = TerminalModel(restoration: descriptor)
+        #expect(restored.tabs.map(\.id) == model.tabs.map(\.id))
+        #expect(restored.selectedID == model.selectedID)
+        #expect(!restored.sidebarVisible)
+        #expect(restored.tabs.allSatisfy { $0.process == nil })
+        let json = String(decoding: encoded, as: UTF8.self)
+        #expect(!json.contains("Pid"))
+        #expect(!json.contains("childfd"))
     }
 
-    @Test func submittingKeepsUniformSession() {
-        let model = TerminalModel()
-        let before = model.selectedSession
-        model.submit(command: "codex")
-        #expect(model.selectedSession?.id == before?.id)
-        #expect(model.selectedSession?.kind == .terminal)
-        #expect(model.selectedSession?.title == before?.title)
+    @Test func invalidRestorationFallsBackSafely() {
+        let id = UUID()
+        let descriptor = WindowDescriptor(id: UUID(), tabs: [TabDescriptor(id: id, directory: "/missing-genesis-folder"), TabDescriptor(id: id)], selectedID: UUID(), sidebarVisible: true, sidebarWidth: 900)
+        let restored = TerminalModel(restoration: descriptor)
+        #expect(restored.tabs.count == 1)
+        #expect(restored.selectedID == id)
+        #expect(restored.sidebarWidth == 300)
+        #expect(restored.selectedTab?.directory == FileManager.default.homeDirectoryForCurrentUser.path)
     }
 
-    @Test func confirmedMetricsRemainExact() {
-        #expect(ShellMetrics.searchHeight == 30)
-        #expect(ShellMetrics.searchCornerRadius == 15)
-        #expect(ShellMetrics.sidebarRowHeight == 28)
-        #expect(ShellMetrics.navigationWidth == 92)
-        #expect(ShellMetrics.navigationHeight == 32)
-        #expect(ShellMetrics.trafficLightDiameter == 12)
-        #expect(ShellMetrics.detailInset == 10)
-        #expect(ShellMetrics.detailCornerRadius == 20)
-        #expect(ShellMetrics.sidebarDefaultWidth == 172)
-        #expect(ShellMetrics.sessionRowHeight == 62)
-        #expect(ShellMetrics.sessionIconSize == 32)
+    @Test func shellMetadataAndQuoting() {
+        #expect(ShellConfiguration.escapedPath("/tmp/a b's;$(x)文") == "'/tmp/a b'\\''s;$(x)文'")
+        #expect(ShellConfiguration.localDirectory(fromOSC: "file://localhost/tmp/a%20b") == "/tmp/a b")
+        #expect(ShellConfiguration.localDirectory(fromOSC: "file://remote.invalid/tmp") == nil)
+        #expect(ShellConfiguration.localDirectory(fromOSC: "https://example.com/tmp") == nil)
+        #expect(ShellConfiguration.loginShell.hasPrefix("/"))
+        #expect(ShellConfiguration.environment.contains("TERM=xterm-256color"))
     }
 
-    @Test func sidebarResizeClampsToItsSupportedRange() {
-        let model = TerminalModel()
-
-        model.resizeSidebar(to: 220, availableWidth: 960)
-        #expect(model.sidebarWidth == 220)
-
-        model.resizeSidebar(to: 100, availableWidth: 960)
-        #expect(model.sidebarWidth == ShellMetrics.sidebarMinimumWidth)
-
-        model.resizeSidebar(to: 400, availableWidth: 960)
-        #expect(model.sidebarWidth == ShellMetrics.sidebarMaximumWidth)
+    @Test func parserHandlesFragmentedUTF8AndAlternateScreen() {
+        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        let bytes = Array("Aé文🙂e\u{301}".utf8)
+        for byte in bytes { view.feed(byteArray: [byte][...]) }
+        #expect(view.terminalStateSnapshot().visibleRows.first?.text.contains("Aé文🙂e\u{301}") == true)
+        for byte in Array("\u{1b}[?1049hALT\u{1b}[?1049l".utf8) { view.feed(byteArray: [byte][...]) }
+        let primary = view.terminalStateSnapshot().visibleRows.map(\.text).joined(separator: "\n")
+        #expect(primary.contains("Aé文🙂"))
+        #expect(!primary.contains("ALT"))
     }
 
-    @Test func ansiParserHandlesBasicSGR() {
-        let segments = AnsiParser.parse("\u{1B}[32mgreen\u{1B}[0m plain")
-        #expect(segments.count == 2)
-        #expect(segments[0].text == "green")
-        #expect(segments[0].color == .green)
-        #expect(segments[1].text == " plain")
-        #expect(segments[1].color == .default)
+    @Test func markedTextIsNotSentBeforeCommitAndClipboardIsDenied() async throws {
+        let session = TerminalSession(descriptor: TabDescriptor())
+        session.start()
+        defer { session.close() }
+        let view = try #require(session.surface)
+        view.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(view.hasMarkedText())
+        #expect(!String(decoding: view.getBufferAsData(), as: UTF8.self).contains("日本"))
+        view.unmarkText()
+        #expect(!view.hasMarkedText())
+        #expect(session.clipboardRead(source: view) == nil)
+        let before = NSPasteboard.general.changeCount
+        session.clipboardCopy(source: view, content: Data("untrusted".utf8))
+        #expect(NSPasteboard.general.changeCount == before)
     }
 
-    @Test func mockEngineEchoesUnknownCommands() {
-        let out = MockTerminalEngine.response(for: "foobar --x", kind: .terminal)
-        #expect(out.count == 1)
-        #expect(out[0].contains("foobar --x"))
+    @Test func sixLivePTYsSurviveTabAndWindowSwitching() async throws {
+        let a = TerminalModel(directory: "/private/tmp")
+        let b = TerminalModel(directory: "/")
+        for _ in 0..<2 { a.newTab(); b.newTab() }
+        let all = a.tabs + b.tabs
+        all.forEach { $0.start() }
+        defer { a.closeAll(); b.closeAll() }
+        let pids = try all.map { try #require($0.process?.shellPid) }
+        #expect(Set(pids).count == 6)
+        for (i, tab) in all.enumerated() {
+            tab.process?.send(data: Array("printf 'GEN_%s_%s\\n' \(i) READY\r".utf8)[...])
+        }
+        try await eventually { all.enumerated().allSatisfy { index, tab in buffer(tab).contains("GEN_\(index)_READY") } }
+        a.select(a.tabs[0].id)
+        b.select(b.tabs[2].id)
+        a.searchText = "hidden"
+        for (i, tab) in all.enumerated() {
+            tab.process?.send(data: Array("sleep 0.1; printf 'LIVE_%s_%s\\n' \(i) OK\r".utf8)[...])
+        }
+        try await eventually { all.enumerated().allSatisfy { index, tab in buffer(tab).contains("LIVE_\(index)_OK") } }
+        #expect(all.allSatisfy { $0.process?.running == true })
+        #expect(a.tabs[0].currentDirectory == "/private/tmp")
+        #expect(b.tabs[0].currentDirectory == "/")
+        a.closeAll()
+        try await eventually { pids.prefix(3).allSatisfy { kill($0, 0) == -1 && errno == ESRCH } }
+        #expect(b.tabs.allSatisfy { $0.process?.running == true })
     }
 
-    @Test func searchFiltersByTitleCwdAndBranch() {
-        let model = TerminalModel()
-        model.searchText = "lume"
-        #expect(model.filteredSessions().count == 1)
-        model.searchText = "6ed58ac4"
-        #expect(model.filteredSessions().count == 1)
-        model.searchText = "no-match-xyz"
-        #expect(model.filteredSessions().isEmpty)
-        #expect(!model.isSettingsVisibleInFilter)
-        model.searchText = "sett"
-        #expect(model.isSettingsVisibleInFilter)
+    @Test func liveCwdQuotingInterruptAndProcessReaping() async throws {
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/"))
+        session.start()
+        defer { session.close() }
+        let pid = try #require(session.process?.shellPid)
+        session.process?.send(data: Array("cd /private/tmp; printf 'PATH_%s\\n' READY\r".utf8)[...])
+        try await eventually { buffer(session).contains("PATH_READY") }
+        #expect(session.currentDirectory == "/private/tmp")
+        session.process?.send(data: Array("sleep 30\r".utf8)[...])
+        try await eventually { session.hasActiveJobs }
+        session.process?.send(data: [3][...])
+        try await eventually { !session.hasActiveJobs }
+        session.process?.send(data: Array("sleep 30 &\r".utf8)[...])
+        try await eventually { session.hasActiveJobs }
+        let children = ProcessInspection.children(of: pid)
+        session.close()
+        try await eventually { ([pid] + children).allSatisfy { kill($0, 0) == -1 && errno == ESRCH } }
+        #expect(session.state == .closed)
+        #expect(session.surface == nil)
+    }
+
+    private func buffer(_ session: TerminalSession) -> String {
+        session.surface.map { String(decoding: $0.getBufferAsData(), as: UTF8.self) } ?? ""
+    }
+    private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(12)
+        while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }
+        #expect(predicate(), sourceLocation: sourceLocation)
     }
 }

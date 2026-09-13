@@ -1,205 +1,137 @@
-import SwiftUI
+import AppKit
+import Combine
 
-// MARK: - Session kinds (one icon per TUI + default terminal + settings)
+enum TabKind: String, Codable { case terminal, settings }
 
-/// Every TUI gets its own sidebar icon. Normal shells (not in any TUI) share
-/// the default terminal icon.
-enum SessionKind: String, CaseIterable, Hashable, Codable {
-    case terminal
-    case codex
-    case claude
-    case opencode
-    case settings
-
-    var displayName: String {
-        switch self {
-        case .terminal: "Terminal"
-        case .codex: "codex"
-        case .claude: "Claude"
-        case .opencode: "OpenCode"
-        case .settings: "Settings"
-        }
-    }
-
-    /// Circle fill for the 32pt sidebar icon.
-    var iconFill: Color {
-        switch self {
-        case .terminal: Color(white: 0.90)
-        case .codex: Color(white: 0.08)
-        case .claude: Color(red: 0.91, green: 0.52, blue: 0.16)
-        case .opencode: Color(white: 0.55)
-        case .settings: Color(white: 0.90)
-        }
-    }
-
-    var iconFillDark: Color {
-        switch self {
-        case .terminal: Color(white: 0.22)
-        case .codex: Color(white: 0.95)
-        case .claude: Color(red: 0.91, green: 0.52, blue: 0.16)
-        case .opencode: Color(white: 0.45)
-        case .settings: Color(white: 0.22)
-        }
-    }
+struct TabDescriptor: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var kind: TabKind = .terminal
+    var title = "Local"
+    var directory: String = FileManager.default.homeDirectoryForCurrentUser.path
 }
 
-// MARK: - Session value (sidebar row = one session)
-
-struct TerminalSession: Identifiable, Hashable {
-    let id: UUID
-    var kind: SessionKind
-    var title: String
-    var cwd: String
-    var gitRef: String?
-
-    init(id: UUID = UUID(), kind: SessionKind, title: String, cwd: String, gitRef: String? = nil) {
-        self.id = id
-        self.kind = kind
-        self.title = title
-        self.cwd = cwd
-        self.gitRef = gitRef
-    }
+struct WindowDescriptor: Codable, Equatable {
+    var id: UUID
+    var tabs: [TabDescriptor]
+    var selectedID: UUID?
+    var sidebarVisible: Bool
+    var sidebarWidth: Double
 }
 
-// MARK: - Sidebar selection (sessions + pinned settings)
-
-enum SidebarSelection: Hashable {
-    case session(UUID)
-    case settings
-}
-
-// MARK: - Model (dynamic sessions, starts with exactly 1 tab)
-
+/// A window owns its tabs. Filtering and view attachment never own process lifetime.
 @MainActor
 final class TerminalModel: ObservableObject {
-    @Published var isSidebarVisible = true
-    @Published var sidebarWidth = ShellMetrics.sidebarDefaultWidth
-    @Published var sessions: [TerminalSession]
-    @Published var buffers: [UUID: MockTerminalSession]
-    @Published var selection: SidebarSelection
+    let id: UUID
+    @Published private(set) var tabs: [TerminalSession] = []
+    @Published private(set) var selectedID: UUID?
     @Published var searchText = ""
+    @Published var sidebarVisible = true
+    @Published var sidebarWidth: Double = 172
+    @Published private(set) var recentlyClosed: [TabDescriptor] = []
+    private var history: [UUID] = []
+    private var historyIndex = -1
+    private var subscriptions: [UUID: AnyCancellable] = [:]
 
-    private var history: [SidebarSelection]
-    private var historyIndex = 0
-
-    init() {
-        let first = TerminalSession(
-            kind: .terminal,
-            title: "Local",
-            cwd: "~/Lume",
-            gitRef: "6ed58ac4"
-        )
-        self.sessions = [first]
-        self.buffers = [first.id: MockTerminalSession(session: first)]
-        self.selection = .session(first.id)
-        self.history = [.session(first.id)]
+    init(directory: String = ShellConfiguration.defaultDirectory, restoration: WindowDescriptor? = nil) {
+        id = restoration?.id ?? UUID()
+        if let restoration, !restoration.tabs.isEmpty {
+            sidebarVisible = restoration.sidebarVisible
+            sidebarWidth = min(300, max(150, restoration.sidebarWidth))
+            var seen = Set<UUID>()
+            for descriptor in restoration.tabs where seen.insert(descriptor.id).inserted { append(descriptor) }
+            select(restoration.selectedID ?? tabs[0].id)
+            if selectedID == nil { select(tabs[0].id) }
+        } else {
+            append(TabDescriptor(directory: directory))
+            select(tabs[0].id)
+        }
     }
 
-    // MARK: Derived
-
-    var selectedSession: TerminalSession? {
-        guard case .session(let id) = selection else { return nil }
-        return sessions.first(where: { $0.id == id })
+    var selectedTab: TerminalSession? { tabs.first { $0.id == selectedID } }
+    var filteredTabs: [TerminalSession] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? tabs : tabs.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.directory.localizedCaseInsensitiveContains(query)
+        }
     }
-
-    var isShowingSettings: Bool {
-        selection == .settings
-    }
-
     var canGoBack: Bool { historyIndex > 0 }
     var canGoForward: Bool { historyIndex + 1 < history.count }
 
-    func buffer(for id: UUID) -> MockTerminalSession? {
-        buffers[id]
-    }
-
-    var selectedBuffer: MockTerminalSession? {
-        guard let session = selectedSession else { return nil }
-        return buffers[session.id]
-    }
-
-    // MARK: Sidebar sizing (keeps at least 320pt for the detail area)
-
-    func resizeSidebar(to proposedWidth: CGFloat, availableWidth: CGFloat) {
-        let widthThatPreservesDetail = availableWidth - ShellMetrics.minimumDetailWidth
-        let maximumWidth = min(
-            ShellMetrics.sidebarMaximumWidth,
-            max(ShellMetrics.sidebarMinimumWidth, widthThatPreservesDetail)
-        )
-        sidebarWidth = min(max(proposedWidth, ShellMetrics.sidebarMinimumWidth), maximumWidth)
-    }
-
-    // MARK: Selection + history
-
-    func select(_ item: SidebarSelection) {
-        guard item != selection else { return }
-        // Guard against stale session ids.
-        if case .session(let id) = item, !sessions.contains(where: { $0.id == id }) {
-            return
-        }
-        if historyIndex + 1 < history.count {
-            history.removeSubrange((historyIndex + 1)..<history.count)
-        }
-        history.append(item)
-        historyIndex = history.count - 1
-        selection = item
-    }
-
-    func goBack() {
-        guard canGoBack else { return }
-        historyIndex -= 1
-        selection = history[historyIndex]
-    }
-
-    func goForward() {
-        guard canGoForward else { return }
-        historyIndex += 1
-        selection = history[historyIndex]
-    }
-
-    // MARK: Sessions (mock phase)
-
-    /// Adds a session. No UI button calls this yet (top-right button removed);
-    /// used by tests and later by ⌘T / menu / PTY spawner.
     @discardableResult
-    func addSession(kind: SessionKind, title: String, cwd: String, gitRef: String? = nil) -> TerminalSession {
-        let session = TerminalSession(kind: kind, title: title, cwd: cwd, gitRef: gitRef)
-        sessions.append(session)
-        buffers[session.id] = MockTerminalSession(session: session)
-        return session
+    func newTab(directory: String? = nil) -> TerminalSession {
+        let descriptor = TabDescriptor(directory: directory ?? (selectedTab?.kind == .terminal ? selectedTab?.currentDirectory : nil) ?? ShellConfiguration.defaultDirectory)
+        let tab = append(descriptor)
+        searchText = ""
+        select(tab.id)
+        return tab
     }
 
-    func submit(command: String) {
-        guard let session = selectedSession else { return }
-        guard let current = sessions.first(where: { $0.id == session.id }),
-              let buf = buffers[session.id] else { return }
-        buf.submit(command, prompt: promptPrefix(for: current))
+    func showSettings() {
+        if let existing = tabs.first(where: { $0.kind == .settings }) { select(existing.id) }
+        else { select(append(TabDescriptor(kind: .settings, title: "Settings")).id) }
+        searchText = ""
     }
 
-    func clearCurrent() {
-        selectedBuffer?.clear()
+    @discardableResult
+    private func append(_ descriptor: TabDescriptor) -> TerminalSession {
+        let tab = TerminalSession(descriptor: descriptor)
+        tabs.append(tab)
+        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        return tab
     }
 
-    func promptPrefix(for session: TerminalSession) -> String {
-        "ian@genesis \(session.cwd) % "
+    func select(_ id: UUID) {
+        guard id != selectedID, tabs.contains(where: { $0.id == id }) else { return }
+        history = Array(history.prefix(historyIndex + 1))
+        history.append(id)
+        if history.count > 100 { history.removeFirst() }
+        historyIndex = history.count - 1
+        selectedID = id
     }
 
-    // MARK: Search (title + cwd + branch + kind)
+    func cycle(_ offset: Int) {
+        guard !tabs.isEmpty else { return }
+        let index = tabs.firstIndex { $0.id == selectedID } ?? 0
+        select(tabs[(index + offset % tabs.count + tabs.count) % tabs.count].id)
+    }
 
-    func filteredSessions() -> [TerminalSession] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return sessions }
-        return sessions.filter {
-            $0.title.localizedCaseInsensitiveContains(query)
-                || $0.cwd.localizedCaseInsensitiveContains(query)
-                || ($0.gitRef?.localizedCaseInsensitiveContains(query) ?? false)
-                || $0.kind.displayName.localizedCaseInsensitiveContains(query)
+    func navigate(_ offset: Int) {
+        let target = historyIndex + offset
+        guard history.indices.contains(target) else { return }
+        historyIndex = target
+        selectedID = history[target]
+    }
+
+    /// Call only after the window controller has resolved close confirmation.
+    func closeTab(_ id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        recentlyClosed.append(tabs[index].descriptor)
+        recentlyClosed = Array(recentlyClosed.suffix(20))
+        tabs[index].close()
+        tabs.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        history.removeAll { $0 == id }
+        historyIndex = min(historyIndex, history.count - 1)
+        if selectedID == id {
+            selectedID = nil
+            if !tabs.isEmpty { select(tabs[min(index, tabs.count - 1)].id) }
         }
     }
 
-    var isSettingsVisibleInFilter: Bool {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return true }
-        return "settings".localizedCaseInsensitiveContains(query)
+    func reopenClosedTab() {
+        guard var descriptor = recentlyClosed.popLast() else { return }
+        descriptor.id = UUID() // Replacement session, never a resurrected process.
+        let tab = append(descriptor)
+        searchText = ""
+        select(tab.id)
     }
+
+    var descriptor: WindowDescriptor {
+        WindowDescriptor(id: id, tabs: tabs.map(\.descriptor), selectedID: selectedID,
+                         sidebarVisible: sidebarVisible, sidebarWidth: sidebarWidth)
+    }
+    func resizeSidebar(to proposedWidth: CGFloat, availableWidth: CGFloat) {
+        sidebarWidth = min(max(proposedWidth, 150), min(300, max(150, availableWidth - 320)))
+    }
+    func closeAll() { tabs.forEach { $0.close() } }
 }
