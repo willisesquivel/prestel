@@ -33,12 +33,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         window.identifier = .init("Genesis.\(model.id.uuidString)")
         window.isRestorable = true
         window.restorationClass = GenesisWindowRestoration.self
+        // Handmade 12pt traffic lights are drawn in the shell; hide the native set.
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         updates = model.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }
         selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.refresh(); self?.focusTerminal() }
         }
         refresh()
-        DispatchQueue.main.async { [weak self] in self?.positionWindowControls() }
     }
     required init?(coder: NSCoder) { fatalError("Use init(model:)") }
     private func scheduleRefresh() {
@@ -97,16 +100,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         if window?.firstResponder === window { focusTerminal() }
     }
     func windowDidResignKey(_ notification: Notification) { AppDelegate.current?.commandRevision &+= 1 }
-    func positionWindowControls() {
-        guard window?.styleMask.contains(.fullScreen) == false else { return }
-        for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
-            guard let button = window?.standardWindowButton(kind), let parent = button.superview else { continue }
-            button.setFrameSize(NSSize(width: 12, height: 12))
-            button.setFrameOrigin(NSPoint(x: 18 + CGFloat(index) * 20, y: parent.bounds.height - 28))
-        }
-    }
     func windowDidResize(_ notification: Notification) {
-        positionWindowControls()
         window?.invalidateRestorableState()
     }
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
@@ -224,10 +218,16 @@ struct TerminalToolbar: View {
         HStack(spacing: 12) {
             TerminalToolbarHeader(model: model)
             Spacer(minLength: 0)
+            NavigationCapsule(model: model)
         }
-        .padding(.horizontal, 14)
+        // Same horizontal inset as the terminal text below (12pt). When the
+        // sidebar is collapsed the detail surface slides under the traffic
+        // lights, so the header shifts right to sit beside them, not behind.
+        .padding(.leading, model.sidebarVisible ? 12 : 74)
+        .padding(.trailing, 12)
         .padding(.top, 12)
-        .padding(.bottom, 10)
+        .padding(.bottom, 8)
+        .animation(.smooth(duration: ShellMetrics.sidebarAnimationDuration), value: model.sidebarVisible)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Terminal toolbar")
     }

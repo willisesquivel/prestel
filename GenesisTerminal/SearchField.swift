@@ -3,71 +3,67 @@ import SwiftUI
 
 struct SidebarSearchField: View {
     @Binding var text: String
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 13, height: 16)
-
-            BorderlessSearchTextField(text: $text, placeholder: "Search")
-                .frame(height: 20)
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 9)
-        .frame(height: ShellMetrics.searchHeight)
-        .background {
-            Capsule()
-                .fill(.quaternary)
-        }
-        .clipShape(Capsule())
-        .accessibilityElement(children: .contain)
+        NativeSearchField(text: $text)
+            .frame(height: ShellMetrics.searchHeight)
+            .background {
+                Capsule()
+                    .fill(.quaternary)
+            }
+            .clipShape(Capsule())
+            .accessibilityElement(children: .contain)
     }
 }
 
-struct BorderlessSearchTextField: NSViewRepresentable {
+/// Real NSSearchField (native editor, cancel button, accessibility role, undo)
+/// in the same borderless capsule. No custom bezel drawing — the capsule
+/// behind it owns the shape.
+struct NativeSearchField: NSViewRepresentable {
     @Binding var text: String
-    let placeholder: String
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
     }
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
-        field.delegate = context.coordinator
-        field.stringValue = text
-        field.placeholderString = placeholder
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
+        field.placeholderString = "Search"
         field.font = .systemFont(ofSize: 13)
         field.textColor = .labelColor
-        field.lineBreakMode = .byClipping
-        field.cell?.usesSingleLineMode = true
-        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        field.setAccessibilityLabel("Search")
+        field.sendsSearchStringImmediately = true
+        field.sendsWholeSearchString = false
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.searchAction(_:))
+        field.delegate = context.coordinator
+        field.setAccessibilityLabel("Search terminal tabs")
         return field
     }
 
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        if field.stringValue != text {
+            field.stringValue = text
         }
     }
 
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
         private var text: Binding<String>
 
         init(text: Binding<String>) {
             self.text = text
         }
 
+        @objc func searchAction(_ sender: NSSearchField) {
+            // Covers Enter and the cancel button (which clears the field).
+            text.wrappedValue = sender.stringValue
+        }
+
         func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
+            guard let field = notification.object as? NSSearchField else { return }
             text.wrappedValue = field.stringValue
         }
     }

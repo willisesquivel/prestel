@@ -61,7 +61,7 @@ struct TerminalSurface: View {
             TerminalDirectHost(surface: surface)
                 .id(model.selectedID)
                 .padding(.horizontal, 12)
-                .padding(.bottom, 10)
+                .padding(.bottom, 12)
         }
     }
 }
