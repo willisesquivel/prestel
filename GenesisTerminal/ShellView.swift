@@ -247,6 +247,10 @@ private struct TerminalDetailSurface: View {
                     }
                 }
             }
+                // Pin content to the top: when the surface is momentarily
+                // absent (new tab's view not attached yet, or teardown during
+                // quit) the toolbar must stay put, never center itself.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
         }
         .overlay {

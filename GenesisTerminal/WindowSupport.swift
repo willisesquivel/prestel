@@ -222,8 +222,10 @@ struct TerminalToolbar: View {
         }
         // Same horizontal inset as the terminal text below (12pt). When the
         // sidebar is collapsed the detail surface slides under the traffic
-        // lights, so the header shifts right to sit beside them, not behind.
-        .padding(.leading, model.sidebarVisible ? 12 : 74)
+        // lights (24…76pt window), so the header shifts right to sit beside
+        // them: mirror the 14pt gap between the surface edge and the lights,
+        // starting the header at 80pt detail-relative.
+        .padding(.leading, model.sidebarVisible ? 12 : 80)
         .padding(.trailing, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
