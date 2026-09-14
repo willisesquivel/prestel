@@ -2,28 +2,39 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var model: TerminalModel
+    @ObservedObject private var dragCoordinator = TabDragCoordinator.shared
     let width: CGFloat
     var closeTab: (UUID) -> Void
     @FocusState private var focusedTarget: SidebarFocusTarget?
+
+    private var rowWidth: CGFloat { width - ShellMetrics.sidebarHorizontalInset * 2 }
 
     var body: some View {
         ScrollView(.vertical) {
             VStack(spacing: ShellMetrics.sidebarRowSpacing) {
                 ForEach(model.filteredTabs) { session in
                     SidebarRow(
+                        windowID: model.id,
+                        tabID: session.id,
                         title: session.title,
                         symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
                         isSelected: model.selectedID == session.id,
-                        width: width - ShellMetrics.sidebarHorizontalInset * 2,
-                        help: "\(session.title) — \(session.directory)"
-                    ) {
-                        model.select(session.id)
-                    }
+                        width: rowWidth,
+                        help: "\(session.title) — \(session.directory)",
+                        onSelect: { model.select(session.id) },
+                        onClose: { closeTab(session.id) }
+                    )
                     .focused($focusedTarget, equals: .item(session.id))
-                    .contextMenu { Button("Close Tab") { closeTab(session.id) } }
                 }
             }
             .frame(maxWidth: .infinity)
+            .overlay(alignment: .topLeading) {
+                if let pin = dragCoordinator.pin, pin.windowID == model.id {
+                    TabInsertionPin(width: rowWidth)
+                        .offset(x: ShellMetrics.sidebarHorizontalInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
+                }
+            }
+            .background(TabListDropZone(windowID: model.id).frame(width: 0, height: 0))
             .padding(.top, 12)
             .padding(.bottom, 16)
         }
@@ -52,17 +63,20 @@ private enum SidebarFocusTarget: Hashable {
 // MARK: - Sidebar row (28pt, 20px rounded-square tile)
 
 private struct SidebarRow: View {
+    let windowID: UUID
+    let tabID: UUID
     let title: String
     let symbol: String
     let isSelected: Bool
     let width: CGFloat
     let help: String
-    let action: () -> Void
+    let onSelect: () -> Void
+    let onClose: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
+        Button(action: onSelect) {
             HStack(spacing: 8) {
                 SidebarTile(symbol: symbol)
 
@@ -85,8 +99,16 @@ private struct SidebarRow: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(backgroundColor)
         }
-        .onHover { hovering in
-            isHovered = hovering
+        .overlay {
+            TabRowHitRepresentable(
+                windowID: windowID,
+                tabID: tabID,
+                title: title,
+                symbol: symbol,
+                onSelect: onSelect,
+                onClose: onClose,
+                onHover: { isHovered = $0 }
+            )
         }
         .animation(.easeInOut(duration: 0.14), value: isHovered)
         .animation(.easeInOut(duration: 0.16), value: isSelected)

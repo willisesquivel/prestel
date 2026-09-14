@@ -44,6 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         return controller
     }
+
+    @discardableResult
+    func createWindow(adopting tab: TerminalSession, near screenPoint: NSPoint) -> TerminalWindowController {
+        let controller = TerminalWindowController(model: TerminalModel(adopting: tab))
+        controllers[controller.model.id] = controller
+        controller.onClose = { [weak self] id in self?.controllers.removeValue(forKey: id) }
+        if let window = controller.window {
+            var frame = window.frame
+            frame.origin = TabInsertionGeometry.originForDetachedWindow(size: frame.size, drop: screenPoint)
+            window.setFrame(frame, display: false)
+            controller.showWindow(nil)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            DispatchQueue.main.async { controller.focusTerminal() }
+        }
+        return controller
+    }
+
     func openSettingsTab() {
         if let controller = keyController { controller.model.showSettings() }
         else { createWindow().model.showSettings() }

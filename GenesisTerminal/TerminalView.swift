@@ -74,8 +74,12 @@ struct TerminalSurface: View {
     @ObservedObject var model: TerminalModel
     var body: some View {
         if let surface = model.selectedTab?.surface {
+            // No .id() here on purpose: the container must persist per window
+            // so tab switches and cross-window MOVEs only swap which live
+            // surface is pinned into it. Recreating the host per selection
+            // lets speculative containers steal the shared surface and strand
+            // it when SwiftUI discards them, blanking the terminal.
             TerminalDirectHost(surface: surface)
-                .id(model.selectedID)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
         }
@@ -90,14 +94,16 @@ private struct TerminalDirectHost: NSViewRepresentable {
     let surface: GenesisTerminalView
 
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
-        pin(surface, in: container)
-        return container
+        // Never attach here: SwiftUI creates speculative hosts it may discard
+        // without inserting. Stealing the shared live surface into one of them
+        // orphans it and blanks the terminal. updateNSView always follows and
+        // is the only place that may attach.
+        NSView()
     }
 
     func updateNSView(_ container: NSView, context: Context) {
         let didAttach = surface.superview !== container
-        if didAttach {
+        if didAttach, shouldAttach(to: container) {
             pin(surface, in: container)
         }
         // Only focus when the selected surface is newly attached (or nothing else
@@ -112,7 +118,28 @@ private struct TerminalDirectHost: NSViewRepresentable {
         }
     }
 
+    /// A windowless container may be speculative (never inserted). Pulling a
+    /// live-in-window surface into one strands it when SwiftUI discards the
+    /// container, leaving a blank terminal. Windowed containers always win;
+    /// homeless surfaces, or ones stuck in a windowless container, attach anywhere.
+    private func shouldAttach(to container: NSView) -> Bool {
+        if container.window != nil { return true }
+        return surface.superview?.window == nil
+    }
+
     private func pin(_ surface: GenesisTerminalView, in container: NSView) {
+        // The container persists across tab switches now (no .id()), so evict
+        // the previously hosted surface. Otherwise every selected tab piles
+        // on top and switching appears to do nothing.
+        for subview in container.subviews where subview !== surface {
+            subview.removeFromSuperview()
+        }
+        // The container is dedicated to the terminal surface, so drop only our
+        // own stale edge constraints instead of accumulating a new set on
+        // every switch. Anything SwiftUI owns is left alone.
+        for constraint in container.constraints where constraint.firstItem is GenesisTerminalView || constraint.secondItem is GenesisTerminalView {
+            constraint.isActive = false
+        }
         surface.removeFromSuperview()
         surface.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(surface)

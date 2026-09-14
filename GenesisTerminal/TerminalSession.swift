@@ -275,7 +275,7 @@ enum ProcessInspection {
             }
         }
         let identities = jobs
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.9) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.9) {
             for (pid, seconds, micros) in identities {
                 var info = proc_bsdinfo()
                 if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout.size(ofValue: info))) > 0,

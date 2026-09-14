@@ -47,6 +47,16 @@ final class TerminalModel: ObservableObject {
         }
     }
 
+    /// Owns an existing live session. Does not spawn a replacement shell.
+    init(adopting tab: TerminalSession) {
+        id = UUID()
+        tabs = [tab]
+        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        selectedID = tab.id
+        history = [tab.id]
+        historyIndex = 0
+    }
+
     var selectedTab: TerminalSession? { tabs.first { $0.id == selectedID } }
     var filteredTabs: [TerminalSession] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -104,6 +114,44 @@ final class TerminalModel: ObservableObject {
         historyIndex = target
         selectedID = history[target]
         selectedTab?.refreshDirectoryFromProcess()
+    }
+
+    /// Reorder by stable tab identity. `insertionIndex` is a canonical index in
+    /// `tabs` (0...count) measured *before* the moving tab is removed. Moving
+    /// downward therefore has to account for the hole left by the removal.
+    func moveTab(_ id: UUID, to insertionIndex: Int) {
+        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return }
+        var destination = min(max(insertionIndex, 0), tabs.count)
+        if destination == from || destination == from + 1 { return }
+        let tab = tabs.remove(at: from)
+        if from < destination { destination -= 1 }
+        tabs.insert(tab, at: min(max(destination, 0), tabs.count))
+    }
+
+    /// Remove a tab from this window without terminating its process or recording recently-closed.
+    @discardableResult
+    func detachTab(_ id: UUID) -> TerminalSession? {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = tabs.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
+        history.removeAll { $0 == id }
+        historyIndex -= removedThroughCursor
+        if selectedID == id {
+            selectedID = nil
+            if !tabs.isEmpty { select(tabs[min(index, tabs.count - 1)].id) }
+        }
+        return tab
+    }
+
+    /// Take ownership of a live session already detached from another window.
+    func adopt(_ tab: TerminalSession, at insertionIndex: Int, selecting: Bool) {
+        guard !tabs.contains(where: { $0.id == tab.id }) else { return }
+        let index = min(max(insertionIndex, 0), tabs.count)
+        tabs.insert(tab, at: index)
+        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        searchText = ""
+        if selecting { select(tab.id) }
     }
 
     /// Call only after the window controller has resolved close confirmation.

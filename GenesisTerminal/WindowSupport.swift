@@ -176,7 +176,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         guard let tab = model.tabs.first(where: { $0.id == id }) else { return }
         if model.tabs.count == 1 { window?.performClose(nil); return }
         guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
-        model.closeTab(id)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            model.closeTab(id)
+        }
     }
     @objc func closeTerminalWindow(_ sender: Any?) { window?.performClose(sender) }
     @objc func nextTab(_ sender: Any?) { model.cycle(1) }

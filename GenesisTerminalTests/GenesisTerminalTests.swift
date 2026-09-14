@@ -255,6 +255,149 @@ struct GenesisTerminalTests {
         #expect(model.selectedID == second)
     }
 
+    @Test func tabReorderUsesStableIdentityAndFixesDownwardIndex() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        model.select(c)
+        // A B C D, move B between C and D → A C B D
+        model.moveTab(b, to: 3)
+        #expect(model.tabs.map(\.id) == [a, c, b, d])
+        #expect(model.selectedID == c)
+        model.moveTab(d, to: 0)
+        #expect(model.tabs.map(\.id) == [d, a, c, b])
+        #expect(model.selectedID == c)
+        model.moveTab(d, to: 4)
+        #expect(model.tabs.map(\.id) == [a, c, b, d])
+        model.moveTab(b, to: 2)
+        model.moveTab(b, to: 3)
+        #expect(model.tabs.map(\.id) == [a, c, b, d])
+    }
+
+    @Test func tabTransferMovesTheSameSessionWithoutClosingIt() {
+        let source = TerminalModel()
+        let destination = TerminalModel()
+        let kept = source.selectedID!
+        let moving = source.newTab()
+        let destFirst = destination.selectedID!
+        let destSecond = destination.newTab().id
+        source.select(kept)
+        let extracted = source.detachTab(moving.id)
+        #expect(extracted === moving)
+        #expect(moving.state != .closed)
+        #expect(source.tabs.map(\.id) == [kept])
+        #expect(source.selectedID == kept)
+        destination.adopt(moving, at: 1, selecting: true)
+        #expect(destination.tabs.map(\.id) == [destFirst, moving.id, destSecond])
+        #expect(destination.tabs[1] === moving)
+        #expect(destination.selectedID == moving.id)
+        #expect(!source.tabs.contains { $0.id == moving.id })
+    }
+
+    @Test func detachingSelectedTabSelectsANeighbor() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(second)
+        _ = model.detachTab(second)
+        #expect(model.selectedID == third)
+        #expect(model.tabs.map(\.id) == [first, third])
+    }
+
+    @Test func adoptingInitOwnsTheExistingTabAlone() {
+        let source = TerminalModel()
+        source.newTab()
+        let tab = source.tabs[1]
+        _ = source.detachTab(tab.id)
+        let adopted = TerminalModel(adopting: tab)
+        #expect(adopted.tabs.count == 1)
+        #expect(adopted.tabs[0] === tab)
+        #expect(adopted.selectedID == tab.id)
+        #expect(tab.state != .closed)
+    }
+
+    @Test func filteredInsertionMapsOntoCanonicalOrder() {
+        let a = UUID()
+        let b = UUID()
+        let c = UUID()
+        let d = UUID()
+        let visible = [a, c, d]
+        let canonical = [a, b, c, d]
+        #expect(TabInsertionGeometry.canonicalInsertionIndex(visibleInsertion: 0, visibleIDs: visible, canonicalIDs: canonical) == 0)
+        #expect(TabInsertionGeometry.canonicalInsertionIndex(visibleInsertion: 1, visibleIDs: visible, canonicalIDs: canonical) == 2)
+        #expect(TabInsertionGeometry.canonicalInsertionIndex(visibleInsertion: 2, visibleIDs: visible, canonicalIDs: canonical) == 3)
+        #expect(TabInsertionGeometry.canonicalInsertionIndex(visibleInsertion: 3, visibleIDs: visible, canonicalIDs: canonical) == 4)
+        let moving = c
+        #expect(TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 1, visibleIDs: visible))
+        #expect(TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 2, visibleIDs: visible))
+        #expect(!TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 0, visibleIDs: visible))
+        #expect(!TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 3, visibleIDs: visible))
+    }
+
+    @Test func insertionIndexUsesRowMidpointsNotHitRow() {
+        let rows = [
+            CGRect(x: 0, y: 200, width: 160, height: 28),
+            CGRect(x: 0, y: 171, width: 160, height: 28),
+            CGRect(x: 0, y: 142, width: 160, height: 28)
+        ]
+        #expect(TabInsertionGeometry.insertionIndex(at: 230, rows: rows) == 0)
+        #expect(TabInsertionGeometry.insertionIndex(at: 215, rows: rows) == 0)
+        #expect(TabInsertionGeometry.insertionIndex(at: 200, rows: rows) == 1)
+        #expect(TabInsertionGeometry.insertionIndex(at: 156, rows: rows) == 2)
+        #expect(TabInsertionGeometry.insertionIndex(at: 100, rows: rows) == 3)
+        #expect(TabInsertionGeometry.insertionIndex(at: 0, rows: []) == 0)
+    }
+
+    @Test func detachedWindowOriginStaysInsideTheVisibleFrame() {
+        let visible = CGRect(x: 100, y: 80, width: 800, height: 500)
+        let size = CGSize(width: 960, height: 650)
+        let origin = TabInsertionGeometry.clampedOrigin(size: size, drop: CGPoint(x: 120, y: 90), visible: visible)
+        #expect(origin.x == visible.minX)
+        #expect(origin.y == visible.minY)
+        let inset = CGRect(x: 0, y: 0, width: 1800, height: 1200)
+        let placed = TabInsertionGeometry.clampedOrigin(
+            size: CGSize(width: 960, height: 650),
+            drop: CGPoint(x: 400, y: 700),
+            visible: inset
+        )
+        #expect(placed.x >= inset.minX)
+        #expect(placed.y >= inset.minY)
+        #expect(placed.x + 960 <= inset.maxX)
+        #expect(placed.y + 650 <= inset.maxY)
+    }
+
+    @Test func liveSessionSurvivesReorderAndWindowTransfer() async throws {
+        let source = TerminalModel(directory: "/private/tmp")
+        let destination = TerminalModel(directory: "/")
+        let moving = source.selectedTab!
+        source.newTab()
+        moving.start()
+        destination.tabs[0].start()
+        defer { source.closeAll(); destination.closeAll() }
+        let pid = try #require(moving.process?.shellPid)
+        moving.process?.send(data: Array("printf 'MOVE_%s\\n' READY\r".utf8)[...])
+        try await eventually { buffer(moving).contains("MOVE_READY") }
+        source.moveTab(moving.id, to: 2)
+        #expect(source.tabs[1] === moving)
+        #expect(moving.process?.shellPid == pid)
+        #expect(moving.process?.running == true)
+        let extracted = try #require(source.detachTab(moving.id))
+        destination.adopt(extracted, at: 0, selecting: true)
+        #expect(destination.tabs[0] === moving)
+        #expect(moving.process?.shellPid == pid)
+        moving.process?.send(data: Array("printf 'STILL_%s\\n' HERE\r".utf8)[...])
+        try await eventually { buffer(moving).contains("STILL_HERE") }
+        #expect(moving.currentDirectory == "/private/tmp")
+        let adopted = TerminalModel(adopting: try #require(destination.detachTab(moving.id)))
+        defer { adopted.closeAll() }
+        #expect(adopted.tabs[0] === moving)
+        #expect(moving.process?.shellPid == pid)
+        #expect(buffer(moving).contains("MOVE_READY"))
+    }
+
     @Test func searchEditingPublishesSingleLineInputAndEscapeClearsFocus() throws {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -390,6 +533,152 @@ struct GenesisTerminalTests {
         model.sidebarVisible = false
         #expect(window.firstResponder === model.selectedTab?.surface)
         #expect(!box.textView.isEditingMode)
+    }
+
+    @Test func crossWindowDragMoveKeepsSurfaceHosted() async throws {
+        let app = try #require(AppDelegate.current)
+        let coordinator = TabDragCoordinator.shared
+        coordinator.resetForTests()
+        let sourceController = app.createWindow()
+        let destController = app.createWindow()
+        let sourceWindow = try #require(sourceController.window)
+        let destWindow = try #require(destController.window)
+        defer {
+            sourceWindow.orderOut(nil)
+            destWindow.orderOut(nil)
+            sourceController.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: sourceWindow))
+            destController.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: destWindow))
+            coordinator.resetForTests()
+        }
+        sourceController.model.newTab()
+        try await Task.sleep(for: .milliseconds(600))
+        sourceWindow.contentView?.layoutSubtreeIfNeeded()
+        destWindow.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+
+        let moving = try #require(sourceController.model.selectedTab)
+        let windowCountBefore = app.controllers.count
+        // Aim at the middle of the destination sidebar tab list.
+        let destFrame = destWindow.frame
+        let target = CGPoint(x: destFrame.minX + 86, y: destFrame.midY)
+
+        coordinator.begin(payload: TabDragPayload(dragID: UUID(), tabID: moving.id, sourceWindowID: sourceController.model.id), at: target, session: nil)
+        coordinator.updatePointer(target)
+        coordinator.finish(at: target)
+        try await Task.sleep(for: .milliseconds(600))
+        destWindow.contentView?.layoutSubtreeIfNeeded()
+
+        let inSource = sourceController.model.tabs.contains { $0.id == moving.id }
+        let inDest = destController.model.tabs.contains { $0.id == moving.id }
+        #expect(!inSource, "moving tab still in source")
+        #expect(inDest, "moving tab never arrived in destination (windows: \(app.controllers.count) before \(windowCountBefore))")
+        #expect(destController.model.selectedID == moving.id)
+        func contains(_ root: NSView, _ target: NSView) -> Bool {
+            if root === target { return true }
+            return root.subviews.contains { contains($0, target) }
+        }
+        let surface = moving.surface
+        var inDestHierarchy = false
+        var inSourceHierarchy = false
+        if let surface, let destRoot = destWindow.contentView {
+            inDestHierarchy = contains(destRoot, surface)
+        }
+        if let surface, let sourceRoot = sourceWindow.contentView {
+            inSourceHierarchy = contains(sourceRoot, surface)
+        }
+        var chain: [String] = []
+        var cursor: NSView? = surface?.superview
+        while let view = cursor, chain.count < 6 {
+            chain.append("\(type(of: view)) frame=\(view.frame) window=\(view.window == nil ? "nil" : "set")")
+            cursor = view.superview
+        }
+        #expect(inDestHierarchy, "surface not under dest contentView; inSourceHierarchy=\(inSourceHierarchy); superview chain: \(chain); surface frame: \(String(describing: surface?.frame)); dest selected: \(String(describing: destController.model.selectedTab?.id))")
+        #expect(moving.surface?.window === destWindow)
+    }
+
+    @Test func adoptedLiveTabAttachesSurfaceInDestinationWindow() async throws {
+        let sourceModel = TerminalModel()
+        let destModel = TerminalModel()
+        let sourceController = TerminalWindowController(model: sourceModel)
+        let destController = TerminalWindowController(model: destModel)
+        let sourceWindow = try #require(sourceController.window)
+        let destWindow = try #require(destController.window)
+        defer {
+            sourceWindow.orderOut(nil)
+            destWindow.orderOut(nil)
+            sourceController.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: sourceWindow))
+            destController.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: destWindow))
+        }
+        sourceWindow.orderFrontRegardless()
+        destWindow.orderFrontRegardless()
+        sourceWindow.contentView?.layoutSubtreeIfNeeded()
+        destWindow.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(600))
+        sourceWindow.contentView?.layoutSubtreeIfNeeded()
+        destWindow.contentView?.layoutSubtreeIfNeeded()
+
+        let moving = try #require(sourceModel.selectedTab)
+        #expect(moving.state == .running)
+        #expect(moving.surface?.window === sourceWindow)
+
+        // Mirror TabDragCoordinator.commit cross-window branch.
+        guard let tab = sourceModel.detachTab(moving.id) else {
+            Issue.record("detach failed")
+            return
+        }
+        destModel.adopt(tab, at: destModel.tabs.count, selecting: true)
+        destController.refresh()
+        sourceController.refresh()
+        destWindow.makeKeyAndOrderFront(nil)
+
+        try await Task.sleep(for: .milliseconds(600))
+        destWindow.contentView?.layoutSubtreeIfNeeded()
+        sourceWindow.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(destModel.selectedTab === moving)
+        #expect(sourceModel.selectedTab?.id != moving.id)
+        let surface = try #require(moving.surface)
+        #expect(surface.window === destWindow)
+        #expect(surface.frame.height > 10)
+        #expect(surface.superview != nil)
+    }
+
+    @Test func switchingTabsHostsOnlyTheSelectedSurface() async throws {
+        let model = TerminalModel()
+        let controller = TerminalWindowController(model: model)
+        let window = try #require(controller.window)
+        defer {
+            window.orderOut(nil)
+            controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+        }
+        window.orderFrontRegardless()
+        model.newTab()
+        model.tabs.forEach { $0.start() }
+        try await Task.sleep(for: .milliseconds(600))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
+
+        let first = model.tabs[0]
+        let second = model.tabs[1]
+        model.select(second.id)
+        try await Task.sleep(for: .milliseconds(400))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let selectedSurface = try #require(model.selectedTab?.surface)
+        #expect(selectedSurface === second.surface)
+        #expect(selectedSurface.window === window)
+        // The previously selected surface must be evicted, never stacked
+        // underneath: piled-up surfaces all render at once and switching
+        // appears to do nothing.
+        #expect(first.surface?.superview == nil)
+        let hostedCount = selectedSurface.superview?.subviews.filter { $0 is GenesisTerminalView }.count ?? -1
+        #expect(hostedCount == 1)
+
+        model.select(first.id)
+        try await Task.sleep(for: .milliseconds(400))
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(first.surface?.window === window)
+        #expect(second.surface?.superview == nil)
     }
 
     private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {

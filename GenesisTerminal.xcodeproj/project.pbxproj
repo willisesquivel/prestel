@@ -15,6 +15,7 @@
 		A10000000000000000000007 /* ShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ShellView.swift */; };
 		A10000000000000000000008 /* TerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* TerminalSession.swift */; };
 		A10000000000000000000009 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* TerminalView.swift */; };
+		A10000000000000000000010 /* TabDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* TabDrag.swift */; };
 		A1000000000000000000000A /* GenesisTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* GenesisTerminalTests.swift */; };
 		A1000000000000000000000B /* Genesis.icon in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* Genesis.icon */; };
 		C10000000000000000000001 = {isa = PBXBuildFile; productRef = C30000000000000000000001; };
@@ -40,6 +41,7 @@
 		A20000000000000000000007 /* ShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellView.swift; sourceTree = "<group>"; };
 		A20000000000000000000008 /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSession.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
+		A20000000000000000000010 /* TabDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabDrag.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* GenesisTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenesisTerminalTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000000B /* Genesis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Genesis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000C /* GenesisTerminalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GenesisTerminalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -76,6 +78,7 @@
 				A20000000000000000000007,
 				A20000000000000000000008,
 				A20000000000000000000009,
+				A20000000000000000000010,
 			);
 			path = GenesisTerminal;
 			sourceTree = "<group>";
@@ -160,6 +163,7 @@
 				A10000000000000000000007,
 				A10000000000000000000008,
 				A10000000000000000000009,
+				A10000000000000000000010,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
