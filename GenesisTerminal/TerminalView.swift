@@ -4,33 +4,30 @@ import SwiftUI
 
 @MainActor
 final class GenesisTerminalView: SwiftTerm.TerminalView {
-    let scrollState = TerminalScrollState()
     func applyPreferences() {
         let stored = UserDefaults.standard.double(forKey: "terminalFontSize")
         font = .monospacedSystemFont(ofSize: stored == 0 ? 13 : min(32, max(9, stored)), weight: .regular)
         optionAsMetaKey = UserDefaults.standard.bool(forKey: "optionAsMeta")
         refreshColorsForCurrentAppearance()
         scrollerStyle = NSScroller.preferredScrollerStyle
-        notifyUpdateChanges = true
         registerForDraggedTypes([.fileURL, .string])
+        let notifications = NSWorkspace.shared.notificationCenter
+        notifications.removeObserver(self, name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        notifications.addObserver(self, selector: #selector(accessibilityDisplayOptionsChanged),
+                                  name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
-    /// Re-resolves dynamic system colors for the current effective appearance.
-    ///
-    /// `NSColor.textColor.withAlphaComponent(_)` (and `textBackgroundColor`
-    /// with alpha) freezes to a static color resolved in whatever appearance
-    /// was current at call time — verified: a 0.5-alpha textBackgroundColor
-    /// stays white in DarkAqua, and textColor with alpha 1 stays black in
-    /// DarkAqua. SwiftTerm's `backgroundOpacity` setter works exactly that
-    /// way, so the frozen `terminal.foregroundColor/backgroundColor` RGBs and
-    /// color caches must be refreshed every time the appearance changes.
-    /// Without this the SwiftUI chrome (driven by `colorScheme`, which *does*
-    /// update — the detail surface in your screenshot did flip to light)
-    /// diverges from the terminal, leaving e.g. white dark-mode text on a
-    /// light detail surface until relaunch.
+    isolated deinit { NSWorkspace.shared.notificationCenter.removeObserver(self) }
+
+    /// Resolve colors in this view's appearance before SwiftTerm freezes their RGB
+    /// values for rendering and terminal color queries (including background tabs).
     func refreshColorsForCurrentAppearance() {
-        configureNativeColors()
-        backgroundOpacity = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            nativeForegroundColor = NSColor.textColor.usingColorSpace(.deviceRGB) ?? .textColor
+            nativeBackgroundColor = NSColor.textBackgroundColor.usingColorSpace(.deviceRGB) ?? .textBackgroundColor
+            backgroundOpacity = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0
+        }
     }
+    @objc private func accessibilityDisplayOptionsChanged() { refreshColorsForCurrentAppearance() }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         refreshColorsForCurrentAppearance()
@@ -71,24 +68,6 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
         return true
     }
 
-}
-
-@MainActor
-final class TerminalScrollState: ObservableObject {
-    @Published var scrollbackRows = 0
-    @Published var fraction = 1.0
-    func sync(_ surface: SwiftTerm.TerminalView) {
-        let snapshot = surface.terminalStateSnapshot()
-        let position = surface.scrollPosition
-        let thumb = surface.scrollThumbsize
-        let count: Int
-        if thumb == 0 { count = 0 }
-        else if position > 0 { count = Int((Double(snapshot.viewportRow) / position).rounded()) }
-        else { count = max(scrollbackRows, Int(CGFloat(snapshot.dimensions.rows) / max(thumb, 0.001)) - snapshot.dimensions.rows) }
-        if scrollbackRows != count { scrollbackRows = count }
-        let normalized = count == 0 ? 1 : position
-        if abs(fraction - normalized) > 0.0001 { fraction = normalized }
-    }
 }
 
 struct TerminalSurface: View {

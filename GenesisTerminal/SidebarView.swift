@@ -7,35 +7,35 @@ struct SidebarView: View {
     @FocusState private var focusedTarget: SidebarFocusTarget?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Search capsule sits below the native titlebar with the same top
-            // clearance as before, so rows never slide under window controls.
+        ScrollView(.vertical) {
+            VStack(spacing: ShellMetrics.sidebarRowSpacing) {
+                ForEach(model.filteredTabs) { session in
+                    SidebarRow(
+                        title: session.title,
+                        symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+                        isSelected: model.selectedID == session.id,
+                        width: width - ShellMetrics.sidebarHorizontalInset * 2,
+                        help: "\(session.title) — \(session.directory)"
+                    ) {
+                        model.select(session.id)
+                    }
+                    .focused($focusedTarget, equals: .item(session.id))
+                    .contextMenu { Button("Close Tab") { closeTab(session.id) } }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
+        }
+        // AppKit needs the native scroller to render the safe-area edge effect.
+        .scrollIndicators(.automatic)
+        .safeAreaBar(edge: .top, spacing: 0) {
             SidebarSearchField(text: $model.searchText)
-                .frame(width: width - ShellMetrics.sidebarHorizontalInset * 2)
+                .frame(height: ShellMetrics.searchHeight)
+                .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
+                .frame(width: width)
                 .padding(.top, 42)
                 .focused($focusedTarget, equals: .search)
-
-            ScrollView(.vertical) {
-                VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                    ForEach(model.filteredTabs) { session in
-                        SidebarRow(
-                            title: session.title,
-                            symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
-                            isSelected: model.selectedID == session.id,
-                            width: width - ShellMetrics.sidebarHorizontalInset * 2,
-                            help: "\(session.title) — \(session.directory)"
-                        ) {
-                            model.select(session.id)
-                        }
-                        .focused($focusedTarget, equals: .item(session.id))
-                        .contextMenu { Button("Close Tab") { closeTab(session.id) } }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
-            }
-            .scrollIndicators(.hidden)
         }
         .scrollClipDisabled()
         .scrollEdgeEffectStyle(.soft, for: .top)

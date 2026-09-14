@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftTerm
+import SwiftUI
 import Testing
 @testable import GenesisTerminal
 
@@ -217,6 +218,176 @@ struct GenesisTerminalTests {
     private func buffer(_ session: TerminalSession) -> String {
         session.surface.map { String(decoding: $0.getBufferAsData(), as: UTF8.self) } ?? ""
     }
+    @Test func searchFieldTabDoesNotInsertGlyph() {
+        let textView = SearchEditorTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 20))
+        textView.string = "ab"
+        textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        #expect(!textView.string.contains("\t"), "Tab inserted a glyph into the one-line field")
+        #expect(textView.string == "ab")
+    }
+
+    @Test func searchFieldAcceptsTabFocusBeforeEditing() {
+        // A permanently-editable field must accept first responder while
+        // still idle, or Tab can never enter it (catch-22 with an
+        // editing-gated acceptsFirstResponder).
+        let textView = SearchEditorTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 20))
+        #expect(!textView.isEditingMode)
+        #expect(textView.acceptsFirstResponder, "idle search editor refuses Tab focus")
+    }
+
+    @Test func closingEarlierTabPreservesBackAndForwardHistory() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.navigate(-1)
+        #expect(model.selectedID == second)
+        model.closeTab(first)
+        #expect(!model.canGoBack)
+        #expect(model.canGoForward)
+        model.navigate(1)
+        #expect(model.selectedID == third)
+        model.navigate(-1)
+        #expect(model.selectedID == second)
+    }
+
+    @Test func searchEditingPublishesSingleLineInputAndEscapeClearsFocus() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let box = SearchTextBoxView(frame: NSRect(x: 0, y: 0, width: 180, height: 20))
+        window.contentView?.addSubview(box)
+        var query = ""
+        let coordinator = SearchTextBox.Coordinator(text: Binding(get: { query }, set: { query = $0 }))
+        box.textView.delegate = coordinator
+        #expect(window.makeFirstResponder(box.textView))
+        box.textView.insertText("日本\nhello\tworld", replacementRange: NSRange(location: 0, length: 0))
+        #expect(box.stringValue == "日本 hello world")
+        #expect(query == box.stringValue)
+        box.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(query == "日本 hello world")
+        box.textView.doCommand(by: #selector(NSStandardKeyBindingResponding.complete(_:)))
+        #expect(query.isEmpty)
+        #expect(box.stringValue.isEmpty)
+        #expect(!box.textView.isEditingMode)
+        #expect(window.firstResponder !== box.textView)
+    }
+
+    @Test func longSearchScrollsWithoutGrowingCapsuleAndRewindsOnBlur() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let box = SearchTextBoxView(frame: NSRect(x: 0, y: 0, width: 140, height: 20))
+        window.contentView?.addSubview(box)
+        box.layoutSubtreeIfNeeded()
+        window.makeFirstResponder(box.textView)
+        let longQuery = String(repeating: "long query 文 ", count: 30)
+        box.textView.insertText(longQuery, replacementRange: NSRange(location: 0, length: 0))
+        #expect(box.frame.width == 140)
+        #expect(box.textView.frame.width > box.contentSize.width)
+        #expect(box.textView.frame.height == box.contentSize.height)
+        #expect(box.contentView.bounds.minX > 0)
+        window.makeFirstResponder(nil)
+        #expect(!box.textView.isEditingMode)
+        #expect(box.contentView.bounds.minX == 0)
+        #expect(box.textView.selectedRange().length == 0)
+    }
+
+    @Test func searchSelectsAllOnEntryAndDoesNotReselectAfterBlur() async {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let box = SearchTextBoxView(frame: NSRect(x: 0, y: 0, width: 180, height: 20))
+        window.contentView?.addSubview(box)
+        box.stringValue = "文🙂 search"
+        window.makeFirstResponder(box.textView)
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(box.textView.selectedRange() == NSRange(location: 0, length: (box.stringValue as NSString).length))
+        window.makeFirstResponder(nil)
+        window.makeFirstResponder(box.textView)
+        window.makeFirstResponder(nil)
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(box.textView.selectedRange().length == 0)
+        #expect(!box.textView.isEditable)
+    }
+
+    @Test func terminalColorsResolveAgainstTheViewsAppearance() throws {
+        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+        for name in [NSAppearance.Name.darkAqua, .aqua] {
+            view.appearance = NSAppearance(named: name)
+            view.refreshColorsForCurrentAppearance()
+            let color = try #require(view.nativeForegroundColor.usingColorSpace(.deviceRGB))
+            let background = try #require(view.nativeBackgroundColor.usingColorSpace(.deviceRGB))
+            #expect(name == .darkAqua ? color.redComponent > background.redComponent : color.redComponent < background.redComponent)
+            #expect(view.backgroundOpacity == (NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? 1 : 0))
+        }
+    }
+
+    @Test func sidebarKeepsRowsBelowSearchAtRest() async throws {
+        let model = TerminalModel()
+        for _ in 0..<30 { model.newTab() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 172, height: 650),
+                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        let host = NSHostingView(rootView: SidebarView(model: model, width: 172, closeTab: { _ in }).ignoresSafeArea())
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 172, height: 650)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        host.layoutSubtreeIfNeeded()
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        let list = try #require(scrollViews(in: host).first { !($0 is SearchTextBoxView) })
+        #expect(list.contentInsets.top >= 72)
+    }
+
+    @Test func searchCompositionAndUndoPublishOnlyCommittedText() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let box = SearchTextBoxView(frame: NSRect(x: 0, y: 0, width: 180, height: 20))
+        window.contentView?.addSubview(box)
+        var query = ""
+        let coordinator = SearchTextBox.Coordinator(text: Binding(get: { query }, set: { query = $0 }))
+        let editor = box.textView
+        editor.delegate = coordinator
+        window.makeFirstResponder(editor)
+        let undo = try #require(editor.undoManager)
+        // The test calls input APIs directly, so model separate input events explicitly.
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        editor.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.hasMarkedText())
+        #expect(query.isEmpty)
+        editor.insertText("日本", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!editor.hasMarkedText())
+        #expect(query == "日本", "Committed IME text must reach the binding")
+        undo.endUndoGrouping()
+        editor.breakUndoCoalescing()
+        undo.beginUndoGrouping()
+        editor.insertText(" test", replacementRange: NSRange(location: 2, length: 0))
+        #expect(query == "日本 test")
+        undo.endUndoGrouping()
+        undo.undo()
+        #expect(query == "日本", "Undo should remove only the later edit")
+        window.makeFirstResponder(nil)
+    }
+
+    @Test func hidingSidebarReleasesSearchFocus() async throws {
+        let model = TerminalModel()
+        let controller = TerminalWindowController(model: model)
+        let window = try #require(controller.window)
+        defer { controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window)) }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(model.selectedTab?.surface?.window === window)
+        let box = SearchTextBoxView(frame: NSRect(x: 0, y: 0, width: 180, height: 20))
+        window.contentView?.addSubview(box)
+        window.makeFirstResponder(box.textView)
+        #expect(box.textView.isEditingMode)
+        model.sidebarVisible = false
+        #expect(window.firstResponder === model.selectedTab?.surface)
+        #expect(!box.textView.isEditingMode)
+    }
+
     private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(12)
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }

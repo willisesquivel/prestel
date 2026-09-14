@@ -3,8 +3,8 @@
 A macOS terminal with a glass window treatment, inset detail surface,
 collapsible sidebar, custom rows, and a search capsule.
 Every sidebar row is a **terminal tab** backed by its own real PTY running
-the account login shell. No floating chrome: window controls are the native
-titlebar buttons, and tab/sidebar commands live in the menu bar.
+the account login shell. Window controls are drawn in the shell, and tab/sidebar commands are also
+available in the menu bar.
 
 ## Status: real PTY via SwiftTerm (integration branch)
 
@@ -44,3 +44,15 @@ Xcode resolves SwiftTerm on first build (network required once).
   search, history, recently-closed, descriptors.
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
+
+## OpenCode background
+
+OpenCode's default theme paints its own opaque background. To use Genesis's
+glass terminal background, choose `/theme` → `system`, or set `"theme": "system"`
+in `~/.config/opencode/tui.json` and restart OpenCode. Its system theme uses
+terminal-default text and background colors while keeping panel and selection
+colors distinct. See [OpenCode themes](https://opencode.ai/docs/themes/).
+
+The sidebar search uses a dedicated `NSTextView`, with its own undo history,
+single-line paste, horizontal caret scrolling, select-all on focus, and Escape
+to clear and dismiss. It does not use `TextField` or `NSTextField`.

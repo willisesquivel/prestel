@@ -9,6 +9,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     var onClose: ((UUID) -> Void)?
     private var updates: AnyCancellable?
     private var selectionUpdates: AnyCancellable?
+    private var sidebarUpdates: AnyCancellable?
     private var pendingRefresh = false
     private var savedForQuit: WindowDescriptor?
     private var keyMonitor: Any?
@@ -41,6 +42,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         updates = model.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }
         selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.refresh(); self?.focusTerminal() }
+        }
+        sidebarUpdates = model.$sidebarVisible.dropFirst().sink { [weak self] visible in
+            guard !visible, let self, let window = self.window,
+                  window.firstResponder is SearchEditorTextView else { return }
+            window.makeFirstResponder(self.model.selectedTab?.surface)
         }
         // SwiftTerm's view methods are not overridable from here, so intercept the
         // requested Cmd/Ctrl/Option navigation combos before dispatch. The terminal
@@ -192,6 +198,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     func windowWillClose(_ notification: Notification) {
         updates = nil
         selectionUpdates = nil
+        sidebarUpdates = nil
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         model.closeAll()

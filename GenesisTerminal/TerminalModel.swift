@@ -103,6 +103,7 @@ final class TerminalModel: ObservableObject {
         guard history.indices.contains(target) else { return }
         historyIndex = target
         selectedID = history[target]
+        selectedTab?.refreshDirectoryFromProcess()
     }
 
     /// Call only after the window controller has resolved close confirmation.
@@ -113,8 +114,10 @@ final class TerminalModel: ObservableObject {
         tabs[index].close()
         tabs.remove(at: index)
         subscriptions.removeValue(forKey: id)
+        // Preserve the cursor's position when entries before it disappear.
+        let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
         history.removeAll { $0 == id }
-        historyIndex = min(historyIndex, history.count - 1)
+        historyIndex -= removedThroughCursor
         if selectedID == id {
             selectedID = nil
             if !tabs.isEmpty { select(tabs[min(index, tabs.count - 1)].id) }
