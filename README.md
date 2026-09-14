@@ -45,13 +45,69 @@ Xcode resolves SwiftTerm on first build (network required once).
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
 
-## OpenCode background
+## TUI transparency (glass background)
 
-OpenCode's default theme paints its own opaque background. To use Genesis's
-glass terminal background, choose `/theme` → `system`, or set `"theme": "system"`
-in `~/.config/opencode/tui.json` and restart OpenCode. Its system theme uses
-terminal-default text and background colors while keeping panel and selection
-colors distinct. See [OpenCode themes](https://opencode.ai/docs/themes/).
+Genesis renders default-background cells transparently so the glass shows
+through (`backgroundOpacity = 0`, `window.isOpaque = false`; SwiftTerm skips
+filling default-bg runs). Any TUI inherits it when it paints the
+terminal-default background (`none`) instead of an explicit opaque fill —
+the same pattern as the OpenCode `system` theme (text/background `none`).
+Explicit hex/black fills stay opaque by design; panels, selections, and
+diffs often keep subtle fills for readability.
+
+Genesis side (automatic, locked by tests): `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `TERM_PROGRAM=Genesis`, plus OSC 10/11 answers from
+the native colors so auto-themes detect light/dark. Check with
+`echo $COLORTERM` (expect `truecolor`).
+
+Recipes (restart the TUI after changing):
+
+- OpenCode: `/theme` → `system`, or `"theme": "system"` in
+  `~/.config/opencode/tui.json`. See [OpenCode themes](https://opencode.ai/docs/themes/).
+- KiloCode (same TUI engine, fork of OpenCode): its default is the opaque
+  `kilo` theme, so open the `/themes` picker and select `system` (or
+  `transparent` if listed). In config files the key belongs in
+  `~/.config/kilo/tui.jsonc` (or `tui.json`) as `"theme": "system"` —
+  `theme`/`tui` keys inside `kilo.json` are deprecated and ignored — then
+  restart. Note `system` keeps subtle panel fills by design, so only the
+  main surface turns to glass.
+- Claude Code: `/theme` → `auto` with `dark-ansi` / `light-ansi` (these defer
+  to the terminal's 16-color palette). Custom themes live in
+  `~/.claude/themes/`; `userMessageBackground` paints a fill in fullscreen
+  mode, so leave it unset for full glass.
+- Codex CLI: `/theme` picker or `tui.theme` in `~/.codex/config.toml`;
+  custom syntax themes are `.tmTheme` files in `~/.codex/themes/`. There is
+  no stable `transparent_background` flag yet (upstream feature request is
+  open); the default already leaves most surfaces on the terminal bg.
+- Gemini CLI: `/theme` → `ANSI` / `ANSI Light` for terminal-matched colors;
+  light/dark auto-switching works via OSC 11 (`ui.autoThemeSwitching`,
+  on by default). Custom themes via `ui.customThemes` in `settings.json`.
+- Neovim (plain vim works with just `hi Normal ctermbg=NONE guibg=NONE`;
+  Neovim 0.10+ additionally auto-enables `termguicolors` on truecolor
+  terminals, so the colorscheme's opaque `guibg` wins unless cleared *after*
+  it loads — a bare line in `init.lua` runs too early under lazy.nvim and
+  gets overwritten). Use a `ColorScheme` autocmd and keep truecolor on:
+  ```lua
+  vim.opt.termguicolors = true
+  vim.api.nvim_create_autocmd("ColorScheme", {
+    callback = function()
+      for _, g in ipairs({ "Normal", "NormalNC", "NormalFloat",
+                            "SignColumn", "EndOfBuffer", "FloatBorder" }) do
+        vim.api.nvim_set_hl(0, g, { bg = "NONE", ctermbg = "NONE" })
+      end
+    end,
+  })
+  ```
+  Then `:colorscheme <your-theme>` to trigger it. Diagnose with
+  `:verbose hi Normal` (shows what last set the fill). Colorscheme-native
+  flags (`transparent = true` in tokyonight, `transparent_background` in
+  catppuccin) or `transparent.nvim` work too.
+- tmux (passthrough): `set -g default-terminal "tmux-256color"` plus
+  `set -ag terminal-overrides ",xterm-256color:RGB"` so truecolor and OSC
+  queries reach Genesis.
+- Any other TUI (helix, lazygit, btop/htop, yazi, k9s, fzf, bat, …): look for
+  background `none` / `transparent` / `default` in its theme and pick that.
+  Same rule everywhere: `none` = glass, explicit color = opaque.
 
 The sidebar search uses a dedicated `NSTextView`, with its own undo history,
 single-line paste, horizontal caret scrolling, select-all on focus, and Escape

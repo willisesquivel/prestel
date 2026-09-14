@@ -23,6 +23,17 @@ enum ShellConfiguration {
     static var environment: [String] {
         var values = ProcessInfo.processInfo.environment
         for key in ["XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID", "SHLVL", "_", "PWD", "OLDPWD"] { values.removeValue(forKey: key) }
+        // Universal TUI transparency contract (same pattern as OpenCode `system`):
+        // Genesis renders default-background cells transparently so the glass
+        // shows through (SwiftTerm skips filling default-bg runs; see
+        // AppleTerminalView). TUIs only inherit the glass when they paint
+        // `none`/default backgrounds. These vars let every TUI opt in:
+        // - TERM=xterm-256color: widely-recognized 256-color entry.
+        // - COLORTERM=truecolor: advertises 24-bit color (OpenCode/Gemini docs
+        //   check `echo $COLORTERM` for `truecolor`/`24bit`).
+        // - TERM_PROGRAM=Genesis (+ version): lets shells/TUIs detect us
+        //   (e.g. zsh disables Apple's OSC 7 hook; Gemini/Claude auto-themes
+        //   use OSC 11, which SwiftTerm already answers from our native colors).
         values["TERM"] = "xterm-256color"
         values["COLORTERM"] = "truecolor"
         values["TERM_PROGRAM"] = "Genesis"

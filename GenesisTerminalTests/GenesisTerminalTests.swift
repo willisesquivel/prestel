@@ -85,6 +85,10 @@ struct GenesisTerminalTests {
         #expect(ShellConfiguration.localDirectory(fromOSC: "https://example.com/tmp") == nil)
         #expect(ShellConfiguration.loginShell.hasPrefix("/"))
         #expect(ShellConfiguration.environment.contains("TERM=xterm-256color"))
+        // Universal TUI glass contract: truecolor advertisement + identity so
+        // every TUI (not just OpenCode `system`) can inherit the terminal bg.
+        #expect(ShellConfiguration.environment.contains("COLORTERM=truecolor"))
+        #expect(ShellConfiguration.environment.contains("TERM_PROGRAM=Genesis"))
     }
 
     @Test func parserHandlesFragmentedUTF8AndAlternateScreen() {
