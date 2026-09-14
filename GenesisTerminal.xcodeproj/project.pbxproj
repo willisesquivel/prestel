@@ -41,7 +41,7 @@
 		A20000000000000000000008 /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSession.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* GenesisTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenesisTerminalTests.swift; sourceTree = "<group>"; };
-		A2000000000000000000000B /* GenesisTerminal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GenesisTerminal.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000000B /* Genesis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Genesis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000C /* GenesisTerminalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GenesisTerminalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000D /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000000E /* Genesis.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Icon/Genesis.icon; sourceTree = SOURCE_ROOT; };
@@ -197,12 +197,13 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = Genesis;
-				INFOPLIST_KEY_CFBundleDisplayName = "Genesis Terminal";
+				INFOPLIST_KEY_CFBundleDisplayName = Genesis;
 				INFOPLIST_KEY_CFBundleIconName = Genesis;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				MARKETING_VERSION = 0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminal;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Genesis;
+				SWIFT_MODULE_NAME = GenesisTerminal;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -217,18 +218,19 @@
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = Genesis;
-				INFOPLIST_KEY_CFBundleDisplayName = "Genesis Terminal";
+				INFOPLIST_KEY_CFBundleDisplayName = Genesis;
 				INFOPLIST_KEY_CFBundleIconName = Genesis;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				MARKETING_VERSION = 0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminal;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Genesis;
+				SWIFT_MODULE_NAME = GenesisTerminal;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 			};
 			name = Release;
 		};
-		B10000000000000000000005 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminalTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GenesisTerminal.app/Contents/MacOS/GenesisTerminal";}; name = Debug;};
-		B10000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminalTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/GenesisTerminal.app/Contents/MacOS/GenesisTerminal";}; name = Release;};
+		B10000000000000000000005 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminalTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Genesis.app/Contents/MacOS/Genesis";}; name = Debug;};
+		B10000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = com.example.GenesisTerminalTests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 6.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Genesis.app/Contents/MacOS/Genesis";}; name = Release;};
 /* End XCBuildConfiguration section */
 
 /* Begin XCRemoteSwiftPackageReference section */

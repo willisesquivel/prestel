@@ -1,6 +1,6 @@
-# Genesis Terminal
+# Genesis
 
-A macOS terminal with a glass window treatment, inset detail surface,
+A native macOS terminal with a glass window treatment, inset detail surface,
 collapsible sidebar, custom rows, and a search capsule.
 Every sidebar row is a **terminal tab** backed by its own real PTY running
 the account login shell. Window controls are drawn in the shell, and tab/sidebar commands are also
@@ -17,7 +17,7 @@ available in the menu bar.
 
 ## Run
 
-Open `GenesisTerminal.xcodeproj` in Xcode 26.5+ and run the `GenesisTerminal` scheme.
+Open `GenesisTerminal.xcodeproj` in Xcode 26.5+ and run the `GenesisTerminal` scheme; the built application is named `Genesis`.
 Xcode resolves SwiftTerm on first build (network required once).
 
 - Baseline window 960×650, min 760×540.
