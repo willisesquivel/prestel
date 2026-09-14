@@ -43,6 +43,16 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
         // created in dark mode shows correct colors when selected in light.
         if window != nil {
             refreshColorsForCurrentAppearance()
+            if let window {
+                // Remember the terminal as the window's default focus target so
+                // AppKit focuses it when the window first becomes key. The
+                // explicit makeFirstResponder below covers tab switches, when
+                // the window is already key.
+                window.initialFirstResponder = self
+                if window.isKeyWindow {
+                    window.makeFirstResponder(self)
+                }
+            }
         }
     }
     override func copy(_ sender: Any) {
@@ -60,6 +70,7 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
         window?.makeFirstResponder(self)
         return true
     }
+
 }
 
 @MainActor
@@ -106,11 +117,19 @@ private struct TerminalDirectHost: NSViewRepresentable {
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        if surface.superview !== container {
+        let didAttach = surface.superview !== container
+        if didAttach {
             pin(surface, in: container)
         }
-        if let window = container.window, window.isKeyWindow {
-            window.makeFirstResponder(surface)
+        // Only focus when the selected surface is newly attached (or nothing else
+        // has focus). Focusing on every model update would pull focus out of the
+        // sidebar search field.
+        if let window = container.window {
+            window.initialFirstResponder = surface
+            if window.isKeyWindow,
+               (didAttach || window.firstResponder === window) {
+                window.makeFirstResponder(surface)
+            }
         }
     }
 

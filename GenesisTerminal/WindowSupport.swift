@@ -11,6 +11,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     private var selectionUpdates: AnyCancellable?
     private var pendingRefresh = false
     private var savedForQuit: WindowDescriptor?
+    private var keyMonitor: Any?
 
     init(model: TerminalModel) {
         self.model = model
@@ -41,6 +42,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.refresh(); self?.focusTerminal() }
         }
+        // SwiftTerm's view methods are not overridable from here, so intercept the
+        // requested Cmd/Ctrl/Option navigation combos before dispatch. The terminal
+        // view itself stays first responder, keeping the focused caret visible.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.interceptTerminalKeyDown(event) ?? event
+        }
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("Use init(model:)") }
@@ -61,8 +68,101 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         AppDelegate.current?.commandRevision &+= 1
     }
     func focusTerminal() {
-        guard window?.isKeyWindow == true, let surface = model.selectedTab?.surface else { return }
-        window?.makeFirstResponder(surface)
+        focusTerminal(retries: 10)
+    }
+
+    /// Focuses the selected terminal, retrying briefly while the window is still
+    /// becoming key or SwiftUI is still attaching the surface (app launch).
+    /// Never steals focus from an active text field (sidebar search, Settings).
+    private func focusTerminal(retries: Int) {
+        guard let window, let surface = model.selectedTab?.surface else { return }
+        // An NSText field editor means the user is typing in search/Settings.
+        if window.firstResponder is NSText { return }
+        if window.isKeyWindow, surface.window === window {
+            window.makeFirstResponder(surface)
+            return
+        }
+        guard retries > 0 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.focusTerminal(retries: retries - 1)
+        }
+    }
+
+    /// Translates macOS-style navigation/deletion combos into shell codes.
+    /// Returns nil when the event was handled (so AppKit does not also dispatch
+    /// it). Only acts when this window's terminal itself is focused, so sidebar
+    /// search and Settings fields keep their normal behavior.
+    private func interceptTerminalKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard let window, event.window === window, window.isKeyWindow,
+              let surface = model.selectedTab?.surface,
+              window.firstResponder === surface else { return event }
+        let flags = event.modifierFlags
+        let hasControl = flags.contains(.control)
+        let hasOption = flags.contains(.option)
+        let hasCommand = flags.contains(.command)
+        let hasShift = flags.contains(.shift)
+        let code = event.keyCode
+        let isArrow = code == 123 || code == 124 || code == 125 || code == 126
+        let isDelete = code == 51 || code == 117
+
+        // Cmd+arrows: line start/end, document top/bottom.
+        if isArrow && hasCommand && !hasControl && !hasOption && !hasShift {
+            switch code {
+            case 123: // Cmd+Left: beginning of line
+                surface.send([0x01])
+                return nil
+            case 124: // Cmd+Right: end of line
+                surface.send([0x05])
+                return nil
+            case 126: // Cmd+Up: beginning of scrollback/entire text
+                if surface.scrollThumbsize != 0 {
+                    surface.scroll(toPosition: 0)
+                    return nil
+                }
+                return event
+            case 125: // Cmd+Down: end of scrollback/entire text
+                if surface.scrollThumbsize != 0 {
+                    surface.scroll(toPosition: 1)
+                    return nil
+                }
+                return event
+            default: return event
+            }
+        }
+
+        // Option+arrows and Ctrl+arrows: word/paragraph movement.
+        // Exactly one of Option/Ctrl (no Cmd, no Shift) so system shortcuts and
+        // text selection behavior are otherwise preserved.
+        if isArrow && !hasCommand && !hasShift && (hasOption != hasControl) {
+            switch code {
+            case 123: // backward word
+                surface.send([0x1b, 0x62])
+                return nil
+            case 124: // forward word
+                surface.send([0x1b, 0x66])
+                return nil
+            case 126: // paragraph start ~= line start
+                surface.send([0x01])
+                return nil
+            case 125: // paragraph end ~= line end
+                surface.send([0x05])
+                return nil
+            default: return event
+            }
+        }
+
+        // Cmd+Backspace/Delete: whole line; Option+Backspace/Delete: whole word.
+        if isDelete && hasCommand && !hasControl {
+            if code == 117 { surface.send([0x0b]) } // Cmd+Fn+Backspace: kill to end
+            else { surface.send([0x15]) } // Cmd+Backspace: discard line
+            return nil
+        }
+        if isDelete && hasOption && !hasCommand && !hasControl {
+            if code == 117 { surface.send([0x1b, 0x64]) } // Option+Fn+Backspace: kill word forward
+            else { surface.send([0x1b, 0x7f]) } // Option+Backspace: backward-kill-word
+            return nil
+        }
+        return event
     }
     @objc func newTab(_ sender: Any?) { model.newTab() }
     @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
@@ -92,12 +192,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     func windowWillClose(_ notification: Notification) {
         updates = nil
         selectionUpdates = nil
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
         model.closeAll()
         onClose?(model.id)
     }
     func windowDidBecomeKey(_ notification: Notification) {
         AppDelegate.current?.commandRevision &+= 1
-        if window?.firstResponder === window { focusTerminal() }
+        focusTerminal()
     }
     func windowDidResignKey(_ notification: Notification) { AppDelegate.current?.commandRevision &+= 1 }
     func windowDidResize(_ notification: Notification) {
