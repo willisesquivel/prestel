@@ -3,14 +3,19 @@
 A native macOS terminal with a glass window treatment, inset detail surface,
 collapsible sidebar, custom rows, and a search capsule.
 Every sidebar row is a **terminal tab** backed by its own real PTY running
-the account login shell. Window controls are drawn in the shell, and tab/sidebar commands are also
+the account login shell. Window controls use the native macOS titlebar; tab/sidebar commands are also
 available in the menu bar.
+
+A read-only **Code Review** panel can open on the right of the detail surface.
+It follows the selected terminal’s local working directory, shows staged and
+unstaged Git changes, and never stages, discards, commits, or pushes.
 
 ## Status: real PTY via SwiftTerm (integration branch)
 
 - Each tab owns a `LocalProcess` PTY + `GenesisTerminalView` (SwiftTerm core:
   grid, SGR/cursor parsing, alt-screen TUIs, Unicode/IME, selection).
-- SwiftTerm is pinned via SwiftPM (`12ea7f5`); see `Package.resolved`.
+- SwiftTerm is pinned via SwiftPM (`12ea7f5`); HighlighterSwift is pinned at
+  `fe7aae9c` for review syntax highlighting. See `Package.resolved`.
 - Only `Terminal` tabs fork shells. The `Settings` tab never creates a PTY.
 - Sidebar keeps its soft scroll-edge; the terminal surface scrolls with its
   own native scroller (no wrapper scroll view).
@@ -21,18 +26,23 @@ Open `GenesisTerminal.xcodeproj` in Xcode 26.5+ and run the `GenesisTerminal` sc
 Xcode resolves SwiftTerm on first build (network required once).
 
 - Baseline window 960×650, min 760×540.
-- Shell metrics: sidebar 172 (150–300, ≥320 detail),
+- Shell metrics: sidebar 172 (150–300, ≥320 detail), review 420 (256–720),
   detail inset 10 / radius 20, search 30h/15r, rows 28h, spacing 1.
 - Tests: `xcodebuild test` — unit + live-PTTY tests (spawn real shells).
 
 ## Tabs & chrome
 
 - ⌘T new tab (inherits cwd), ⌘W close tab / ⇧⌘W close window, ⇧⌘T reopen,
-  ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌃⌘S toggle sidebar. Last tab closes its window.
+  ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌃⌘S toggle sidebar, ⌃⌘R toggle Code Review.
+  Last tab closes its window.
 - Title comes from the shell (OSC title), cwd from OSC 7; file drops insert
   shell-quoted paths; only http(s)/mailto/file links open.
+- Code Review uses that same local cwd. It does not infer directories from
+  prompt text or follow remote/tmux panes. Files start collapsed. Opening
+  the panel outside a Git repository explains that state.
 - Quitting or closing with live jobs asks for confirmation; PIDs are reaped,
-  never persisted. State restoration keeps lightweight descriptors only.
+  never persisted. State restoration keeps lightweight descriptors only,
+  including per-window review visibility and width.
 
 ## Files
 
@@ -44,6 +54,8 @@ Xcode resolves SwiftTerm on first build (network required once).
   search, history, recently-closed, descriptors.
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
+- `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, and highlighting.
+- `THIRD_PARTY_NOTICES.md`: bundled Highlighter/Highlight.js notices.
 
 ## TUI transparency (glass background)
 

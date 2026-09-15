@@ -29,6 +29,11 @@ struct GenesisCommands: Commands {
         CommandGroup(before: .toolbar) {
             Button("Toggle Sidebar") { app.keyController?.toggleSidebar(nil) }
                 .keyboardShortcut("s", modifiers: [.command, .control]).disabled(window == nil)
+            Button(window?.model.reviewVisible == true ? "Hide Code Review" : "Show Code Review") {
+                app.keyController?.toggleCodeReview(nil)
+            }
+            .keyboardShortcut("r", modifiers: [.command, .control])
+            .disabled(window == nil && window?.model.reviewVisible != true)
             Button("Next Tab") { app.keyController?.nextTab(nil) }
                 .keyboardShortcut(.tab, modifiers: [.control]).disabled((window?.model.tabs.count ?? 0) < 2)
             Button("Previous Tab") { app.keyController?.previousTab(nil) }
@@ -68,7 +73,7 @@ struct NavigationCapsule: View {
                 symbol: "sidebar.leading",
                 help: model.sidebarVisible ? "Hide sidebar" : "Show sidebar"
             ) {
-                withAnimation(.smooth(duration: ShellMetrics.sidebarAnimationDuration)) {
+                ShellPanelAnimation.run {
                     model.sidebarVisible.toggle()
                 }
             }
@@ -123,6 +128,43 @@ private struct ChromeButton: View {
         .disabled(!isEnabled)
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+struct CodeReviewToggle: View {
+    @ObservedObject var model: TerminalModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Button {
+            ShellPanelAnimation.run { model.reviewVisible.toggle() }
+        } label: {
+            Image(systemName: "sidebar.right")
+                .font(.system(size: 13.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.72))
+                .frame(width: ShellMetrics.reviewToggleWidth, height: ShellMetrics.navigationHeight)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .background {
+            Capsule().fill(
+                colorScheme == .dark
+                    ? Color.black.opacity(0.26)
+                    : Color.white.opacity(0.30)
+            )
+        }
+        .glassEffect(.regular, in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(
+                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.48),
+                lineWidth: 0.5
+            )
+        }
+        .focusable(false)
+        .help(model.reviewVisible ? "Hide Code Review" : "Show Code Review")
+        .accessibilityLabel("Code Review")
+        .accessibilityValue(model.reviewVisible ? "on" : "off")
+        .accessibilityAddTraits(model.reviewVisible ? [.isSelected] : [])
     }
 }
 

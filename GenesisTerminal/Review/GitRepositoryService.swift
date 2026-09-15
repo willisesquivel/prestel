@@ -1,0 +1,652 @@
+import Darwin
+import Foundation
+
+actor GitRepositoryService: GitReviewServicing {
+    private let runner: any GitCommandExecuting
+    private var cache = ReviewContentCache()
+
+    init(runner: any GitCommandExecuting = GitProcessRunner.shared) {
+        self.runner = runner
+    }
+
+    func resolveRepository(directory: String) async throws -> RepositoryKey? {
+        let inside: GitCommandResult
+        do {
+            inside = try await git(
+                directory: directory,
+                arguments: ["rev-parse", "--is-inside-work-tree"],
+                timeout: ReviewBudgets.discoveryTimeout,
+                limit: 4_096
+            )
+        } catch GitRunnerError.failed(let status, _) where status == 128 {
+            return nil
+        }
+        let insideText = text(inside.stdout).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if insideText == "false" {
+            do {
+                let bare = try await git(
+                    directory: directory,
+                    arguments: ["rev-parse", "--is-bare-repository"],
+                    timeout: ReviewBudgets.discoveryTimeout,
+                    limit: 4_096
+                )
+                if text(bare.stdout).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true" {
+                    throw GitReviewServiceError.bareRepository
+                }
+            } catch GitReviewServiceError.bareRepository {
+                throw GitReviewServiceError.bareRepository
+            } catch {
+                return nil
+            }
+            return nil
+        }
+        if insideText != "true" { return nil }
+
+        let worktree = try await pathOutput(directory: directory, arguments: ["rev-parse", "--show-toplevel"])
+        let gitDir = try await pathOutput(directory: directory, arguments: ["rev-parse", "--absolute-git-dir"])
+        let common = try await pathOutput(directory: directory, arguments: ["rev-parse", "--git-common-dir"])
+        let commonAbsolute: String
+        if common.hasPrefix("/") {
+            commonAbsolute = common
+        } else {
+            commonAbsolute = URL(fileURLWithPath: worktree).appendingPathComponent(common).standardizedFileURL.path
+        }
+        return RepositoryKey(worktreeRoot: worktree, gitDirectory: gitDir, commonGitDirectory: commonAbsolute)
+    }
+
+    func loadCatalog(for key: RepositoryKey, generation: UInt64) async throws -> ReviewSnapshot {
+        let statusData = try await git(
+            directory: key.worktreeRoot,
+            arguments: [
+                "--no-optional-locks", "-C", key.worktreeRoot,
+                "-c", "color.ui=never",
+                "-c", "core.fsmonitor=",
+                "-c", "core.useBuiltinFSMonitor=false",
+                "-c", "diff.autoRefreshIndex=false",
+                "status", "--porcelain=v2", "-z", "--branch",
+                "--untracked-files=all", "--no-ahead-behind",
+                "--ignore-submodules=none", "--find-renames"
+            ],
+            timeout: ReviewBudgets.operationTimeout,
+            limit: ReviewBudgets.statusOutputBytes
+        )
+        let parsed = GitStatusParser.parse(statusData.stdout)
+        let stagedStats = try await numstat(root: key.worktreeRoot, staged: true)
+        let unstagedStats = try await numstat(root: key.worktreeRoot, staged: false)
+        let fingerprint = indexFingerprint(gitDirectory: key.gitDirectory)
+        let files = Self.catalog(
+            status: parsed,
+            staged: stagedStats,
+            unstaged: unstagedStats
+        )
+        let additions = files.reduce(0) { $0 + $1.additions }
+        let deletions = files.reduce(0) { $0 + $1.deletions }
+        let revision = RepositoryRevision(
+            key: key,
+            headOID: parsed.branch.oid,
+            branchName: parsed.branch.head,
+            isDetached: parsed.branch.isDetached,
+            isUnborn: parsed.branch.isUnborn,
+            indexFingerprint: fingerprint,
+            generation: generation
+        )
+        return ReviewSnapshot(
+            revision: revision,
+            files: files,
+            additions: additions,
+            deletions: deletions,
+            isComplete: !parsed.isTruncated,
+            isClean: files.isEmpty,
+            isBare: false,
+            waitingOnIndexLock: FileManager.default.fileExists(atPath: (key.gitDirectory as NSString).appendingPathComponent("index.lock")),
+            diagnostic: parsed.isTruncated ? "Status output exceeded the catalog budget." : nil
+        )
+    }
+
+    func loadComparison(
+        for key: RepositoryKey,
+        file: ChangedFile,
+        comparison: ComparisonSummary,
+        generation: UInt64,
+        loadLarge: Bool
+    ) async throws -> FileDiff {
+        if file.kind == .conflicted || comparison.kind == .conflict {
+            return try await loadConflictPreview(key: key, file: file, comparison: comparison)
+        }
+        if file.kind == .submodule || comparison.newMode == "160000" || comparison.oldMode == "160000" {
+            return FileDiff(
+                fileID: file.id,
+                comparison: comparison.kind,
+                revision: "\(generation):\(file.id):\(comparison.kind.rawValue)",
+                hunks: [],
+                oldSource: nil,
+                newSource: nil,
+                limitation: .submodule(summary: "Submodule changed."),
+                patchText: "",
+                additions: comparison.additions ?? 0,
+                deletions: comparison.deletions ?? 0
+            )
+        }
+        if isSymlink(comparison) {
+            return try await loadSymlinkDiff(key: key, file: file, comparison: comparison)
+        }
+
+        let patch = try await loadPatch(key: key, file: file, comparison: comparison)
+        if comparison.isBinary || patch.isBinary {
+            return FileDiff(
+                fileID: file.id,
+                comparison: comparison.kind,
+                revision: "\(generation):\(file.id):\(comparison.kind.rawValue)",
+                hunks: [],
+                oldSource: nil,
+                newSource: nil,
+                limitation: .binary,
+                patchText: patch.raw,
+                additions: comparison.additions ?? 0,
+                deletions: comparison.deletions ?? 0
+            )
+        }
+
+        let changedLines = patch.hunks.reduce(0) { total, hunk in
+            total + hunk.lines.filter { $0.kind != .context }.count
+        }
+        let patchBytes = patch.raw.utf8.count
+        if !loadLarge, (patchBytes > ReviewBudgets.automaticPatchBytes || changedLines > ReviewBudgets.automaticChangedLines) {
+            return FileDiff(
+                fileID: file.id,
+                comparison: comparison.kind,
+                revision: "\(generation):\(file.id):\(comparison.kind.rawValue)",
+                hunks: [],
+                oldSource: nil,
+                newSource: nil,
+                limitation: .large(reason: patchBytes > ReviewBudgets.automaticPatchBytes
+                    ? "This patch exceeds 1 MB."
+                    : "This patch has more than 10,000 changed lines."),
+                patchText: patch.raw,
+                additions: comparison.additions ?? 0,
+                deletions: comparison.deletions ?? 0
+            )
+        }
+        if patchBytes > ReviewBudgets.explicitPatchBytes || changedLines > ReviewBudgets.explicitDisplayedLines {
+            return FileDiff(
+                fileID: file.id,
+                comparison: comparison.kind,
+                revision: "\(generation):\(file.id):\(comparison.kind.rawValue)",
+                hunks: [],
+                oldSource: nil,
+                newSource: nil,
+                limitation: .large(reason: "This diff exceeds the display limit."),
+                patchText: "",
+                additions: comparison.additions ?? 0,
+                deletions: comparison.deletions ?? 0
+            )
+        }
+
+        if patch.hunks.isEmpty, comparison.oldMode != comparison.newMode {
+            return FileDiff(
+                fileID: file.id,
+                comparison: comparison.kind,
+                revision: "\(generation):\(file.id):\(comparison.kind.rawValue)",
+                hunks: [],
+                oldSource: nil,
+                newSource: nil,
+                limitation: .modeOnly,
+                patchText: patch.raw,
+                additions: 0,
+                deletions: 0
+            )
+        }
+
+        let oldSource = try await sourceSnapshot(key: key, comparison: comparison, side: .old)
+        let newSource = try await sourceSnapshot(key: key, comparison: comparison, side: .new)
+        if let oldSource, let newSource {
+            try Self.validate(patch: patch, old: oldSource, new: newSource)
+        }
+        let additions = patch.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .addition }.count }
+        let deletions = patch.hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .deletion }.count }
+        return FileDiff(
+            fileID: file.id,
+            comparison: comparison.kind,
+            revision: "\(generation):\(file.id):\(comparison.kind.rawValue):\(comparison.newOID ?? "")",
+            hunks: patch.hunks,
+            oldSource: oldSource,
+            newSource: newSource,
+            limitation: .none,
+            patchText: patch.raw,
+            additions: additions,
+            deletions: deletions
+        )
+    }
+
+    private enum SnapshotSide { case old, new }
+
+    private func loadPatch(key: RepositoryKey, file: ChangedFile, comparison: ComparisonSummary) async throws -> UnifiedDiffParser.ParsedPatch {
+        var arguments = [
+            "--no-optional-locks", "-C", key.worktreeRoot,
+            "-c", "color.ui=never",
+            "-c", "core.fsmonitor=",
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-prefix",
+            "-U\(ReviewBudgets.contextLines)", "--find-renames"
+        ]
+        switch comparison.kind {
+        case .staged:
+            arguments.append("--cached")
+        case .unstaged:
+            break
+        case .untracked:
+            arguments.append(contentsOf: ["--no-index", "--", "/dev/null", comparison.newPath.display])
+            let result = try await git(
+                directory: key.worktreeRoot,
+                arguments: arguments,
+                timeout: ReviewBudgets.operationTimeout,
+                limit: ReviewBudgets.explicitPatchBytes,
+                treatDiffExitAsSuccess: true
+            )
+            return try UnifiedDiffParser.parse(result.stdout)
+        case .conflict:
+            break
+        }
+        if let oldPath = comparison.oldPath, oldPath.display != comparison.newPath.display {
+            arguments.append(contentsOf: ["--", oldPath.display, comparison.newPath.display])
+        } else {
+            arguments.append(contentsOf: ["--", comparison.newPath.display])
+        }
+        let result = try await git(
+            directory: key.worktreeRoot,
+            arguments: arguments,
+            timeout: ReviewBudgets.operationTimeout,
+            limit: ReviewBudgets.explicitPatchBytes,
+            treatDiffExitAsSuccess: true
+        )
+        return try UnifiedDiffParser.parse(result.stdout)
+    }
+
+    private func sourceSnapshot(key: RepositoryKey, comparison: ComparisonSummary, side: SnapshotSide) async throws -> SourceSnapshot? {
+        switch (comparison.kind, side) {
+        case (.staged, .old):
+            guard let oid = comparison.oldOID, oid != String(repeating: "0", count: oid.count) else {
+                return SourceSnapshot(identity: "empty", text: "", data: Data(), isBinary: false, hasTrailingNewline: false, exceedsBudget: false)
+            }
+            return try await blob(root: key.worktreeRoot, oid: oid)
+        case (.staged, .new):
+            guard let oid = comparison.newOID, oid != String(repeating: "0", count: oid.count) else { return nil }
+            return try await blob(root: key.worktreeRoot, oid: oid)
+        case (.unstaged, .old):
+            guard let oid = comparison.oldOID, oid != String(repeating: "0", count: oid.count) else {
+                return SourceSnapshot(identity: "empty", text: "", data: Data(), isBinary: false, hasTrailingNewline: false, exceedsBudget: false)
+            }
+            return try await blob(root: key.worktreeRoot, oid: oid)
+        case (.unstaged, .new), (.untracked, .new), (.conflict, .new):
+            return try workingTreeFile(root: key.worktreeRoot, relative: comparison.newPath.display)
+        case (.untracked, .old), (.conflict, .old):
+            return SourceSnapshot(identity: "empty", text: "", data: Data(), isBinary: false, hasTrailingNewline: false, exceedsBudget: false)
+        }
+    }
+
+    private func blob(root: String, oid: String) async throws -> SourceSnapshot {
+        if let cached = cache.body(identity: "blob:\(oid)") { return cached }
+        let result = try await git(
+            directory: root,
+            arguments: ["--no-optional-locks", "-C", root, "cat-file", "-p", oid],
+            timeout: ReviewBudgets.operationTimeout,
+            limit: ReviewBudgets.sourceSnapshotBytes + 1
+        )
+        let snapshot = Self.snapshot(identity: "blob:\(oid)", data: result.stdout)
+        cache.store(snapshot)
+        return snapshot
+    }
+
+    private func workingTreeFile(root: String, relative: String) throws -> SourceSnapshot {
+        let url = URL(fileURLWithPath: root).appendingPathComponent(relative)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return SourceSnapshot(identity: "missing:\(relative)", text: "", data: Data(), isBinary: false, hasTrailingNewline: false, exceedsBudget: false)
+        }
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else {
+            throw GitReviewServiceError.unreadable(relative)
+        }
+        if (info.st_mode & S_IFMT) == S_IFLNK {
+            let destination = (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) ?? ""
+            let data = Data(destination.utf8)
+            return SourceSnapshot(identity: "symlink:\(relative):\(destination)", text: destination, data: data, isBinary: false, hasTrailingNewline: false, exceedsBudget: false)
+        }
+        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let snapshot = Self.snapshot(identity: "worktree:\(relative):\(info.st_mtimespec.tv_sec):\(info.st_size)", data: data)
+        cache.store(snapshot)
+        return snapshot
+    }
+
+    private func loadSymlinkDiff(key: RepositoryKey, file: ChangedFile, comparison: ComparisonSummary) async throws -> FileDiff {
+        let oldTarget = try await sourceSnapshot(key: key, comparison: comparison, side: .old)?.text ?? ""
+        let newTarget = try await sourceSnapshot(key: key, comparison: comparison, side: .new)?.text ?? ""
+        return FileDiff(
+            fileID: file.id,
+            comparison: comparison.kind,
+            revision: "symlink:\(file.id):\(oldTarget)->\(newTarget)",
+            hunks: [],
+            oldSource: nil,
+            newSource: nil,
+            limitation: .symlink(target: "\(oldTarget) → \(newTarget)"),
+            patchText: "",
+            additions: oldTarget == newTarget ? 0 : 1,
+            deletions: oldTarget == newTarget ? 0 : 1
+        )
+    }
+
+    private func loadConflictPreview(key: RepositoryKey, file: ChangedFile, comparison: ComparisonSummary) async throws -> FileDiff {
+        let snapshot = try workingTreeFile(root: key.worktreeRoot, relative: comparison.newPath.display)
+        let text = snapshot.text ?? ""
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        let hunkLines: [DiffLine] = lines.enumerated().map { index, line in
+            DiffLine(kind: .context, oldNumber: index + 1, newNumber: index + 1, text: line, missingNewline: false)
+        }
+        let hunk = DiffHunk(oldStart: 1, oldCount: hunkLines.count, newStart: 1, newCount: hunkLines.count, header: "Working file", lines: hunkLines)
+        return FileDiff(
+            fileID: file.id,
+            comparison: .conflict,
+            revision: "conflict:\(file.id):\(snapshot.identity)",
+            hunks: snapshot.isBinary ? [] : [hunk],
+            oldSource: nil,
+            newSource: snapshot,
+            limitation: snapshot.isBinary ? .binary : .conflictPreview,
+            patchText: "",
+            additions: 0,
+            deletions: 0
+        )
+    }
+
+    private func numstat(root: String, staged: Bool) async throws -> [GitNumstatParser.Record] {
+        var arguments = [
+            "--no-optional-locks", "-C", root,
+            "-c", "color.ui=never",
+            "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames"
+        ]
+        if staged { arguments.append("--cached") }
+        let result = try await git(
+            directory: root,
+            arguments: arguments,
+            timeout: ReviewBudgets.operationTimeout,
+            limit: ReviewBudgets.statusOutputBytes,
+            treatDiffExitAsSuccess: true
+        )
+        return GitNumstatParser.parse(result.stdout)
+    }
+
+    private func git(
+        directory: String,
+        arguments: [String],
+        timeout: Duration,
+        limit: Int,
+        treatDiffExitAsSuccess: Bool = false
+    ) async throws -> GitCommandResult {
+        try await runner.run(
+            GitCommandRequest(
+                directory: directory,
+                arguments: arguments,
+                timeout: timeout,
+                outputLimit: limit,
+                treatDiffExitAsSuccess: treatDiffExitAsSuccess
+            )
+        )
+    }
+
+    private func pathOutput(directory: String, arguments: [String]) async throws -> String {
+        let result = try await git(directory: directory, arguments: arguments, timeout: ReviewBudgets.discoveryTimeout, limit: 64 * 1024)
+        var text = text(result.stdout)
+        if text.hasSuffix("\n") { text.removeLast() }
+        if text.hasSuffix("\r") { text.removeLast() }
+        return text
+    }
+
+    private func text(_ data: Data) -> String {
+        String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private func indexFingerprint(gitDirectory: String) -> String {
+        let index = (gitDirectory as NSString).appendingPathComponent("index")
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: index),
+              let modified = attributes[.modificationDate] as? Date,
+              let size = attributes[.size] as? NSNumber else {
+            return "missing"
+        }
+        return "\(size.intValue):\(modified.timeIntervalSince1970)"
+    }
+
+    private func isSymlink(_ comparison: ComparisonSummary) -> Bool {
+        comparison.oldMode == "120000" || comparison.newMode == "120000"
+    }
+
+    static func snapshot(identity: String, data: Data) -> SourceSnapshot {
+        let exceeds = data.count > ReviewBudgets.sourceSnapshotBytes
+        let bounded = exceeds ? data.prefix(ReviewBudgets.sourceSnapshotBytes) : data
+        let isBinary = bounded.contains(0)
+        if isBinary {
+            return SourceSnapshot(identity: identity, text: nil, data: Data(bounded), isBinary: true, hasTrailingNewline: false, exceedsBudget: exceeds)
+        }
+        guard let text = String(data: bounded, encoding: .utf8) else {
+            return SourceSnapshot(identity: identity, text: nil, data: Data(bounded), isBinary: false, hasTrailingNewline: false, exceedsBudget: exceeds)
+        }
+        return SourceSnapshot(
+            identity: identity,
+            text: text,
+            data: Data(bounded),
+            isBinary: false,
+            hasTrailingNewline: text.hasSuffix("\n"),
+            exceedsBudget: exceeds
+        )
+    }
+
+    static func validate(patch: UnifiedDiffParser.ParsedPatch, old: SourceSnapshot, new: SourceSnapshot) throws {
+        guard let oldText = old.text, let newText = new.text else { return }
+        let oldLines = Array(oldText.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)).map(String.init)
+        let newLines = Array(newText.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)).map(String.init)
+        for hunk in patch.hunks {
+            for line in hunk.lines {
+                switch line.kind {
+                case .deletion, .context:
+                    if let number = line.oldNumber, oldLines.indices.contains(number - 1), oldLines[number - 1] != line.text {
+                        throw GitReviewServiceError.sourceMismatch
+                    }
+                case .addition:
+                    if let number = line.newNumber, newLines.indices.contains(number - 1), newLines[number - 1] != line.text {
+                        throw GitReviewServiceError.sourceMismatch
+                    }
+                }
+            }
+        }
+    }
+
+    static func catalog(
+        status: GitStatusParser.ParsedStatus,
+        staged: [GitNumstatParser.Record],
+        unstaged: [GitNumstatParser.Record]
+    ) -> [ChangedFile] {
+        var files: [String: ChangedFile] = [:]
+        func stats(in records: [GitNumstatParser.Record], path: String) -> GitNumstatParser.Record? {
+            records.first { $0.path.display == path }
+        }
+
+        for record in status.ordinary {
+            let path = record.path
+            let xy = record.xy.padding(toLength: 2, withPad: ".", startingAt: 0)
+            let indexState = xy.prefix(1)
+            let workState = xy.suffix(1)
+            var comparisons: [ComparisonSummary] = []
+            if indexState != "." {
+                let stat = stats(in: staged, path: path.display)
+                comparisons.append(
+                    ComparisonSummary(
+                        kind: .staged,
+                        additions: stat?.additions,
+                        deletions: stat?.deletions,
+                        isBinary: stat?.isBinary ?? false,
+                        oldPath: nil,
+                        newPath: path,
+                        oldMode: record.headMode,
+                        newMode: record.indexMode,
+                        oldOID: record.headOID,
+                        newOID: record.indexOID
+                    )
+                )
+            }
+            if workState != "." {
+                let stat = stats(in: unstaged, path: path.display)
+                comparisons.append(
+                    ComparisonSummary(
+                        kind: .unstaged,
+                        additions: stat?.additions,
+                        deletions: stat?.deletions,
+                        isBinary: stat?.isBinary ?? false,
+                        oldPath: nil,
+                        newPath: path,
+                        oldMode: record.indexMode,
+                        newMode: record.worktreeMode,
+                        oldOID: record.indexOID,
+                        newOID: nil
+                    )
+                )
+            }
+            files[path.display] = ChangedFile(
+                identityPath: path,
+                kind: kind(from: xy, submodule: record.submodule, headMode: record.headMode, indexMode: record.indexMode, worktreeMode: record.worktreeMode),
+                comparisons: comparisons,
+                oldPath: nil
+            )
+        }
+
+        for record in status.renames {
+            let path = record.path
+            let xy = record.xy.padding(toLength: 2, withPad: ".", startingAt: 0)
+            var comparisons: [ComparisonSummary] = []
+            if xy.prefix(1) != "." {
+                let stat = stats(in: staged, path: path.display) ?? staged.first { $0.path.display == path.display || $0.origPath?.display == record.origPath.display }
+                comparisons.append(
+                    ComparisonSummary(
+                        kind: .staged,
+                        additions: stat?.additions,
+                        deletions: stat?.deletions,
+                        isBinary: stat?.isBinary ?? false,
+                        oldPath: record.origPath,
+                        newPath: path,
+                        oldMode: record.headMode,
+                        newMode: record.indexMode,
+                        oldOID: record.headOID,
+                        newOID: record.indexOID
+                    )
+                )
+            }
+            if xy.suffix(1) != "." {
+                let stat = stats(in: unstaged, path: path.display)
+                comparisons.append(
+                    ComparisonSummary(
+                        kind: .unstaged,
+                        additions: stat?.additions,
+                        deletions: stat?.deletions,
+                        isBinary: stat?.isBinary ?? false,
+                        oldPath: record.origPath,
+                        newPath: path,
+                        oldMode: record.indexMode,
+                        newMode: record.worktreeMode,
+                        oldOID: record.indexOID,
+                        newOID: nil
+                    )
+                )
+            }
+            files[path.display] = ChangedFile(
+                identityPath: path,
+                kind: record.isCopy ? .copied : .renamed,
+                comparisons: comparisons,
+                oldPath: record.origPath
+            )
+        }
+
+        for record in status.unmerged {
+            files[record.path.display] = ChangedFile(
+                identityPath: record.path,
+                kind: .conflicted,
+                comparisons: [
+                    ComparisonSummary(
+                        kind: .conflict,
+                        additions: nil,
+                        deletions: nil,
+                        isBinary: false,
+                        oldPath: nil,
+                        newPath: record.path,
+                        oldMode: record.stage2Mode,
+                        newMode: record.worktreeMode,
+                        oldOID: record.stage2OID,
+                        newOID: nil
+                    )
+                ],
+                oldPath: nil
+            )
+        }
+
+        for path in status.untracked {
+            files[path.display] = ChangedFile(
+                identityPath: path,
+                kind: .untracked,
+                comparisons: [
+                    ComparisonSummary(
+                        kind: .untracked,
+                        additions: nil,
+                        deletions: nil,
+                        isBinary: false,
+                        oldPath: nil,
+                        newPath: path,
+                        oldMode: nil,
+                        newMode: nil,
+                        oldOID: nil,
+                        newOID: nil
+                    )
+                ],
+                oldPath: nil
+            )
+        }
+
+        return files.values.sorted { $0.identityPath.display.localizedStandardCompare($1.identityPath.display) == .orderedAscending }
+    }
+
+    private static func kind(from xy: String, submodule: String, headMode: String, indexMode: String, worktreeMode: String) -> FileChangeKind {
+        if submodule.hasPrefix("S") { return .submodule }
+        if headMode == "120000" || indexMode == "120000" || worktreeMode == "120000" { return .symlink }
+        if xy.contains("A") { return .added }
+        if xy.contains("D") { return .deleted }
+        if xy.contains("T") { return .typeChange }
+        if xy.contains("M"), headMode != indexMode || indexMode != worktreeMode, !xy.contains("M") {
+            return .modeChange
+        }
+        if xy.contains("M"), xy.filter({ $0 == "M" }).count == 0 {
+            return .modeChange
+        }
+        if headMode != indexMode, indexMode == worktreeMode, !xy.contains("M"), !xy.contains("A"), !xy.contains("D") {
+            return .modeChange
+        }
+        return .modified
+    }
+}
+
+enum GitReviewServiceError: Error, Equatable {
+    case bareRepository
+    case sourceMismatch
+    case unreadable(String)
+}
+
+private struct ReviewContentCache {
+    private var items: [String: SourceSnapshot] = [:]
+    private var bytes = 0
+
+    func body(identity: String) -> SourceSnapshot? { items[identity] }
+
+    mutating func store(_ snapshot: SourceSnapshot) {
+        if items[snapshot.identity] != nil { return }
+        let size = snapshot.data.count
+        while bytes + size > ReviewBudgets.contentCacheBytes, let key = items.keys.first {
+            bytes -= items[key]?.data.count ?? 0
+            items.removeValue(forKey: key)
+        }
+        items[snapshot.identity] = snapshot
+        bytes += size
+    }
+}

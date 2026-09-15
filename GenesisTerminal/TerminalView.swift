@@ -46,7 +46,9 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
                 // explicit makeFirstResponder below covers tab switches, when
                 // the window is already key.
                 window.initialFirstResponder = self
-                if window.isKeyWindow {
+                if window.isKeyWindow,
+                   !(window.firstResponder is NSText),
+                   !ReviewFocus.isProtected(window.firstResponder) {
                     window.makeFirstResponder(self)
                 }
             }
@@ -111,10 +113,12 @@ private struct TerminalDirectHost: NSViewRepresentable {
         // sidebar search field.
         if let window = container.window {
             window.initialFirstResponder = surface
-            if window.isKeyWindow,
-               (didAttach || window.firstResponder === window) {
-                window.makeFirstResponder(surface)
-            }
+                if window.isKeyWindow,
+                   (didAttach || window.firstResponder === window),
+                   !(window.firstResponder is NSText),
+                   !ReviewFocus.isProtected(window.firstResponder) {
+                    window.makeFirstResponder(surface)
+                }
         }
     }
 

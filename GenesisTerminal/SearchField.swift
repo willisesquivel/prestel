@@ -285,7 +285,7 @@ final class SearchEditorTextView: NSTextView {
         super.draw(dirtyRect)
         guard string.isEmpty else { return }
         ("Search" as NSString).draw(at: textContainerOrigin, withAttributes: [
-            .font: font ?? .systemFont(ofSize: 13), .foregroundColor: NSColor.placeholderTextColor
+            .font: font ?? .systemFont(ofSize: 13), .foregroundColor: NSColor(Color.secondary)
         ])
     }
 }

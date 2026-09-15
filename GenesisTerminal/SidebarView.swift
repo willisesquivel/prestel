@@ -46,10 +46,11 @@ struct SidebarView: View {
                 .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
                 .frame(width: width)
                 .padding(.top, 42)
+                .padding(.bottom, 12)
                 .focused($focusedTarget, equals: .search)
         }
         .scrollClipDisabled()
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectStyle(.hard, for: .vertical)
         .frame(width: width)
     }
 }

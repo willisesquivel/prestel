@@ -5,22 +5,41 @@ import SwiftUI
 @MainActor
 final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     let model: TerminalModel
+    let review: CodeReviewModel
     private var hosting: NSHostingController<ShellView>!
     var onClose: ((UUID) -> Void)?
     private var updates: AnyCancellable?
     private var selectionUpdates: AnyCancellable?
     private var sidebarUpdates: AnyCancellable?
+    private var reviewUpdates: AnyCancellable?
+    private var directoryUpdates: AnyCancellable?
     private var pendingRefresh = false
     private var savedForQuit: WindowDescriptor?
     private var keyMonitor: Any?
 
     init(model: TerminalModel) {
         self.model = model
+        self.review = CodeReviewModel()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 650),
                               styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: window)
-        hosting = NSHostingController(rootView: ShellView(model: model, closeTab: { [weak self] id in self?.requestCloseTab(id) }))
-        window.contentViewController = hosting
+        hosting = NSHostingController(rootView: ShellView(model: model, review: review, closeTab: { [weak self] id in self?.requestCloseTab(id) }))
+        // Put the entire SwiftUI hierarchy in the glass view's documented
+        // content slot. Keeping the glass as a sibling backdrop lets AppKit
+        // choose its z-order relative to transparent SwiftUI descendants,
+        // which can expose a sharp strip of the window behind at the edge of
+        // the titlebar on newer macOS releases.
+        let root = WindowRootView(frame: .zero)
+        root.autoresizingMask = [.width, .height]
+        window.contentView = root
+
+        let glass = ThemedGlassView(frame: root.bounds)
+        glass.autoresizingMask = [.width, .height]
+        root.addSubview(glass)
+        hosting.view.frame = glass.bounds
+        hosting.view.autoresizingMask = [.width, .height]
+        glass.contentView = hosting.view
+        glass.refreshTint()
         window.setContentSize(NSSize(width: 960, height: 650))
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -30,24 +49,37 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         window.title = "Genesis"
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
+        // Genesis draws its original fixed traffic lights in the SwiftUI shell.
+        // Keep AppKit's duplicate controls out of the hit-test tree so there
+        // is one stable, unambiguous control surface.
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.identifier = .init("Genesis.\(model.id.uuidString)")
         window.isRestorable = true
         window.restorationClass = GenesisWindowRestoration.self
-        // Handmade 12pt traffic lights are drawn in the shell; hide the native set.
-        window.standardWindowButton(.closeButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        window.standardWindowButton(.zoomButton)?.isHidden = true
         updates = model.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }
         selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
-            DispatchQueue.main.async { self?.refresh(); self?.focusTerminal() }
+            DispatchQueue.main.async {
+                self?.refresh()
+                self?.focusTerminal()
+                self?.bindReviewDirectory()
+                self?.syncReview(preserveFocus: true)
+            }
         }
         sidebarUpdates = model.$sidebarVisible.dropFirst().sink { [weak self] visible in
             guard !visible, let self, let window = self.window,
                   window.firstResponder is SearchEditorTextView else { return }
             window.makeFirstResponder(self.model.selectedTab?.surface)
         }
+        review.onRestoreTerminalFocus = { [weak self] in self?.focusTerminal() }
+        reviewUpdates = model.$reviewVisible.dropFirst().sink { [weak self] _ in
+            self?.syncReview(preserveFocus: true)
+        }
+        bindReviewDirectory()
+        syncReview(preserveFocus: true)
         // SwiftTerm's view methods are not overridable from here, so intercept the
         // requested Cmd/Ctrl/Option navigation combos before dispatch. The terminal
         // view itself stays first responder, keeping the focused caret visible.
@@ -57,6 +89,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("Use init(model:)") }
+
     private func scheduleRefresh() {
         guard !pendingRefresh else { return }
         pendingRefresh = true
@@ -84,6 +117,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         guard let window, let surface = model.selectedTab?.surface else { return }
         // An NSText field editor means the user is typing in search/Settings.
         if window.firstResponder is NSText { return }
+        if ReviewFocus.isProtected(window.firstResponder) { return }
         if window.isKeyWindow, surface.window === window {
             window.makeFirstResponder(surface)
             return
@@ -187,12 +221,25 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func previousTab(_ sender: Any?) { model.cycle(-1) }
     @objc func reopenClosedTab(_ sender: Any?) { model.reopenClosedTab() }
     @objc func clearScrollback(_ sender: Any?) { model.selectedTab?.surface?.clearScrollback() }
-    @objc func toggleSidebar(_ sender: Any?) { model.sidebarVisible.toggle() }
+    @objc func toggleSidebar(_ sender: Any?) {
+        ShellPanelAnimation.run { model.sidebarVisible.toggle() }
+    }
+    @objc func toggleCodeReview(_ sender: Any?) {
+        let opening = !model.reviewVisible
+        ShellPanelAnimation.run { model.reviewVisible.toggle() }
+        syncReview(preserveFocus: !(opening && sender is NSMenuItem))
+        if opening, sender is NSMenuItem {
+            review.onFocusReview?()
+        }
+    }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(reopenClosedTab(_:)): return !model.recentlyClosed.isEmpty
         case #selector(nextTab(_:)), #selector(previousTab(_:)): return model.tabs.count > 1
         case #selector(clearScrollback(_:)), #selector(closeTab(_:)): return model.selectedTab != nil
+        case #selector(toggleCodeReview(_:)):
+            if model.reviewVisible { return true }
+            return window != nil
         default: return true
         }
     }
@@ -203,6 +250,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         updates = nil
         selectionUpdates = nil
         sidebarUpdates = nil
+        reviewUpdates = nil
+        directoryUpdates = nil
+        review.shutdown()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         model.closeAll()
@@ -221,8 +271,29 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         if let data = try? JSONEncoder().encode(descriptor) { state.encode(data as NSData, forKey: "Genesis.window") }
     }
     func preserveForQuit() { savedForQuit = model.descriptor }
+    func windowDidMiniaturize(_ notification: Notification) {
+        review.bind(visible: false, windowID: model.id, session: nil)
+    }
+    func windowDidDeminiaturize(_ notification: Notification) {
+        syncReview(preserveFocus: true)
+    }
+    private func bindReviewDirectory() {
+        directoryUpdates = model.selectedTab?.$directory.removeDuplicates().sink { [weak self] _ in
+            self?.syncReview(preserveFocus: true)
+        }
+    }
+    private func syncReview(preserveFocus: Bool) {
+        review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
+        if !model.reviewVisible, !preserveFocus {
+            focusTerminal()
+        }
+    }
+}
 
-
+/// A flipped root gives the glass-hosted SwiftUI hierarchy the same top-left
+/// origin that SwiftUI uses for its layout.
+private final class WindowRootView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 @MainActor
@@ -237,13 +308,25 @@ final class GenesisWindowRestoration: NSObject, NSWindowRestoration {
 }
 
 
-/// Backdrop glass whose tint follows the view's own effective appearance,
-/// not just the SwiftUI `colorScheme` environment. Both paths set the same
-/// values: SwiftUI calls `updateNSView` on environment changes, AppKit calls
-/// `viewDidChangeEffectiveAppearance` on the view itself. Driving the tint
-/// from `effectiveAppearance` keeps the AppKit glass in sync with the
-/// SwiftUI chrome even if the two invalidations race.
+/// Window glass whose tint follows the view's own effective appearance.
+/// Driving the tint from `effectiveAppearance` keeps AppKit glass in sync
+/// with the SwiftUI chrome even if appearance invalidations race.
 final class ThemedGlassView: NSGlassEffectView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureGlass()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureGlass()
+    }
+
+    private func configureGlass() {
+        style = .regular
+        cornerRadius = 0
+    }
+
     func refreshTint() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         tintColor = isDark
@@ -253,21 +336,6 @@ final class ThemedGlassView: NSGlassEffectView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         refreshTint()
-    }
-}
-
-struct WindowGlassBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> ThemedGlassView {
-        let view = ThemedGlassView()
-        view.style = .regular
-        view.cornerRadius = 0
-        view.refreshTint()
-        return view
-    }
-
-    func updateNSView(_ nsView: ThemedGlassView, context: Context) {
-        nsView.cornerRadius = 0
-        nsView.refreshTint()
     }
 }
 
@@ -291,6 +359,13 @@ enum ShellMetrics {
 
     static let searchHeight: CGFloat = 30
     static let searchCornerRadius: CGFloat = 15
+    static let searchTop: CGFloat = 42
+    static let trafficExpandedTop: CGFloat = 16
+    static let trafficExpandedLeft: CGFloat = 18
+    static let trafficCollapsedTop: CGFloat = 31.5
+    static let trafficCollapsedLeft: CGFloat = 24
+    static let trafficLightDiameter: CGFloat = 12
+    static let trafficLightSpacing: CGFloat = 8
     static let sidebarRowHeight: CGFloat = 28
     static let sidebarRowSpacing: CGFloat = 1
     static let sidebarGroupSpacing: CGFloat = 12
@@ -310,14 +385,13 @@ enum ShellMetrics {
     static let chromeGap: CGFloat = 8
     static let syncWidth: CGFloat = 122
 
-    static let trafficExpandedTop: CGFloat = 16
-    static let trafficExpandedLeft: CGFloat = 18
-    static let trafficCollapsedTop: CGFloat = 31.5
-    static let trafficCollapsedLeft: CGFloat = 24
-    static let trafficLightDiameter: CGFloat = 12
-    static let trafficLightSpacing: CGFloat = 8
-
     static let sidebarAnimationDuration: TimeInterval = 0.30
+
+    static let reviewPreferredWidth: CGFloat = 420
+    static let reviewMinimumWidth: CGFloat = 256
+    static let reviewMaximumWidth: CGFloat = 720
+    static let reviewDividerWidth: CGFloat = 1
+    static let reviewToggleWidth: CGFloat = 40
 }
 
 struct TerminalToolbarHeader: View {
@@ -356,9 +430,10 @@ struct TerminalToolbar: View {
     @ObservedObject var model: TerminalModel
     var body: some View {
         HStack(spacing: 12) {
+            NavigationCapsule(model: model)
             TerminalToolbarHeader(model: model)
             Spacer(minLength: 0)
-            NavigationCapsule(model: model)
+            CodeReviewToggle(model: model)
         }
         // Same horizontal inset as the terminal text below (12pt). When the
         // sidebar is collapsed the detail surface slides under the traffic
@@ -369,7 +444,6 @@ struct TerminalToolbar: View {
         .padding(.trailing, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .animation(.smooth(duration: ShellMetrics.sidebarAnimationDuration), value: model.sidebarVisible)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Terminal toolbar")
     }

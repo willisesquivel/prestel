@@ -1,4 +1,7 @@
 {
+  "features" : [
+    "refractivity"
+  ],
   "fill" : "automatic",
   "groups" : [
     {
@@ -28,9 +31,14 @@
           }
         }
       ],
+      "refractivity" : {
+        "depth" : 0,
+        "enabled" : true,
+        "strength" : 1
+      },
       "shadow" : {
         "kind" : "neutral",
-        "opacity" : 0.5
+        "opacity" : 0.6
       },
       "translucency" : {
         "enabled" : true,

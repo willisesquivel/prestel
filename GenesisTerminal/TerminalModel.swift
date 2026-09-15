@@ -16,6 +16,47 @@ struct WindowDescriptor: Codable, Equatable {
     var selectedID: UUID?
     var sidebarVisible: Bool
     var sidebarWidth: Double
+    var reviewVisible: Bool
+    var reviewWidth: Double
+
+    init(
+        id: UUID,
+        tabs: [TabDescriptor],
+        selectedID: UUID?,
+        sidebarVisible: Bool,
+        sidebarWidth: Double,
+        reviewVisible: Bool = false,
+        reviewWidth: Double = 420
+    ) {
+        self.id = id
+        self.tabs = tabs
+        self.selectedID = selectedID
+        self.sidebarVisible = sidebarVisible
+        self.sidebarWidth = sidebarWidth
+        self.reviewVisible = reviewVisible
+        self.reviewWidth = Self.clampedReviewWidth(reviewWidth)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        tabs = try container.decode([TabDescriptor].self, forKey: .tabs)
+        selectedID = try container.decodeIfPresent(UUID.self, forKey: .selectedID)
+        sidebarVisible = try container.decode(Bool.self, forKey: .sidebarVisible)
+        sidebarWidth = try container.decode(Double.self, forKey: .sidebarWidth)
+        reviewVisible = try container.decodeIfPresent(Bool.self, forKey: .reviewVisible) ?? false
+        let rawWidth = try container.decodeIfPresent(Double.self, forKey: .reviewWidth) ?? 420
+        reviewWidth = Self.clampedReviewWidth(rawWidth)
+    }
+
+    static func clampedReviewWidth(_ raw: Double) -> Double {
+        guard raw.isFinite else { return 420 }
+        return min(max(raw, 256), 720)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, tabs, selectedID, sidebarVisible, sidebarWidth, reviewVisible, reviewWidth
+    }
 }
 
 /// A window owns its tabs. Filtering and view attachment never own process lifetime.
@@ -27,6 +68,8 @@ final class TerminalModel: ObservableObject {
     @Published var searchText = ""
     @Published var sidebarVisible = true
     @Published var sidebarWidth: Double = 172
+    @Published var reviewVisible = false
+    @Published var reviewWidth: Double = 420
     @Published private(set) var recentlyClosed: [TabDescriptor] = []
     private var history: [UUID] = []
     private var historyIndex = -1
@@ -37,6 +80,8 @@ final class TerminalModel: ObservableObject {
         if let restoration, !restoration.tabs.isEmpty {
             sidebarVisible = restoration.sidebarVisible
             sidebarWidth = min(300, max(150, restoration.sidebarWidth))
+            reviewVisible = restoration.reviewVisible
+            reviewWidth = WindowDescriptor.clampedReviewWidth(restoration.reviewWidth)
             var seen = Set<UUID>()
             for descriptor in restoration.tabs where seen.insert(descriptor.id).inserted { append(descriptor) }
             select(restoration.selectedID ?? tabs[0].id)
@@ -181,11 +226,33 @@ final class TerminalModel: ObservableObject {
     }
 
     var descriptor: WindowDescriptor {
-        WindowDescriptor(id: id, tabs: tabs.map(\.descriptor), selectedID: selectedID,
-                         sidebarVisible: sidebarVisible, sidebarWidth: sidebarWidth)
+        WindowDescriptor(
+            id: id,
+            tabs: tabs.map(\.descriptor),
+            selectedID: selectedID,
+            sidebarVisible: sidebarVisible,
+            sidebarWidth: sidebarWidth,
+            reviewVisible: reviewVisible,
+            reviewWidth: reviewWidth
+        )
     }
     func resizeSidebar(to proposedWidth: CGFloat, availableWidth: CGFloat) {
-        sidebarWidth = min(max(proposedWidth, 150), min(300, max(150, availableWidth - 320)))
+        sidebarWidth = ShellLayout.clampSidebarPreference(
+            proposedWidth,
+            windowWidth: availableWidth,
+            reviewVisible: reviewVisible
+        )
+    }
+    func resizeReview(to proposedWidth: CGFloat, availableWidth: CGFloat) {
+        reviewWidth = ShellLayout.clampReviewPreference(
+            proposedWidth,
+            windowWidth: availableWidth,
+            sidebarVisible: sidebarVisible,
+            preferredSidebarWidth: sidebarWidth
+        )
+    }
+    func resetReviewWidth() {
+        reviewWidth = 420
     }
     func closeAll() { tabs.forEach { $0.close() } }
 }

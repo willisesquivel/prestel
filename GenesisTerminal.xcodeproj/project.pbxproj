@@ -16,9 +16,25 @@
 		A10000000000000000000008 /* TerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* TerminalSession.swift */; };
 		A10000000000000000000009 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* TerminalView.swift */; };
 		A10000000000000000000010 /* TabDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* TabDrag.swift */; };
+		A10000000000000000000021 /* ShellLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* ShellLayout.swift */; };
+		A10000000000000000000022 /* ReviewTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022 /* ReviewTypes.swift */; };
+		A10000000000000000000023 /* GitProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* GitProcessRunner.swift */; };
+		A10000000000000000000024 /* GitRepositoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* GitRepositoryService.swift */; };
+		A10000000000000000000025 /* GitParsers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* GitParsers.swift */; };
+		A10000000000000000000026 /* RepositoryWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026 /* RepositoryWatcher.swift */; };
+		A10000000000000000000027 /* CodeReviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027 /* CodeReviewModel.swift */; };
+		A10000000000000000000028 /* CodeReviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* CodeReviewPanel.swift */; };
+		A10000000000000000000029 /* ReviewTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029 /* ReviewTableView.swift */; };
+		A1000000000000000000002A /* ReviewSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A /* ReviewSelection.swift */; };
+		A1000000000000000000002B /* ReviewSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002B /* ReviewSyntaxHighlighter.swift */; };
+		A1000000000000000000002C /* GitParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002C /* GitParsingTests.swift */; };
+		A1000000000000000000002D /* CodeReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002D /* CodeReviewModelTests.swift */; };
+		A1000000000000000000002E /* CodeReviewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002E /* CodeReviewUITests.swift */; };
+		A10000000000000000000031 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */; };
 		A1000000000000000000000A /* GenesisTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* GenesisTerminalTests.swift */; };
 		A1000000000000000000000B /* Genesis.icon in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* Genesis.icon */; };
 		C10000000000000000000001 = {isa = PBXBuildFile; productRef = C30000000000000000000001; };
+		C10000000000000000000002 = {isa = PBXBuildFile; productRef = C30000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -42,6 +58,21 @@
 		A20000000000000000000008 /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSession.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		A20000000000000000000010 /* TabDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabDrag.swift; sourceTree = "<group>"; };
+		A20000000000000000000021 /* ShellLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellLayout.swift; sourceTree = "<group>"; };
+		A20000000000000000000022 /* ReviewTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewTypes.swift; sourceTree = "<group>"; };
+		A20000000000000000000023 /* GitProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitProcessRunner.swift; sourceTree = "<group>"; };
+		A20000000000000000000024 /* GitRepositoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitRepositoryService.swift; sourceTree = "<group>"; };
+		A20000000000000000000025 /* GitParsers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitParsers.swift; sourceTree = "<group>"; };
+		A20000000000000000000026 /* RepositoryWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepositoryWatcher.swift; sourceTree = "<group>"; };
+		A20000000000000000000027 /* CodeReviewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewModel.swift; sourceTree = "<group>"; };
+		A20000000000000000000028 /* CodeReviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewPanel.swift; sourceTree = "<group>"; };
+		A20000000000000000000029 /* ReviewTableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewTableView.swift; sourceTree = "<group>"; };
+		A2000000000000000000002A /* ReviewSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSelection.swift; sourceTree = "<group>"; };
+		A2000000000000000000002B /* ReviewSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSyntaxHighlighter.swift; sourceTree = "<group>"; };
+		A2000000000000000000002C /* GitParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitParsingTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000002D /* CodeReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewModelTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000002E /* CodeReviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = SOURCE_ROOT; };
 		A2000000000000000000000A /* GenesisTerminalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GenesisTerminalTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000000B /* Genesis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Genesis.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000000C /* GenesisTerminalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GenesisTerminalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -50,7 +81,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A40000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C10000000000000000000001,); runOnlyForDeploymentPostprocessing = 0; };
+		A40000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C10000000000000000000001, C10000000000000000000002,); runOnlyForDeploymentPostprocessing = 0; };
 		A40000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 
@@ -61,6 +92,7 @@
 				A50000000000000000000002 /* GenesisTerminal */,
 				A50000000000000000000003 /* GenesisTerminalTests */,
 				A2000000000000000000000D /* README.md */,
+				A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */,
 				A2000000000000000000000E /* Genesis.icon */,
 				A50000000000000000000004 /* Products */,
 			);
@@ -79,14 +111,38 @@
 				A20000000000000000000008,
 				A20000000000000000000009,
 				A20000000000000000000010,
+				A20000000000000000000021,
+				A50000000000000000000005,
 			);
 			path = GenesisTerminal;
 			sourceTree = "<group>";
 		};
 		A50000000000000000000003 /* GenesisTerminalTests */ = {
 			isa = PBXGroup;
-			children = (A2000000000000000000000A,);
+			children = (
+				A2000000000000000000000A,
+				A2000000000000000000002C,
+				A2000000000000000000002D,
+				A2000000000000000000002E,
+			);
 			path = GenesisTerminalTests;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000005 /* Review */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000022,
+				A20000000000000000000023,
+				A20000000000000000000024,
+				A20000000000000000000025,
+				A20000000000000000000026,
+				A20000000000000000000027,
+				A20000000000000000000028,
+				A20000000000000000000029,
+				A2000000000000000000002A,
+				A2000000000000000000002B,
+			);
+			path = Review;
 			sourceTree = "<group>";
 		};
 		A50000000000000000000004 /* Products */ = {
@@ -104,7 +160,7 @@
 			buildPhases = (A60000000000000000000001, A40000000000000000000001, A60000000000000000000003,);
 			buildRules = ();
 			dependencies = ();
-			packageProductDependencies = (C30000000000000000000001,);
+			packageProductDependencies = (C30000000000000000000001, C30000000000000000000002,);
 			name = GenesisTerminal;
 			productName = GenesisTerminal;
 			productReference = A2000000000000000000000B;
@@ -142,7 +198,7 @@
 			knownRegions = (en, Base,);
 			mainGroup = A50000000000000000000001;
 			productRefGroup = A50000000000000000000004;
-			packageReferences = (C20000000000000000000001,);
+			packageReferences = (C20000000000000000000001, C20000000000000000000002,);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (A70000000000000000000001, A70000000000000000000002,);
@@ -164,13 +220,24 @@
 				A10000000000000000000008,
 				A10000000000000000000009,
 				A10000000000000000000010,
+				A10000000000000000000021,
+				A10000000000000000000022,
+				A10000000000000000000023,
+				A10000000000000000000024,
+				A10000000000000000000025,
+				A10000000000000000000026,
+				A10000000000000000000027,
+				A10000000000000000000028,
+				A10000000000000000000029,
+				A1000000000000000000002A,
+				A1000000000000000000002B,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A60000000000000000000002 = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A1000000000000000000000A,);
+			files = (A1000000000000000000000A, A1000000000000000000002C, A1000000000000000000002D, A1000000000000000000002E,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
@@ -179,7 +246,7 @@
 		A60000000000000000000003 = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A1000000000000000000000B,);
+			files = (A1000000000000000000000B, A10000000000000000000031,);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
@@ -239,9 +306,11 @@
 
 /* Begin XCRemoteSwiftPackageReference section */
         C20000000000000000000001 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git"; requirement = {kind = revision; revision = 12ea7f537aadcc9778ce6b81000e0827de7b971e; }; };
+        C20000000000000000000002 = {isa = XCRemoteSwiftPackageReference; repositoryURL = "https://github.com/smittytone/HighlighterSwift"; requirement = {kind = revision; revision = fe7aae9c9b31d3b296fd3d2dd575e1a207bb29e0; }; };
 /* End XCRemoteSwiftPackageReference section */
 /* Begin XCSwiftPackageProductDependency section */
         C30000000000000000000001 = {isa = XCSwiftPackageProductDependency; package = C20000000000000000000001; productName = SwiftTerm; };
+        C30000000000000000000002 = {isa = XCSwiftPackageProductDependency; package = C20000000000000000000002; productName = Highlighter; };
 /* End XCSwiftPackageProductDependency section */
 /* Begin XCConfigurationList section */
 		A80000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (B10000000000000000000001, B10000000000000000000002,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
