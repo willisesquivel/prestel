@@ -4,46 +4,49 @@ import SwiftUI
 struct CodeReviewPanel: View {
     @ObservedObject var model: CodeReviewModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var lastVisibleLoadState: ReviewLoadState = .hidden
 
     var body: some View {
-        VStack(spacing: 0) {
-            switch model.loadState {
+        Group {
+            switch displayedLoadState {
             case .hidden:
-                ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true)
+                statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
             case .noTerminal:
-                ReviewStatus(symbol: "terminal", text: "Select a terminal to review its repository.")
+                statusPage { ReviewStatus(symbol: "terminal", text: "Select a terminal to review its repository.") }
             case .noRepository:
-                ReviewStatus(symbol: "folder", text: "The current terminal is not inside a Git repository.")
+                statusPage { ReviewStatus(symbol: "folder", text: "The current terminal is not inside a Git repository.") }
             case .noWorkingTree:
-                ReviewStatus(symbol: "internaldrive", text: "This repository has no working tree.")
+                statusPage { ReviewStatus(symbol: "internaldrive", text: "This repository has no working tree.") }
             case .unavailable(let message):
-                ReviewStatus(symbol: "exclamationmark.triangle", text: "Git could not be executed.", detail: message, retry: { model.refresh() })
+                statusPage { ReviewStatus(symbol: "exclamationmark.triangle", text: "Git could not be executed.", detail: message, retry: { model.refresh() }) }
             case .error(let message):
-                ReviewStatus(symbol: "exclamationmark.triangle", text: "Repository changes could not be loaded.", detail: message, retry: { model.refresh() })
+                statusPage { ReviewStatus(symbol: "exclamationmark.triangle", text: "Repository changes could not be loaded.", detail: message, retry: { model.refresh() }) }
             case .waitingForGit:
-                ReviewStatus(symbol: "hourglass", text: "Waiting for the Git operation to finish.", retry: { model.refresh() })
+                statusPage { ReviewStatus(symbol: "hourglass", text: "Waiting for the Git operation to finish.", retry: { model.refresh() }) }
             case .resolving, .loading:
                 if let snapshot = model.snapshot {
-                    content(snapshot)
+                    fileListScroll(snapshot)
                 } else {
-                    ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true)
+                    statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
                 }
             case .ready:
                 if let snapshot = model.snapshot {
                     if snapshot.isClean, model.presentation.filter == .all {
-                        header(snapshot)
-                        ReviewStatus(symbol: "checkmark.circle", text: "No uncommitted changes.")
+                        statusPage { ReviewStatus(symbol: "checkmark.circle", text: "No uncommitted changes.") }
                     } else {
-                        content(snapshot)
+                        fileListScroll(snapshot)
                     }
                 } else {
-                    ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true)
+                    statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
                 }
             }
         }
-        .padding(.top, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipped()
+        .onAppear { rememberVisibleLoadState(model.loadState) }
+        .onChange(of: model.loadState) { _, newValue in
+            rememberVisibleLoadState(newValue)
+        }
         .onChange(of: colorScheme) { _, newValue in
             model.updateAppearance(newValue == .dark)
         }
@@ -51,22 +54,119 @@ struct CodeReviewPanel: View {
         .accessibilityLabel("Code Review")
     }
 
+    /// Bind() sets `.hidden` immediately on close so watchers stop. Keep painting
+    /// the last real state so the tab can slide away instead of popping out.
+    private var displayedLoadState: ReviewLoadState {
+        model.loadState == .hidden && lastVisibleLoadState != .hidden
+            ? lastVisibleLoadState
+            : model.loadState
+    }
+
+    private func rememberVisibleLoadState(_ state: ReviewLoadState) {
+        if state != .hidden {
+            lastVisibleLoadState = state
+        }
+    }
+
+    private var barSnapshot: ReviewSnapshot? {
+        switch displayedLoadState {
+        case .resolving, .loading, .ready:
+            return model.snapshot
+        default:
+            return nil
+        }
+    }
+
+    private var isCleanStatus: Bool {
+        if case .ready = displayedLoadState,
+           let snapshot = model.snapshot,
+           snapshot.isClean,
+           model.presentation.filter == .all {
+            return true
+        }
+        return false
+    }
+
     @ViewBuilder
-    private func content(_ snapshot: ReviewSnapshot) -> some View {
-        header(snapshot)
-        controls(snapshot)
-        ReviewFileListHost(
-            model: model,
-            files: model.visibleFiles(in: snapshot),
-            onEscape: { model.onRestoreTerminalFocus?() },
-            onFocusChange: { _ in }
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    private func statusPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            content()
+        }
+        .safeAreaBar(edge: .top, spacing: 0) {
+            if let snapshot = barSnapshot {
+                panelBar(snapshot)
+            }
+        }
+        .scrollEdgeEffectStyle(.hard, for: .vertical)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func fileListScroll(_ snapshot: ReviewSnapshot) -> some View {
+        ScrollView(.vertical) {
+            VStack(spacing: ShellMetrics.sidebarRowSpacing) {
+                ForEach(model.visibleFiles(in: snapshot)) { file in
+                    VStack(spacing: ShellMetrics.sidebarRowSpacing) {
+                        ReviewFileHeaderRow(
+                            file: file,
+                            expanded: model.presentation.expandedFileIDs.contains(file.id),
+                            onToggle: { model.toggleFile(file.id) },
+                            onOpen: { model.openFile(file) },
+                            onReveal: { model.reveal(file) },
+                            onCopyRelative: { model.copyPath(file, absolute: false) },
+                            onCopyAbsolute: { model.copyPath(file, absolute: true) },
+                            onCopyPatch: { model.copyPatch(for: file) }
+                        )
+                        if model.presentation.expandedFileIDs.contains(file.id) {
+                            ReviewDiffHost(
+                                model: model,
+                                file: file,
+                                onEscape: { model.onRestoreTerminalFocus?() },
+                                onFocusChange: { _ in }
+                            )
+                            .frame(height: paneHeight(for: file))
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
+            .padding(.top, 12)
+            .padding(.bottom, 16)
+        }
+        // AppKit needs the native scroller to render the safe-area edge effect.
+        .scrollIndicators(.automatic)
+        .safeAreaBar(edge: .top, spacing: 0) {
+            panelBar(snapshot)
+        }
+        .scrollClipDisabled()
+        .scrollEdgeEffectStyle(.hard, for: .vertical)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func panelBar(_ snapshot: ReviewSnapshot) -> some View {
+        VStack(spacing: 0) {
+            header(snapshot)
+            if !isCleanStatus {
+                controls(snapshot)
+            }
+        }
+        .padding(.top, 12)
+        // 6pt here + the 6pt control bottom = 12pt below the bar, matching
+        // the sidebar bar rhythm.
+        .padding(.bottom, 6)
+    }
+
+    /// Panes size to their full content height: the file list is the only
+    /// vertical scroller, diffs scroll horizontally within their pane.
+    private func paneHeight(for file: ChangedFile) -> CGFloat {
+        let rows = ReviewDocumentBuilder.bodyRows(file: file, diffs: model.diffs, presentation: model.presentation)
+        return max(ReviewDocumentBuilder.contentHeight(of: rows), 36)
     }
 
     private func header(_ snapshot: ReviewSnapshot) -> some View {
         let totals = model.filteredTotals(in: snapshot)
-        return VStack(alignment: .leading, spacing: 2) {
+        return HStack(alignment: .center, spacing: 8) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(snapshot.revision.key.basename)
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
@@ -75,6 +175,8 @@ struct CodeReviewPanel: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+        }
+            Spacer(minLength: 0)
             HStack(spacing: 8) {
                 Text("\(totals.count) file\(totals.count == 1 ? "" : "s")")
                     .foregroundStyle(.secondary)
@@ -88,7 +190,7 @@ struct CodeReviewPanel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
-        .padding(.top, 0)
+        .padding(.top, 6)
         .padding(.bottom, 6)
         .contextMenu {
             Button("Copy Repository Path") { model.copyRepositoryPath() }

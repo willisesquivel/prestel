@@ -1,63 +1,6 @@
 import AppKit
 import SwiftUI
 
-struct ReviewFileListHost: NSViewRepresentable {
-    @ObservedObject var model: CodeReviewModel
-    var files: [ChangedFile]
-    var onEscape: () -> Void
-    var onFocusChange: (Bool) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(model: model, onEscape: onEscape, onFocusChange: onFocusChange)
-    }
-
-    func makeNSView(context: Context) -> ReviewFileListView {
-        let view = ReviewFileListView()
-        view.coordinator = context.coordinator
-        return view
-    }
-
-    func updateNSView(_ nsView: ReviewFileListView, context: Context) {
-        context.coordinator.model = model
-        context.coordinator.onEscape = onEscape
-        context.coordinator.onFocusChange = onFocusChange
-        nsView.coordinator = context.coordinator
-        nsView.reload(
-            files: files,
-            diffs: model.diffs,
-            highlights: model.highlights,
-            presentation: model.presentation,
-            showWhitespace: model.showWhitespace
-        )
-    }
-
-    static func dismantleNSView(_ nsView: ReviewFileListView, coordinator: Coordinator) {
-        nsView.shutdown()
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, ReviewDiffCoordinating {
-        var model: CodeReviewModel
-        var onEscape: () -> Void
-        var onFocusChange: (Bool) -> Void
-
-        init(model: CodeReviewModel, onEscape: @escaping () -> Void, onFocusChange: @escaping (Bool) -> Void) {
-            self.model = model
-            self.onEscape = onEscape
-            self.onFocusChange = onFocusChange
-        }
-
-        func toggle(_ fileID: String) { model.toggleFile(fileID) }
-        func reveal(fileID: String, hunkIndex: Int) { model.revealContext(fileID: fileID, hunkIndex: hunkIndex) }
-        func loadLarge(fileID: String, comparison: FileComparisonKind) { model.loadLargeDiff(fileID: fileID, comparison: comparison) }
-        func open(_ file: ChangedFile) { model.openFile(file) }
-        func revealInFinder(_ file: ChangedFile) { model.reveal(file) }
-        func copyRelative(_ file: ChangedFile) { model.copyPath(file, absolute: false) }
-        func copyAbsolute(_ file: ChangedFile) { model.copyPath(file, absolute: true) }
-        func copyPatch(_ file: ChangedFile) { model.copyPatch(for: file) }
-    }
-}
-
 @MainActor
 protocol ReviewDiffCoordinating: AnyObject {
     func reveal(fileID: String, hunkIndex: Int)
@@ -66,350 +9,119 @@ protocol ReviewDiffCoordinating: AnyObject {
     var onFocusChange: (Bool) -> Void { get }
 }
 
-final class ReviewFileListView: NSView {
-    weak var coordinator: ReviewFileListHost.Coordinator?
-    private let scrollView = NSScrollView()
-    private let document = ReviewFileListDocument()
+/// File header row (40pt) for the SwiftUI review file list. Mirrors the old
+/// AppKit header: disclosure chevron, basename + status subtitle, monospaced
+/// +/− counts, and a file-actions menu. Tapping anywhere but the menu toggles.
+struct ReviewFileHeaderRow: View {
+    let file: ChangedFile
+    let expanded: Bool
+    let onToggle: () -> Void
+    let onOpen: () -> Void
+    let onReveal: () -> Void
+    let onCopyRelative: () -> Void
+    let onCopyAbsolute: () -> Void
+    let onCopyPatch: () -> Void
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = .clear
-        clipsToBounds = true
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.scrollerStyle = .overlay
-        scrollView.borderType = .noBorder
-        scrollView.automaticallyAdjustsContentInsets = false
-        scrollView.usesPredominantAxisScrolling = true
-        scrollView.horizontalScrollElasticity = .none
-        scrollView.verticalScrollElasticity = .allowed
-        scrollView.allowsMagnification = false
-        scrollView.contentView.copiesOnScroll = true
-        scrollView.documentView = document
-        addSubview(scrollView)
-        document.listView = self
-    }
+    var body: some View {
+        HStack(spacing: 0) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+                .padding(.leading, 4)
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override var mouseDownCanMoveWindow: Bool { false }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.identityPath.basename)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(file.metadataLabel)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.leading, 4)
+            .help(pathHelp)
 
-    func reload(
-        files: [ChangedFile],
-        diffs: [String: FileDiff],
-        highlights: [String: HighlightedSource],
-        presentation: ReviewPresentationState,
-        showWhitespace: Bool
-    ) {
-        document.reload(
-            files: files,
-            diffs: diffs,
-            highlights: highlights,
-            presentation: presentation,
-            showWhitespace: showWhitespace,
-            coordinator: coordinator
+            Spacer(minLength: 8)
+
+            if !file.hasBinaryComparison {
+                Text("+\(file.additions)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color(nsColor: .systemGreen))
+                Text("−\(file.deletions)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .padding(.leading, 6)
+            }
+
+            Menu {
+                Button("Copy Relative Path", action: onCopyRelative)
+                    .disabled(!file.identityPath.isLossless)
+                Button("Copy Absolute Path", action: onCopyAbsolute)
+                    .disabled(!file.identityPath.isLossless)
+                Button("Open File", action: onOpen)
+                    .disabled(file.kind == .deleted || !file.identityPath.isLossless)
+                Button("Reveal in Finder", action: onReveal)
+                    .disabled(!file.identityPath.isLossless)
+                Button("Copy Patch", action: onCopyPatch)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .help("File actions")
+            .padding(.trailing, 8)
+        }
+        .frame(height: 40)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Same fill as a selected sidebar tab. Nothing frosted, nothing opaque.
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(0.16))
+        }
+        .contentShape(
+            .interaction,
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
-        layoutDocument()
+        .onTapGesture(perform: onToggle)
+        .contextMenu {
+            Button("Copy Relative Path", action: onCopyRelative)
+                .disabled(!file.identityPath.isLossless)
+            Button("Copy Absolute Path", action: onCopyAbsolute)
+                .disabled(!file.identityPath.isLossless)
+            Button("Open File", action: onOpen)
+                .disabled(file.kind == .deleted || !file.identityPath.isLossless)
+            Button("Reveal in Finder", action: onReveal)
+                .disabled(!file.identityPath.isLossless)
+            Button("Copy Patch", action: onCopyPatch)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(file.identityPath.basename), \(file.metadataLabel)")
+        .accessibilityValue(expanded ? "expanded" : "collapsed")
+        .accessibilityAction(named: expanded ? "Collapse" : "Expand", onToggle)
     }
 
-    func shutdown() {
-        coordinator = nil
-        document.reload(
-            files: [],
-            diffs: [:],
-            highlights: [:],
-            presentation: ReviewPresentationState(),
-            showWhitespace: false,
-            coordinator: nil
-        )
-    }
-
-    override func layout() {
-        super.layout()
-        layoutDocument()
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        layoutDocument()
-    }
-
-    private func layoutDocument() {
-        scrollView.frame = bounds
-        document.layoutStack(clipWidth: max(bounds.width, 1))
+    private var pathHelp: String {
+        file.oldPath.map { "\($0.display) → \(file.identityPath.display)" } ?? file.identityPath.display
     }
 }
 
-private final class ReviewFileListDocument: NSView {
-    weak var listView: ReviewFileListView?
-    private var files: [ChangedFile] = []
-    private var diffs: [String: FileDiff] = [:]
-    private var highlights: [String: HighlightedSource] = [:]
-    private var presentation = ReviewPresentationState()
-    private var showWhitespace = false
-    private var headers: [String: ReviewFileHeaderView] = [:]
-    private var panes: [String: ReviewDiffPane] = [:]
-
-    override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    func reload(
-        files: [ChangedFile],
-        diffs: [String: FileDiff],
-        highlights: [String: HighlightedSource],
-        presentation: ReviewPresentationState,
-        showWhitespace: Bool,
-        coordinator: ReviewFileListHost.Coordinator?
-    ) {
-        self.files = files
-        self.diffs = diffs
-        self.highlights = highlights
-        self.presentation = presentation
-        self.showWhitespace = showWhitespace
-        let ids = Set(files.map(\.id))
-        for (id, header) in headers where !ids.contains(id) {
-            header.removeFromSuperview()
-            headers.removeValue(forKey: id)
-        }
-        for (id, pane) in panes where !ids.contains(id) || !presentation.expandedFileIDs.contains(id) {
-            pane.shutdown()
-            pane.removeFromSuperview()
-            panes.removeValue(forKey: id)
-        }
-        for file in files {
-            let header = headers[file.id] ?? ReviewFileHeaderView()
-            if header.superview == nil {
-                addSubview(header)
-                headers[file.id] = header
-            }
-            header.configure(file: file, expanded: presentation.expandedFileIDs.contains(file.id), coordinator: coordinator)
-            if presentation.expandedFileIDs.contains(file.id) {
-                let pane = panes[file.id] ?? ReviewDiffPane()
-                if pane.superview == nil {
-                    addSubview(pane)
-                    panes[file.id] = pane
-                }
-                pane.coordinator = coordinator
-                pane.reload(
-                    rows: ReviewDocumentBuilder.bodyRows(file: file, diffs: diffs, presentation: presentation),
-                    highlights: highlights,
-                    showWhitespace: showWhitespace,
-                    file: file
-                )
-            }
-        }
-        needsLayout = true
-    }
-
-    override func layout() {
-        super.layout()
-        layoutStack(clipWidth: max(bounds.width, 1))
-    }
-
-    func layoutStack(clipWidth: CGFloat) {
-        let inset = ShellMetrics.sidebarHorizontalInset
-        let width = max(clipWidth - inset * 2, 1)
-        var y: CGFloat = 0
-        for file in files {
-            if let header = headers[file.id] {
-                header.frame = NSRect(x: inset, y: y, width: width, height: 40)
-                y += 40 + ShellMetrics.sidebarRowSpacing
-            }
-            if presentation.expandedFileIDs.contains(file.id), let pane = panes[file.id] {
-                let rows = ReviewDocumentBuilder.bodyRows(file: file, diffs: diffs, presentation: presentation)
-                let height = min(max(ReviewDocumentBuilder.contentHeight(of: rows), 36), 420)
-                pane.frame = NSRect(x: inset, y: y, width: width, height: height)
-                y += height + ShellMetrics.sidebarRowSpacing
-            }
-        }
-        y += 16
-        let size = NSSize(width: clipWidth, height: max(y, 1))
-        if frame.size != size {
-            setFrameSize(size)
-        }
-    }
-}
-
-private final class ReviewFileHeaderView: NSView {
-    private var file: ChangedFile?
-    weak var coordinator: ReviewFileListHost.Coordinator?
-    private let disclosure = NSButton()
-    private let title = NSTextField(labelWithString: "")
-    private let subtitle = NSTextField(labelWithString: "")
-    private let additions = NSTextField(labelWithString: "")
-    private let deletions = NSTextField(labelWithString: "")
-    private let menuButton = NSButton()
-
-    override var isFlipped: Bool { true }
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        [title, subtitle, additions, deletions].forEach {
-            $0.isBordered = false
-            $0.drawsBackground = false
-            $0.lineBreakMode = .byTruncatingMiddle
-            $0.cell?.truncatesLastVisibleLine = true
-        }
-        title.lineBreakMode = .byTruncatingMiddle
-        subtitle.lineBreakMode = .byTruncatingMiddle
-        additions.lineBreakMode = .byClipping
-        deletions.lineBreakMode = .byClipping
-        additions.textColor = .systemGreen
-        deletions.textColor = .systemRed
-        additions.alignment = .right
-        deletions.alignment = .right
-        disclosure.bezelStyle = .regularSquare
-        disclosure.isBordered = false
-        disclosure.imagePosition = .imageOnly
-        disclosure.target = self
-        disclosure.action = #selector(toggle)
-        menuButton.bezelStyle = .regularSquare
-        menuButton.isBordered = false
-        menuButton.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "File actions")
-        menuButton.imagePosition = .imageOnly
-        menuButton.target = self
-        menuButton.action = #selector(showMenu)
-        addSubview(disclosure)
-        addSubview(title)
-        addSubview(subtitle)
-        addSubview(additions)
-        addSubview(deletions)
-        addSubview(menuButton)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func configure(file: ChangedFile, expanded: Bool, coordinator: ReviewFileListHost.Coordinator?) {
-        self.file = file
-        self.coordinator = coordinator
-        disclosure.image = NSImage(
-            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
-            accessibilityDescription: "Disclosure"
-        )
-        title.stringValue = file.identityPath.basename
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
-        title.toolTip = file.oldPath.map { "\($0.display) → \(file.identityPath.display)" } ?? file.identityPath.display
-        subtitle.stringValue = file.metadataLabel
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        if file.hasBinaryComparison {
-            additions.stringValue = ""
-            deletions.stringValue = ""
-        } else {
-            additions.stringValue = "+\(file.additions)"
-            deletions.stringValue = "−\(file.deletions)"
-        }
-        additions.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        deletions.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        additions.sizeToFit()
-        deletions.sizeToFit()
-        needsLayout = true
-        needsDisplay = true
-    }
-
-    override func layout() {
-        super.layout()
-        disclosure.frame = NSRect(x: 4, y: 8, width: 24, height: 24)
-        menuButton.frame = NSRect(x: max(8, bounds.width - 32), y: 8, width: 24, height: 24)
-        let deletionsWidth = deletions.stringValue.isEmpty ? 0 : ceil(deletions.attributedStringValue.size().width) + 4
-        let additionsWidth = additions.stringValue.isEmpty ? 0 : ceil(additions.attributedStringValue.size().width) + 4
-        var cursor = menuButton.frame.minX - 8
-        if deletionsWidth > 0 {
-            cursor -= deletionsWidth
-            deletions.frame = NSRect(x: cursor, y: 6, width: deletionsWidth, height: 16)
-            cursor -= 6
-        } else {
-            deletions.frame = .zero
-        }
-        if additionsWidth > 0 {
-            cursor -= additionsWidth
-            additions.frame = NSRect(x: cursor, y: 6, width: additionsWidth, height: 16)
-        } else {
-            additions.frame = .zero
-        }
-        let textX: CGFloat = 32
-        let textWidth = max(40, cursor - 8 - textX)
-        title.frame = NSRect(x: textX, y: 4, width: textWidth, height: 16)
-        subtitle.frame = NSRect(x: textX, y: 22, width: textWidth, height: 14)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.05).setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: 7, yRadius: 7).fill()
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        if let file {
-            coordinator?.toggle(file.id)
-        }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        if let file {
-            NSMenu.popUpContextMenu(handleMenu(file), with: event, for: self)
-        }
-    }
-
-    @objc private func toggle() {
-        if let file {
-            coordinator?.toggle(file.id)
-        }
-    }
-
-    @objc private func showMenu() {
-        if let file {
-            handleMenu(file).popUp(positioning: nil, at: NSPoint(x: menuButton.bounds.minX, y: menuButton.bounds.maxY), in: menuButton)
-        }
-    }
-
-    private func handleMenu(_ file: ChangedFile) -> NSMenu {
-        let menu = NSMenu()
-        func item(_ title: String, enabled: Bool = true, action: Selector) -> NSMenuItem {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self
-            item.representedObject = file
-            item.isEnabled = enabled
-            return item
-        }
-        menu.addItem(item("Copy Relative Path", enabled: file.identityPath.isLossless, action: #selector(copyRelative(_:))))
-        menu.addItem(item("Copy Absolute Path", enabled: file.identityPath.isLossless, action: #selector(copyAbsolute(_:))))
-        menu.addItem(item("Open File", enabled: file.kind != .deleted && file.identityPath.isLossless, action: #selector(openFile(_:))))
-        menu.addItem(item("Reveal in Finder", enabled: file.identityPath.isLossless, action: #selector(revealFile(_:))))
-        menu.addItem(item("Copy Patch", action: #selector(copyPatch(_:))))
-        return menu
-    }
-
-    @objc private func copyRelative(_ sender: NSMenuItem) {
-        guard let file = sender.representedObject as? ChangedFile else { return }
-        coordinator?.copyRelative(file)
-    }
-    @objc private func copyAbsolute(_ sender: NSMenuItem) {
-        guard let file = sender.representedObject as? ChangedFile else { return }
-        coordinator?.copyAbsolute(file)
-    }
-    @objc private func openFile(_ sender: NSMenuItem) {
-        guard let file = sender.representedObject as? ChangedFile else { return }
-        coordinator?.open(file)
-    }
-    @objc private func revealFile(_ sender: NSMenuItem) {
-        guard let file = sender.representedObject as? ChangedFile else { return }
-        coordinator?.revealInFinder(file)
-    }
-    @objc private func copyPatch(_ sender: NSMenuItem) {
-        guard let file = sender.representedObject as? ChangedFile else { return }
-        coordinator?.copyPatch(file)
-    }
-}
-
-struct ReviewDiffHost: NSViewRepresentable {
+struct ReviewDiffHost: NSViewRepresentable, Equatable {
     @ObservedObject var model: CodeReviewModel
     var file: ChangedFile
     var onEscape: () -> Void
     var onFocusChange: (Bool) -> Void
+
+    /// Model-driven reloads flow through the observed object; identity alone
+    /// decides view equality so unrelated parent refreshes (scroll tracking)
+    /// never retrigger a pane reload mid-scroll.
+    static nonisolated func == (lhs: ReviewDiffHost, rhs: ReviewDiffHost) -> Bool {
+        lhs.file.id == rhs.file.id
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(model: model, onEscape: onEscape, onFocusChange: onFocusChange)
@@ -455,10 +167,205 @@ struct ReviewDiffHost: NSViewRepresentable {
     }
 }
 
+enum ReviewDiffMetrics {
+    static let markerSlotWidth: CGFloat = 14
+    static let changeBarWidth: CGFloat = 2
+    static let numberLeadingInset: CGFloat = 8
+    static let codeTextLeading: CGFloat = 4
+
+    static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    static func lineNumberGutterWidth(for rows: [ReviewDocumentRow], font: NSFont) -> CGFloat {
+        var maxNumber = 1
+        for row in rows {
+            if case .code(let line, _, _, _, _, _) = row {
+                maxNumber = max(maxNumber, line.oldNumber ?? 1, line.newNumber ?? 1)
+            }
+        }
+        let digits = max(3, String(maxNumber).count)
+        return CGFloat(digits) * font.maximumAdvancement.width + 16
+    }
+
+    /// Single line-number column (GEN-51 follow-up): deletion shows the old
+    /// number, everything else shows the new number with old as fallback.
+    /// Context lines no longer render the same number twice.
+    static func displayNumber(for line: DiffLine) -> String {
+        switch line.kind {
+        case .deletion:
+            return line.oldNumber.map(String.init) ?? ""
+        case .addition, .context:
+            return line.newNumber.map(String.init) ?? line.oldNumber.map(String.init) ?? ""
+        }
+    }
+
+    static func stickyWidth(gutterWidth: CGFloat) -> CGFloat {
+        gutterWidth + markerSlotWidth
+    }
+
+    /// Opaque, mid-weight gray. `tertiaryLabelColor` is too faint on window glass
+    /// and on the add/delete fills, in both appearances.
+    static func gutterNumberColor(dark: Bool) -> NSColor {
+        if dark {
+            return NSColor(srgbRed: 0.80, green: 0.81, blue: 0.83, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.30, green: 0.31, blue: 0.34, alpha: 1)
+    }
+
+    static func changeFillColor(kind: DiffLineKind, dark: Bool) -> NSColor? {
+        switch kind {
+        case .addition:
+            NSColor.systemGreen.withAlphaComponent(dark ? 0.16 : 0.10)
+        case .deletion:
+            NSColor.systemRed.withAlphaComponent(dark ? 0.14 : 0.08)
+        case .context:
+            nil
+        }
+    }
+
+    static func changeBarColor(kind: DiffLineKind) -> NSColor? {
+        switch kind {
+        case .addition:
+            NSColor.systemGreen.withAlphaComponent(0.85)
+        case .deletion:
+            NSColor.systemRed.withAlphaComponent(0.85)
+        case .context:
+            nil
+        }
+    }
+}
+
+/// Line-relative syntax color run. Coordinates are UTF-16 offsets into the
+/// `DiffLine.text` (which matches the snapshot line, so 1:1 with the file).
+struct ReviewHighlightRun: Hashable, Sendable {
+    var location: Int
+    var length: Int
+    var red: CGFloat
+    var green: CGFloat
+    var blue: CGFloat
+    var alpha: CGFloat
+
+    var nsRange: NSRange { NSRange(location: location, length: length) }
+
+    func makeColor() -> NSColor {
+        NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
+    }
+}
+
+/// Maps file-absolute `SyntaxSpan`s (UTF-16 + sRGB, see `ReviewSyntaxHighlighter`)
+/// onto a single `DiffLine` via its 1-based `oldNumber` / `newNumber`.
+///
+/// Rules (GEN-51):
+/// - deletion → `old:` snapshot, addition → `new:` snapshot,
+///   context → `new:` with `old:` fallback.
+/// - Unknown language / over budget / binary → no entry in `highlights`,
+///   so this returns nil and the caller keeps `NSColor.labelColor`.
+/// - Foreground only. Row fills, gutter, selection, and whitespace dots are
+///   owned by the caller.
+enum ReviewHighlightMapper {
+    static func runs(
+        for line: DiffLine,
+        fileID: String,
+        comparison: FileComparisonKind,
+        highlights: [String: HighlightedSource]
+    ) -> [ReviewHighlightRun]? {
+        let key = reviewDiffKey(fileID, comparison)
+        switch line.kind {
+        case .deletion:
+            guard let number = line.oldNumber,
+                  let source = highlights["old:\(key)"] else { return nil }
+            return lineRuns(source: source, lineNumber: number, lineText: line.text)
+        case .addition:
+            guard let number = line.newNumber,
+                  let source = highlights["new:\(key)"] else { return nil }
+            return lineRuns(source: source, lineNumber: number, lineText: line.text)
+        case .context:
+            if let number = line.newNumber,
+               let source = highlights["new:\(key)"],
+               let runs = lineRuns(source: source, lineNumber: number, lineText: line.text) {
+                return runs
+            }
+            if let number = line.oldNumber,
+               let source = highlights["old:\(key)"],
+               let runs = lineRuns(source: source, lineNumber: number, lineText: line.text) {
+                return runs
+            }
+            return nil
+        }
+    }
+
+    /// Converts file-absolute spans onto one line. Returns nil when nothing
+    /// covers the line so the caller falls back to `labelColor`.
+    static func lineRuns(
+        source: HighlightedSource,
+        lineNumber: Int,
+        lineText: String
+    ) -> [ReviewHighlightRun]? {
+        guard lineNumber >= 1, lineNumber <= source.lineStarts.count else { return nil }
+        let lineStart = source.lineStarts[lineNumber - 1]
+        let lineLength = (lineText as NSString).length
+        guard lineLength > 0, !source.spans.isEmpty else { return nil }
+        let lineEnd = lineStart + lineLength
+        var out: [ReviewHighlightRun] = []
+        out.reserveCapacity(4)
+        for span in source.spans {
+            guard span.utf16Length > 0 else { continue }
+            let spanStart = span.utf16Start
+            let spanEnd = spanStart + span.utf16Length
+            if spanEnd <= lineStart || spanStart >= lineEnd { continue }
+            let clippedStart = max(spanStart, lineStart)
+            let clippedEnd = min(spanEnd, lineEnd)
+            guard clippedStart < clippedEnd else { continue }
+            out.append(
+                ReviewHighlightRun(
+                    location: clippedStart - lineStart,
+                    length: clippedEnd - clippedStart,
+                    red: span.red,
+                    green: span.green,
+                    blue: span.blue,
+                    alpha: span.alpha
+                )
+            )
+        }
+        return out.isEmpty ? nil : out
+    }
+}
+
+private final class ReviewDiffScrollView: NSScrollView {
+    var onDidScroll: (() -> Void)?
+    private var isReflecting = false
+
+    override func reflectScrolledClipView(_ cView: NSClipView) {
+        super.reflectScrolledClipView(cView)
+        guard !isReflecting else { return }
+        isReflecting = true
+        onDidScroll?()
+        isReflecting = false
+    }
+
+    /// Panes scroll horizontally only; the file list owns vertical scrolling.
+    /// Horizontal gestures stay here, everything else travels up the responder
+    /// chain to the outer list so wheeling over a file never dead-ends.
+    override func scrollWheel(with event: NSEvent) {
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        if dx != 0 && abs(dx) >= abs(dy) {
+            super.scrollWheel(with: event)
+        } else if dy != 0 {
+            nextResponder?.scrollWheel(with: event)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
 final class ReviewDiffPane: NSView, ReviewFocusOwning {
     weak var coordinator: ReviewDiffCoordinating?
-    private let scrollView = NSScrollView()
+    private let scrollView = ReviewDiffScrollView()
     private let document = ReviewDiffDocumentView()
+    private let gutter = ReviewDiffGutterView()
+    private var isSyncingGutter = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -466,7 +373,7 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         layer?.backgroundColor = .clear
         clipsToBounds = true
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
@@ -474,10 +381,17 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.usesPredominantAxisScrolling = true
         scrollView.horizontalScrollElasticity = .allowed
-        scrollView.verticalScrollElasticity = .allowed
+        scrollView.verticalScrollElasticity = .none
         scrollView.allowsMagnification = false
+        scrollView.contentView.copiesOnScroll = false
         scrollView.documentView = document
+        scrollView.onDidScroll = { [weak self] in
+            self?.syncStickyGutter()
+        }
+        gutter.document = document
+        gutter.clipsToBounds = true
         addSubview(scrollView)
+        addSubview(gutter)
         document.pane = self
     }
 
@@ -512,8 +426,38 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     }
 
     private func layoutDocument() {
-        scrollView.frame = bounds
-        document.sizeToFit(clipWidth: max(bounds.width, 1))
+        let gutterWidth = max(document.stickyWidth, 1)
+        let height = max(bounds.height, 1)
+        let codeWidth = max(bounds.width - gutterWidth, 1)
+        gutter.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: height)
+        scrollView.frame = NSRect(x: gutterWidth, y: 0, width: codeWidth, height: height)
+        document.sizeToFit(clipWidth: codeWidth)
+        syncStickyGutter()
+    }
+
+    func syncStickyGutter() {
+        guard !isSyncingGutter else { return }
+        isSyncingGutter = true
+        defer { isSyncingGutter = false }
+        let origin = NSPoint(x: 0, y: scrollView.documentVisibleRect.minY)
+        if gutter.bounds.origin != origin {
+            gutter.setBoundsOrigin(origin)
+        }
+        gutter.needsDisplay = true
+    }
+
+    func scrollDiffWheel(_ event: NSEvent) {
+        scrollView.scrollWheel(with: event)
+    }
+
+    var stickyGutterFrame: NSRect { gutter.frame }
+    var codeScrollFrame: NSRect { scrollView.frame }
+    var diffVisibleOrigin: NSPoint { scrollView.documentVisibleRect.origin }
+    var diffDocumentWidth: CGFloat { document.bounds.width }
+
+    func scrollDiffDocument(to origin: NSPoint) {
+        scrollView.contentView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -538,6 +482,23 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     }
 }
 
+private final class ReviewDiffGutterView: NSView {
+    weak var document: ReviewDiffDocumentView?
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+    override var allowsVibrancy: Bool { false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func scrollWheel(with event: NSEvent) {
+        document?.pane?.scrollDiffWheel(event)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        document?.drawGutter(in: dirtyRect, width: bounds.width)
+    }
+}
+
 private final class ReviewDiffDocumentView: NSView {
     weak var pane: ReviewDiffPane?
     private var rows: [ReviewDocumentRow] = []
@@ -553,6 +514,8 @@ private final class ReviewDiffDocumentView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override var isOpaque: Bool { false }
     override var acceptsFirstResponder: Bool { true }
+
+    var stickyWidth: CGFloat { ReviewDiffMetrics.stickyWidth(gutterWidth: gutterWidth) }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -573,13 +536,13 @@ private final class ReviewDiffDocumentView: NSView {
         self.highlights = highlights
         self.showWhitespace = showWhitespace
         self.file = file
-        gutterWidth = Self.gutterWidth(for: rows, font: font)
+        gutterWidth = ReviewDiffMetrics.lineNumberGutterWidth(for: rows, font: font)
         maxCodeWidth = Self.maxCodeWidth(for: rows, font: font)
         needsDisplay = true
     }
 
     func sizeToFit(clipWidth: CGFloat) {
-        let width = max(clipWidth, gutterWidth + 16 + maxCodeWidth)
+        let width = max(clipWidth, maxCodeWidth)
         let height = max(ReviewDocumentBuilder.contentHeight(of: rows), 1)
         let size = NSSize(width: width, height: height)
         if frame.size != size {
@@ -595,6 +558,19 @@ private final class ReviewDiffDocumentView: NSView {
             let rect = NSRect(x: 0, y: y, width: bounds.width, height: height)
             if rect.intersects(dirtyRect) {
                 draw(row: row, in: rect)
+            }
+            y += height
+        }
+    }
+
+    func drawGutter(in dirtyRect: NSRect, width: CGFloat) {
+        let dark = ReviewDiffMetrics.isDark(effectiveAppearance)
+        var y: CGFloat = 0
+        for row in rows {
+            let height = ReviewDocumentBuilder.height(of: row)
+            let rect = NSRect(x: 0, y: y, width: width, height: height)
+            if rect.intersects(dirtyRect), case .code(let line, _, _, _, _, _) = row {
+                drawGutter(line: line, in: rect, dark: dark)
             }
             y += height
         }
@@ -694,25 +670,16 @@ private final class ReviewDiffDocumentView: NSView {
     }
 
     private func drawLabel(_ text: String, in rect: NSRect, font: NSFont, color: NSColor) {
-        let drawRect = NSRect(x: rect.minX + 8, y: rect.minY + 4, width: max(0, rect.width - 16), height: max(0, rect.height - 8))
+        let x = rect.minX + 8
+        let drawRect = NSRect(x: x, y: rect.minY + 4, width: max(0, rect.maxX - x - 8), height: max(0, rect.height - 8))
         (text as NSString).draw(in: drawRect, withAttributes: [.font: font, .foregroundColor: color])
     }
 
     private func drawCode(line: DiffLine, fileID: String, comparison: FileComparisonKind, in rect: NSRect) {
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        switch line.kind {
-        case .addition:
-            NSColor.systemGreen.withAlphaComponent(dark ? 0.16 : 0.10).setFill()
+        let dark = ReviewDiffMetrics.isDark(effectiveAppearance)
+        if let fill = ReviewDiffMetrics.changeFillColor(kind: line.kind, dark: dark) {
+            fill.setFill()
             rect.fill()
-            NSColor.systemGreen.withAlphaComponent(0.85).setFill()
-            NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height).fill()
-        case .deletion:
-            NSColor.systemRed.withAlphaComponent(dark ? 0.14 : 0.08).setFill()
-            rect.fill()
-            NSColor.systemRed.withAlphaComponent(0.85).setFill()
-            NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height).fill()
-        case .context:
-            break
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping
@@ -722,7 +689,7 @@ private final class ReviewDiffDocumentView: NSView {
         }
         let ns = display as NSString
         let textY = rect.minY + max(0, (rect.height - 16) / 2)
-        let textX = rect.minX + gutterWidth + 14
+        let textX = rect.minX + ReviewDiffMetrics.codeTextLeading
         if let range = selection.utf16Range(
             fileID: fileID,
             comparison: comparison,
@@ -737,16 +704,60 @@ private final class ReviewDiffDocumentView: NSView {
             NSColor.selectedTextBackgroundColor.setFill()
             NSRect(x: textX + prefixWidth, y: rect.minY, width: max(selectedWidth, 2), height: rect.height).fill()
         }
-        let gutterAttributes: [NSAttributedString.Key: Any] = [
+        let textRect = NSRect(x: textX, y: textY, width: max(0, rect.width - textX), height: 16)
+        if let runs = ReviewHighlightMapper.runs(for: line, fileID: fileID, comparison: comparison, highlights: highlights) {
+            // Foreground-only highlighting. Row fills, selection background,
+            // whitespace dots, and the sticky gutter are left untouched.
+            // Gaps keep labelColor so unknown spans never break readability,
+            // including on the translucent add/delete fills.
+            let storable = NSMutableAttributedString(
+                string: display,
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+            )
+            for run in runs {
+                guard run.length > 0, run.location >= 0, run.location < storable.length else { continue }
+                let length = min(run.length, storable.length - run.location)
+                storable.addAttribute(.foregroundColor, value: run.makeColor(), range: NSRange(location: run.location, length: length))
+            }
+            storable.draw(in: textRect)
+        } else {
+            ns.draw(
+                in: textRect,
+                withAttributes: [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+            )
+        }
+        if line.missingNewline {
+            ("No newline at end of file" as NSString).draw(
+                in: NSRect(x: textX, y: rect.maxY - 10, width: 240, height: 10),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.tertiaryLabelColor]
+            )
+        }
+    }
+
+    private func drawGutter(line: DiffLine, in rect: NSRect, dark: Bool) {
+        if let fill = ReviewDiffMetrics.changeFillColor(kind: line.kind, dark: dark) {
+            fill.setFill()
+            rect.fill()
+        }
+        if let bar = ReviewDiffMetrics.changeBarColor(kind: line.kind) {
+            bar.setFill()
+            NSRect(x: rect.minX, y: rect.minY, width: ReviewDiffMetrics.changeBarWidth, height: rect.height).fill()
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byClipping
+        paragraph.alignment = .right
+        let numberColor = ReviewDiffMetrics.gutterNumberColor(dark: dark)
+        let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.tertiaryLabelColor,
+            .foregroundColor: numberColor,
             .paragraphStyle: paragraph
         ]
-        let half = gutterWidth / 2
-        let old = line.oldNumber.map(String.init) ?? ""
-        let new = line.newNumber.map(String.init) ?? ""
-        (old as NSString).draw(in: NSRect(x: rect.minX + 8, y: textY, width: half - 10, height: 16), withAttributes: gutterAttributes)
-        (new as NSString).draw(in: NSRect(x: rect.minX + half, y: textY, width: half - 8, height: 16), withAttributes: gutterAttributes)
+        let textY = rect.minY + max(0, (rect.height - 16) / 2)
+        let number = ReviewDiffMetrics.displayNumber(for: line)
+        (number as NSString).draw(
+            in: NSRect(x: rect.minX + ReviewDiffMetrics.numberLeadingInset, y: textY, width: max(0, gutterWidth - ReviewDiffMetrics.numberLeadingInset - 4), height: 16),
+            withAttributes: attributes
+        )
         let marker: String
         let markerColor: NSColor
         switch line.kind {
@@ -758,23 +769,14 @@ private final class ReviewDiffDocumentView: NSView {
             markerColor = .systemRed
         case .context:
             marker = " "
-            markerColor = .tertiaryLabelColor
+            markerColor = numberColor
         }
+        let markerStyle = NSMutableParagraphStyle()
+        markerStyle.alignment = .center
         (marker as NSString).draw(
             in: NSRect(x: rect.minX + gutterWidth, y: textY, width: 12, height: 16),
-            withAttributes: [.font: font, .foregroundColor: markerColor]
+            withAttributes: [.font: font, .foregroundColor: markerColor, .paragraphStyle: markerStyle]
         )
-        let textRect = NSRect(x: textX, y: textY, width: max(0, rect.width - textX), height: 16)
-        ns.draw(
-            in: textRect,
-            withAttributes: [.font: font, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
-        )
-        if line.missingNewline {
-            ("No newline at end of file" as NSString).draw(
-                in: NSRect(x: textX, y: rect.maxY - 10, width: 240, height: 10),
-                withAttributes: [.font: NSFont.systemFont(ofSize: 9), .foregroundColor: NSColor.tertiaryLabelColor]
-            )
-        }
     }
 
     private func utf16Index(at point: NSPoint, in rect: NSRect, line: DiffLine) -> Int {
@@ -783,7 +785,7 @@ private final class ReviewDiffDocumentView: NSView {
             display = display.replacingOccurrences(of: " ", with: "·").replacingOccurrences(of: "\t", with: "→")
         }
         let ns = display as NSString
-        let textX = rect.minX + gutterWidth + 14
+        let textX = rect.minX + ReviewDiffMetrics.codeTextLeading
         let x = point.x - textX
         if x <= 0 { return 0 }
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
@@ -838,17 +840,6 @@ private final class ReviewDiffDocumentView: NSView {
             if candidate == line { return index }
         }
         return max(0, index)
-    }
-
-    private static func gutterWidth(for rows: [ReviewDocumentRow], font: NSFont) -> CGFloat {
-        var maxNumber = 1
-        for row in rows {
-            if case .code(let line, _, _, _, _, _) = row {
-                maxNumber = max(maxNumber, line.oldNumber ?? 1, line.newNumber ?? 1)
-            }
-        }
-        let digits = max(3, String(maxNumber).count)
-        return CGFloat(digits) * font.maximumAdvancement.width * 2 + 16
     }
 
     private static func maxCodeWidth(for rows: [ReviewDocumentRow], font: NSFont) -> CGFloat {

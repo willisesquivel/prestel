@@ -322,6 +322,9 @@ struct HighlightedSource: Hashable, Sendable {
     var identity: String
     var appearanceGeneration: UInt64
     var spans: [SyntaxSpan]
+    /// UTF-16 offsets of each 1-based line start in the highlighted snapshot text.
+    /// Used to convert file-absolute `SyntaxSpan` ranges onto a `DiffLine`.
+    var lineStarts: [Int] = []
 }
 
 struct GitCommandRequest: Sendable {

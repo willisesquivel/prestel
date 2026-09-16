@@ -41,19 +41,15 @@ struct ShellView: View {
                     )
                     .offset(x: layout.detailOriginX, y: ShellMetrics.detailInset)
 
-                SidebarView(model: model, width: layout.effectiveSidebarWidth, closeTab: closeTab)
-                    .frame(width: layout.effectiveSidebarWidth, height: size.height)
-                    .offset(x: layout.showsSidebar ? 0 : -max(layout.effectiveSidebarWidth, model.sidebarWidth))
+                SidebarView(model: model, width: layout.restingSidebarWidth, closeTab: closeTab)
+                    .frame(width: layout.restingSidebarWidth, height: size.height)
+                    .offset(x: layout.showsSidebar ? 0 : -layout.restingSidebarWidth)
                     .allowsHitTesting(layout.showsSidebar)
                     .accessibilityHidden(!layout.showsSidebar)
 
                 CodeReviewPanel(model: review)
-                    .frame(
-                        width: max(layout.showsReview ? layout.effectiveReviewWidth : model.reviewWidth, 1),
-                        height: size.height
-                    )
-                    .clipped()
-                    .offset(x: layout.showsReview ? layout.reviewOriginX : size.width)
+                    .frame(width: layout.restingReviewWidth, height: size.height)
+                    .offset(x: layout.showsReview ? layout.restingReviewOriginX : size.width)
                     .allowsHitTesting(layout.showsReview)
                     .accessibilityHidden(!layout.showsReview)
 
@@ -72,7 +68,7 @@ struct ShellView: View {
                         sidebarResizeStartWidth = nil
                     }
                     .frame(width: 10, height: size.height)
-                    .offset(x: layout.effectiveSidebarWidth - 5)
+                    .offset(x: layout.restingSidebarWidth - 5)
                     .accessibilityHidden(true)
                 }
 
@@ -95,7 +91,7 @@ struct ShellView: View {
                         }
                     )
                     .frame(width: 10, height: size.height)
-                    .offset(x: layout.reviewOriginX - 5)
+                    .offset(x: layout.restingReviewOriginX - 5)
                 }
 
                 ManualTrafficLights(sidebarVisible: model.sidebarVisible)

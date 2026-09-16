@@ -9,6 +9,11 @@ struct ShellLayout: Equatable, Sendable {
     var detailWidth: CGFloat
     var effectiveReviewWidth: CGFloat
     var reviewOriginX: CGFloat
+    /// Full sidebar width as if it were open. Show/hide slides this width instead of clipping through 0.
+    var restingSidebarWidth: CGFloat
+    /// Full review width as if it were open. Show/hide slides this width instead of clipping through 0.
+    var restingReviewWidth: CGFloat
+    var restingReviewOriginX: CGFloat
     var terminalWidth: CGFloat
     var headerLeadingPadding: CGFloat
     var showsSidebar: Bool
@@ -37,33 +42,24 @@ struct ShellLayout: Equatable, Sendable {
 
         let showsSidebar = input.sidebarVisible
         let showsReview = input.reviewVisible
-        let trailingMinimum: CGFloat = showsReview ? ShellMetrics.reviewMinimumWidth : ShellMetrics.detailInset
-
-        var effectiveSidebar: CGFloat = 0
-        if showsSidebar {
-            let maximumSidebar = windowWidth - ShellMetrics.minimumDetailWidth - trailingMinimum
-            let upper = max(ShellMetrics.sidebarMinimumWidth, maximumSidebar)
-            effectiveSidebar = clamp(preferredSidebar, ShellMetrics.sidebarMinimumWidth, min(ShellMetrics.sidebarMaximumWidth, upper))
-        }
-
+        let restingSidebar = openSidebarWidth(
+            windowWidth: windowWidth,
+            preferred: preferredSidebar,
+            reviewVisible: showsReview
+        )
+        let effectiveSidebar: CGFloat = showsSidebar ? restingSidebar : 0
         let detailOrigin = showsSidebar ? effectiveSidebar : ShellMetrics.detailInset
-
-        var effectiveReview: CGFloat = 0
-        if showsReview {
-            let maximumReview = max(
-                ShellMetrics.reviewMinimumWidth,
-                windowWidth - detailOrigin - ShellMetrics.minimumDetailWidth
-            )
-            effectiveReview = clamp(
-                preferredReview,
-                ShellMetrics.reviewMinimumWidth,
-                min(ShellMetrics.reviewMaximumWidth, maximumReview)
-            )
-        }
+        let restingReview = openReviewWidth(
+            windowWidth: windowWidth,
+            preferred: preferredReview,
+            detailOrigin: detailOrigin
+        )
+        let effectiveReview: CGFloat = showsReview ? restingReview : 0
 
         let trailing = showsReview ? effectiveReview : ShellMetrics.detailInset
         let detailWidth = max(0, windowWidth - detailOrigin - trailing)
         let reviewOriginX = windowWidth - effectiveReview
+        let restingReviewOriginX = windowWidth - restingReview
 
         return ShellLayout(
             effectiveSidebarWidth: effectiveSidebar,
@@ -71,10 +67,40 @@ struct ShellLayout: Equatable, Sendable {
             detailWidth: detailWidth,
             effectiveReviewWidth: effectiveReview,
             reviewOriginX: reviewOriginX,
+            restingSidebarWidth: restingSidebar,
+            restingReviewWidth: restingReview,
+            restingReviewOriginX: restingReviewOriginX,
             terminalWidth: detailWidth,
             headerLeadingPadding: showsSidebar ? 12 : 80,
             showsSidebar: showsSidebar,
             showsReview: showsReview
+        )
+    }
+
+    private static func openSidebarWidth(
+        windowWidth: CGFloat,
+        preferred: CGFloat,
+        reviewVisible: Bool
+    ) -> CGFloat {
+        let trailingMinimum: CGFloat = reviewVisible ? ShellMetrics.reviewMinimumWidth : ShellMetrics.detailInset
+        let maximumSidebar = windowWidth - ShellMetrics.minimumDetailWidth - trailingMinimum
+        let upper = max(ShellMetrics.sidebarMinimumWidth, maximumSidebar)
+        return clamp(preferred, ShellMetrics.sidebarMinimumWidth, min(ShellMetrics.sidebarMaximumWidth, upper))
+    }
+
+    private static func openReviewWidth(
+        windowWidth: CGFloat,
+        preferred: CGFloat,
+        detailOrigin: CGFloat
+    ) -> CGFloat {
+        let maximumReview = max(
+            ShellMetrics.reviewMinimumWidth,
+            windowWidth - detailOrigin - ShellMetrics.minimumDetailWidth
+        )
+        return clamp(
+            preferred,
+            ShellMetrics.reviewMinimumWidth,
+            min(ShellMetrics.reviewMaximumWidth, maximumReview)
         )
     }
 

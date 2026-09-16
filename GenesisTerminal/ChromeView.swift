@@ -28,11 +28,11 @@ struct GenesisCommands: Commands {
         CommandGroup(replacing: .saveItem) {}
         CommandGroup(before: .toolbar) {
             Button("Toggle Sidebar") { app.keyController?.toggleSidebar(nil) }
-                .keyboardShortcut("s", modifiers: [.command, .control]).disabled(window == nil)
+                .keyboardShortcut("s").disabled(window == nil)
             Button(window?.model.reviewVisible == true ? "Hide Code Review" : "Show Code Review") {
                 app.keyController?.toggleCodeReview(nil)
             }
-            .keyboardShortcut("r", modifiers: [.command, .control])
+            .keyboardShortcut("r")
             .disabled(window == nil && window?.model.reviewVisible != true)
             Button("Next Tab") { app.keyController?.nextTab(nil) }
                 .keyboardShortcut(.tab, modifiers: [.control]).disabled((window?.model.tabs.count ?? 0) < 2)

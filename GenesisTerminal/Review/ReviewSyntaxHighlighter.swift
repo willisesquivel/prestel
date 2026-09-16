@@ -22,8 +22,10 @@ final class ReviewSyntaxHighlighter: Sendable {
             return nil
         }
         let language = Self.language(for: path)
+        guard language != nil else { return nil }
         let theme = dark ? "github-dark" : "github"
         let identity = snapshot.identity
+        let lineStarts = Self.lineStarts(for: text)
         return await withCheckedContinuation { continuation in
             queue.async {
                 if self.core.highlighter == nil {
@@ -61,7 +63,8 @@ final class ReviewSyntaxHighlighter: Sendable {
                     returning: HighlightedSource(
                         identity: identity,
                         appearanceGeneration: appearanceGeneration,
-                        spans: spans
+                        spans: spans,
+                        lineStarts: lineStarts
                     )
                 )
             }
@@ -98,5 +101,26 @@ final class ReviewSyntaxHighlighter: Sendable {
         case "php": return "php"
         default: return nil
         }
+    }
+
+    /// UTF-16 offsets of each 1-based line start. Matches `SyntaxSpan` coordinates
+    /// (NSString length / NSRange) so file-absolute spans can be clipped onto a
+    /// `DiffLine` via its 1-based `oldNumber` / `newNumber`.
+    static func lineStarts(for text: String) -> [Int] {
+        if text.isEmpty { return [] }
+        let ns = text as NSString
+        var starts: [Int] = []
+        var loc = 0
+        while loc < ns.length {
+            starts.append(loc)
+            let lineRange = ns.lineRange(for: NSRange(location: loc, length: 0))
+            let next = NSMaxRange(lineRange)
+            if next <= loc {
+                loc += 1
+            } else {
+                loc = next
+            }
+        }
+        return starts
     }
 }
