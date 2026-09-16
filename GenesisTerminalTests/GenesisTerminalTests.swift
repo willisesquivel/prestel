@@ -337,6 +337,320 @@ struct GenesisTerminalTests {
         #expect(!TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 3, visibleIDs: visible))
     }
 
+    @Test func splitPairsASecondTabAndCapsAtTwoPanes() {
+        let model = TerminalModel()
+        let current = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(current)
+        model.split(with: current, on: .trailing)
+        #expect(model.visibleSplit == nil, "splitting a tab with itself is a no-op")
+
+        model.split(with: second, on: .trailing)
+        #expect(model.visibleSplit?.leadingID == current)
+        #expect(model.visibleSplit?.trailingID == second)
+        #expect(model.visibleSplit?.axis == .horizontal)
+        #expect(model.splits.count == 1)
+        #expect(model.selectedID == second)
+
+        model.split(with: second, on: .leading)
+        #expect(model.visibleSplit?.leadingID == second)
+        #expect(model.visibleSplit?.trailingID == current)
+
+        model.split(with: third, on: .trailing)
+        #expect(model.visibleSplit?.leadingID == second)
+        #expect(model.visibleSplit?.trailingID == third)
+        #expect(model.tabs.map(\.id) == [current, second, third])
+        #expect(model.selectedID == third)
+    }
+
+    @Test func selectingATabOutsideTheSplitKeepsThePair() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.select(second)
+        #expect(model.splits.count == 1)
+        #expect(model.visibleSplit != nil)
+        model.select(third)
+        #expect(model.splits.count == 1)
+        #expect(model.split(containing: first)?.leadingID == first)
+        #expect(model.split(containing: first)?.trailingID == second)
+        #expect(model.visibleSplit == nil)
+        #expect(model.selectedID == third)
+        model.select(first)
+        #expect(model.visibleSplit?.leadingID == first)
+        #expect(model.selectedID == first)
+    }
+
+    @Test func multipleSplitPairsCanCoexist() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        let fourth = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.select(third)
+        model.split(with: fourth, on: .trailing)
+        #expect(model.splits.count == 2)
+        #expect(model.sidebarItems.count == 2)
+        #expect(model.sidebarItems.allSatisfy { $0.isPair })
+        model.select(first)
+        #expect(model.visibleSplit?.leadingID == first)
+        model.select(third)
+        #expect(model.visibleSplit?.leadingID == third)
+    }
+
+    @Test func movingASplitPairKeepsBothTabsAdjacent() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.moveTab(first, to: 3)
+        #expect(model.tabs.map(\.id) == [third, first, second])
+        #expect(model.split(containing: first)?.trailingID == second)
+    }
+
+    @Test func closingASplitPaneKeepsThePartnerSelected() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.closeTab(second)
+        #expect(model.splits.isEmpty)
+        #expect(model.selectedID == first)
+        #expect(model.tabs.map(\.id) == [first])
+    }
+
+    @Test func detachingASplitPaneCollapsesAndSelectsThePartner() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab()
+        model.select(first)
+        model.split(with: second.id, on: .leading)
+        #expect(model.visibleSplit?.leadingID == second.id)
+        let extracted = model.detachTab(second.id)
+        #expect(extracted === second)
+        #expect(model.splits.isEmpty)
+        #expect(model.selectedID == first)
+        #expect(second.state != .closed)
+    }
+
+    @Test func splitStateRoundTripsThroughWindowDescriptor() throws {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.resizeSplit(to: 0.35, along: 640)
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let restored = TerminalModel(restoration: try JSONDecoder().decode(WindowDescriptor.self, from: encoded))
+        #expect(restored.splits.count == 1)
+        #expect(restored.splits[0].leadingID == first)
+        #expect(restored.splits[0].trailingID == second)
+        #expect(restored.splits[0].fraction == TabSplitGeometry.clampFraction(0.35, along: 640))
+        #expect(restored.splits[0].axis == .horizontal)
+        #expect(restored.selectedID == second)
+    }
+
+    @Test func verticalSplitStateRoundTripsThroughWindowDescriptor() throws {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .bottom)
+        #expect(model.visibleSplit?.axis == .vertical)
+        #expect(model.visibleSplit?.leadingID == first)
+        #expect(model.visibleSplit?.trailingID == second)
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let restored = TerminalModel(restoration: try JSONDecoder().decode(WindowDescriptor.self, from: encoded))
+        #expect(restored.splits.count == 1)
+        #expect(restored.splits[0].axis == .vertical)
+        #expect(restored.splits[0].leadingID == first)
+        #expect(restored.splits[0].trailingID == second)
+    }
+
+    @Test func missingSplitKeysLeaveWindowsUnsplit() throws {
+        let old = WindowDescriptor(
+            id: UUID(),
+            tabs: [TabDescriptor(directory: FileManager.default.homeDirectoryForCurrentUser.path)],
+            selectedID: nil,
+            sidebarVisible: true,
+            sidebarWidth: 172
+        )
+        var payload = try JSONEncoder().encode(old)
+        var json = try JSONSerialization.jsonObject(with: payload) as! [String: Any]
+        json.removeValue(forKey: "splitLeadingID")
+        json.removeValue(forKey: "splitTrailingID")
+        json.removeValue(forKey: "splitFraction")
+        json.removeValue(forKey: "splitAxis")
+        payload = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try JSONDecoder().decode(WindowDescriptor.self, from: payload)
+        #expect(decoded.splits.isEmpty)
+        #expect(decoded.splitLeadingID == nil)
+        #expect(decoded.splitTrailingID == nil)
+        #expect(decoded.splitFraction == 0.5)
+        #expect(decoded.splitAxis == .horizontal)
+    }
+
+    @Test func splitDropSideUsesClosestEdgeAndTheCurrentAxis() {
+        let detail = CGRect(x: 200, y: 100, width: 400, height: 300)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 250, y: 250), in: detail, split: nil) == .leading)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 550, y: 250), in: detail, split: nil) == .trailing)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 400, y: 360), in: detail, split: nil) == .top)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 400, y: 140), in: detail, split: nil) == .bottom)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 10, y: 200), in: detail, split: nil) == nil)
+
+        let horizontal = SplitState(leadingID: UUID(), trailingID: UUID(), fraction: 0.25, focusedID: UUID())
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 250, y: 200), in: detail, split: horizontal) == .leading)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 450, y: 200), in: detail, split: horizontal) == .trailing)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 350, y: 200), in: detail, split: horizontal) == .trailing)
+
+        let vertical = SplitState(
+            leadingID: UUID(),
+            trailingID: UUID(),
+            fraction: 0.5,
+            focusedID: UUID(),
+            axis: .vertical
+        )
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 400, y: 300), in: detail, split: vertical) == .top)
+        #expect(TabSplitGeometry.side(at: CGPoint(x: 400, y: 200), in: detail, split: vertical) == .bottom)
+
+        #expect(TabSplitGeometry.isNoOp(movingID: UUID(), side: .leading, selectedID: nil, split: nil) == false)
+        let tab = UUID()
+        #expect(TabSplitGeometry.isNoOp(movingID: tab, side: .trailing, selectedID: tab, split: nil))
+        let split = SplitState(leadingID: tab, trailingID: UUID(), fraction: 0.5, focusedID: tab)
+        #expect(TabSplitGeometry.isNoOp(movingID: tab, side: .leading, selectedID: tab, split: split))
+        #expect(!TabSplitGeometry.isNoOp(movingID: tab, side: .trailing, selectedID: tab, split: split))
+        #expect(TabSplitGeometry.isNoOp(movingID: tab, side: .top, selectedID: tab, split: split))
+        let outsider = UUID()
+        #expect(TabSplitGeometry.isNoOp(movingID: outsider, side: .trailing, selectedID: outsider, split: split))
+        #expect(!TabSplitGeometry.isNoOp(movingID: tab, side: .trailing, selectedID: outsider, split: split))
+    }
+
+    @Test func splitPairCollapsesToOneSidebarItem() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(first)
+        #expect(model.sidebarItems.map(\.id) == [first, second, third])
+        model.split(with: second, on: .trailing)
+        #expect(model.sidebarItems.count == 2)
+        #expect(model.sidebarItems[0].members == [first, second])
+        #expect(model.sidebarItems[1].id == third)
+        model.unsplit()
+        #expect(model.sidebarItems.map(\.id) == [first, second, third])
+    }
+
+    @Test func splitCycleForwardFollowsVisualOrder() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        let fourth = model.newTab().id
+        model.select(second)
+        model.split(with: third, on: .trailing)
+
+        model.select(first)
+        model.cycle(1)
+        #expect(model.selectedID == second)
+        model.cycle(1)
+        #expect(model.selectedID == third)
+        model.cycle(1)
+        #expect(model.selectedID == fourth)
+        model.cycle(1)
+        #expect(model.selectedID == first)
+
+        model.select(third)
+        model.cycle(1)
+        #expect(model.selectedID == fourth)
+        model.cycle(-1)
+        #expect(model.selectedID == second)
+    }
+
+    @Test func splitCycleBackwardFollowsVisualOrder() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        let fourth = model.newTab().id
+        model.select(second)
+        model.split(with: third, on: .trailing)
+
+        model.select(fourth)
+        model.cycle(-1)
+        #expect(model.selectedID == third)
+        model.cycle(-1)
+        #expect(model.selectedID == second)
+        model.cycle(-1)
+        #expect(model.selectedID == first)
+        model.cycle(-1)
+        #expect(model.selectedID == fourth)
+    }
+
+    @Test func splitCycleVisitsEveryTabWhenPairMembersAreNotAdjacentInTabsArray() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(second)
+        model.split(with: third, on: .trailing)
+        model.moveTab(third, to: 1)
+        #expect(model.tabs.map(\.id) == [first, third, second])
+
+        model.select(third)
+        model.cycle(-1)
+        #expect(model.selectedID == second)
+        model.cycle(1)
+        #expect(model.selectedID == third)
+        model.cycle(1)
+        #expect(model.selectedID == first)
+
+        let visited = Set((0..<3).map { _ in
+            let id = model.selectedID!
+            model.cycle(1)
+            return id
+        })
+        #expect(visited == Set([first, second, third]))
+    }
+
+    @Test func splitCycleAcrossMultiplePairsVisitsEveryTab() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        let fourth = model.newTab().id
+        let fifth = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.select(third)
+        model.split(with: fourth, on: .trailing)
+
+        let expectedOrder = [first, second, third, fourth, fifth]
+        model.select(first)
+        for next in expectedOrder.dropFirst() {
+            model.cycle(1)
+            #expect(model.selectedID == next)
+        }
+        model.cycle(1)
+        #expect(model.selectedID == first)
+
+        model.select(fifth)
+        for next in expectedOrder.reversed().dropFirst() {
+            model.cycle(-1)
+            #expect(model.selectedID == next)
+        }
+        model.cycle(-1)
+        #expect(model.selectedID == fifth)
+    }
+
     @Test func insertionIndexUsesRowMidpointsNotHitRow() {
         let rows = [
             CGRect(x: 0, y: 200, width: 160, height: 28),
@@ -679,6 +993,47 @@ struct GenesisTerminalTests {
         window.contentView?.layoutSubtreeIfNeeded()
         #expect(first.surface?.window === window)
         #expect(second.surface?.superview == nil)
+    }
+
+    @Test func splitViewHostsBothSurfacesAtOnce() async throws {
+        let model = TerminalModel()
+        let controller = TerminalWindowController(model: model)
+        let window = try #require(controller.window)
+        defer {
+            window.orderOut(nil)
+            controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+        }
+        window.orderFrontRegardless()
+        let first = model.tabs[0]
+        let second = model.newTab()
+        model.select(first.id)
+        model.tabs.forEach { $0.start() }
+        try await Task.sleep(for: .milliseconds(600))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        model.split(with: second.id, on: .trailing)
+        controller.refresh()
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await eventually {
+            first.surface?.window === window && second.surface?.window === window
+                && first.surface?.superview != nil && second.surface?.superview != nil
+                && first.surface?.superview !== second.surface?.superview
+        }
+
+        let leading = try #require(first.surface)
+        let trailing = try #require(second.surface)
+        #expect(model.visibleSplit?.leadingID == first.id)
+        #expect(model.visibleSplit?.trailingID == second.id)
+
+        model.select(first.id)
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await eventually { leading.window === window && trailing.window === window }
+
+        model.unsplit()
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await eventually {
+            model.selectedTab?.surface?.window === window && second.surface?.superview == nil
+        }
     }
 
     private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {

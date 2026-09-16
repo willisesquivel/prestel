@@ -12,19 +12,14 @@ struct SidebarView: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                ForEach(model.filteredTabs) { session in
-                    SidebarRow(
-                        windowID: model.id,
-                        tabID: session.id,
-                        title: session.title,
-                        symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
-                        isSelected: model.selectedID == session.id,
+                ForEach(model.sidebarItems) { item in
+                    SidebarItemRow(
+                        model: model,
+                        item: item,
                         width: rowWidth,
-                        help: "\(session.title) — \(session.directory)",
-                        onSelect: { model.select(session.id) },
-                        onClose: { closeTab(session.id) }
+                        closeTab: closeTab
                     )
-                    .focused($focusedTarget, equals: .item(session.id))
+                    .focused($focusedTarget, equals: .item(item.id))
                 }
             }
             .frame(maxWidth: .infinity)
@@ -61,6 +56,47 @@ private enum SidebarFocusTarget: Hashable {
     case settings
 }
 
+private struct SidebarItemRow: View {
+    @ObservedObject var model: TerminalModel
+    let item: SidebarTabItem
+    let width: CGFloat
+    let closeTab: (UUID) -> Void
+
+    var body: some View {
+        if item.isPair,
+           let leading = model.tab(id: item.members[0]),
+           let trailing = model.tab(id: item.members[1]) {
+            CombinedSidebarRow(
+                windowID: model.id,
+                listRowID: item.id,
+                leading: leading,
+                trailing: trailing,
+                selectedID: model.selectedID,
+                width: width,
+                onSelect: { model.select($0) },
+                onClose: closeTab,
+                onSplitWithActive: { model.split(with: $0, on: .trailing) },
+                onUnsplit: { model.unsplit(tabID: leading.id) }
+            )
+        } else if let session = model.tab(id: item.id) {
+            SidebarRow(
+                windowID: model.id,
+                tabID: session.id,
+                title: session.title,
+                symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+                isSelected: model.selectedID == session.id,
+                width: width,
+                help: "\(session.title) — \(session.directory)",
+                onSelect: { model.select(session.id) },
+                onClose: { closeTab(session.id) },
+                splitWithActiveEnabled: model.selectedID != session.id,
+                onSplitWithActive: { model.split(with: session.id, on: .trailing) },
+                onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) }
+            )
+        }
+    }
+}
+
 // MARK: - Sidebar row (28pt, 20px rounded-square tile)
 
 private struct SidebarRow: View {
@@ -73,6 +109,9 @@ private struct SidebarRow: View {
     let help: String
     let onSelect: () -> Void
     let onClose: () -> Void
+    var splitWithActiveEnabled = false
+    var onSplitWithActive: (() -> Void)?
+    var onUnsplit: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -108,7 +147,10 @@ private struct SidebarRow: View {
                 symbol: symbol,
                 onSelect: onSelect,
                 onClose: onClose,
-                onHover: { isHovered = $0 }
+                onHover: { isHovered = $0 },
+                splitWithActiveEnabled: splitWithActiveEnabled,
+                onSplitWithActive: onSplitWithActive,
+                onUnsplit: onUnsplit
             )
         }
         .animation(.easeInOut(duration: 0.14), value: isHovered)
@@ -124,6 +166,111 @@ private struct SidebarRow: View {
 
     private var backgroundColor: Color {
         if isSelected {
+            return Color.primary.opacity(0.16)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.075)
+        }
+        return .clear
+    }
+}
+
+private struct CombinedSidebarRow: View {
+    let windowID: UUID
+    let listRowID: UUID
+    let leading: TerminalSession
+    let trailing: TerminalSession
+    let selectedID: UUID?
+    let width: CGFloat
+    let onSelect: (UUID) -> Void
+    let onClose: (UUID) -> Void
+    let onSplitWithActive: (UUID) -> Void
+    let onUnsplit: () -> Void
+
+    @State private var hoveringLeading = false
+    @State private var hoveringTrailing = false
+
+    private var showsDivider: Bool {
+        !hoveringLeading && !hoveringTrailing
+            && selectedID != leading.id && selectedID != trailing.id
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment(
+                session: leading,
+                isFocused: selectedID == leading.id,
+                isHovered: hoveringLeading,
+                onHover: { hoveringLeading = $0 }
+            )
+            if showsDivider {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .frame(width: 0.5)
+                    .padding(.vertical, 6)
+            }
+            segment(
+                session: trailing,
+                isFocused: selectedID == trailing.id,
+                isHovered: hoveringTrailing,
+                onHover: { hoveringTrailing = $0 }
+            )
+        }
+        .frame(height: ShellMetrics.sidebarRowHeight)
+        .animation(.easeInOut(duration: 0.14), value: hoveringLeading)
+        .animation(.easeInOut(duration: 0.14), value: hoveringTrailing)
+        .animation(.easeInOut(duration: 0.16), value: selectedID)
+        .frame(width: width)
+        .help("\(leading.title) / \(trailing.title)")
+    }
+
+    private func segment(
+        session: TerminalSession,
+        isFocused: Bool,
+        isHovered: Bool,
+        onHover: @escaping (Bool) -> Void
+    ) -> some View {
+        Button {
+            onSelect(session.id)
+        } label: {
+            HStack(spacing: 8) {
+                SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal")
+                Text(session.title)
+                    .font(.system(size: 13, weight: isFocused ? .medium : .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(segmentBackground(isFocused: isFocused, isHovered: isHovered))
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .overlay {
+            TabRowHitRepresentable(
+                windowID: windowID,
+                tabID: session.id,
+                listRowID: listRowID,
+                title: session.title,
+                symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+                onSelect: { onSelect(session.id) },
+                onClose: { onClose(session.id) },
+                onHover: onHover,
+                splitWithActiveEnabled: false,
+                onSplitWithActive: { onSplitWithActive(session.id) },
+                onUnsplit: onUnsplit
+            )
+        }
+        .accessibilityAddTraits(isFocused ? .isSelected : [])
+        .accessibilityLabel(session.title)
+    }
+
+    private func segmentBackground(isFocused: Bool, isHovered: Bool) -> Color {
+        if isFocused {
             return Color.primary.opacity(0.16)
         }
         if isHovered {

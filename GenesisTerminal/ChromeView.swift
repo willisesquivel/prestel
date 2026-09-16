@@ -40,6 +40,8 @@ struct GenesisCommands: Commands {
                 .keyboardShortcut(.tab, modifiers: [.control, .shift]).disabled((window?.model.tabs.count ?? 0) < 2)
             Button("Clear Scrollback") { app.keyController?.clearScrollback(nil) }
                 .keyboardShortcut("k").disabled(window?.model.selectedTab?.kind != .terminal)
+            Button("Unsplit Tabs") { window?.model.unsplit() }
+                .disabled(window?.model.visibleSplit == nil)
         }
     }
 }

@@ -108,9 +108,10 @@ final class TabDragCoordinator: ObservableObject {
     static let shared = TabDragCoordinator()
 
     @Published private(set) var pin: TabDragPin?
+    @Published private(set) var splitPreview: TabSplitPreview?
 
     private var payload: TabDragPayload?
-    private var destination: TabDragPin?
+    private var destination: TabDragDestination?
     private var cancelled = false
     private var finishing = false
     private var lastScreenPoint = CGPoint.zero
@@ -120,6 +121,7 @@ final class TabDragCoordinator: ObservableObject {
     private var escapeMonitor: Any?
     private var draggingSession: NSDraggingSession?
     private var zones: [UUID: WeakDropZone] = [:]
+    private var details: [UUID: WeakDetailZone] = [:]
     private var rows: [ObjectIdentifier: WeakRow] = [:]
 
     private init() {}
@@ -131,6 +133,16 @@ final class TabDragCoordinator: ObservableObject {
     func unregisterZone(_ view: TabListDropZoneNSView) {
         if zones[view.windowID]?.view === view {
             zones.removeValue(forKey: view.windowID)
+        }
+    }
+
+    func registerDetail(_ view: TabDetailDropZoneNSView) {
+        details[view.windowID] = WeakDetailZone(view)
+    }
+
+    func unregisterDetail(_ view: TabDetailDropZoneNSView) {
+        if details[view.windowID]?.view === view {
+            details.removeValue(forKey: view.windowID)
         }
     }
 
@@ -154,22 +166,39 @@ final class TabDragCoordinator: ObservableObject {
         refreshReturnAnimation()
     }
 
-    /// Finder-style slide-back when the drag is cancelled or dropped on the original slot.
+    /// Finder-style slide-back when the drag is cancelled, dropped on the original
+    /// slot, dropped onto a pane the tab already occupies, or dropped on window
+    /// chrome that is not a list or detail target. Empty-space detach does not return.
     var shouldAnimateReturn: Bool {
         if cancelled { return true }
-        guard let payload, let destination, destination.windowID == payload.sourceWindowID else { return false }
-        let visibleIDs = visibleRowFrames(in: destination.windowID).map(\.id)
-        return TabInsertionGeometry.isNoOpInsertion(
-            movingID: payload.tabID,
-            visibleInsertion: destination.insertionIndex,
-            visibleIDs: visibleIDs
-        )
+        guard let payload, let destination else { return false }
+        switch destination {
+        case .list(let pin):
+            guard pin.windowID == payload.sourceWindowID else { return false }
+            let visibleIDs = visibleRowFrames(in: pin.windowID).map(\.id)
+            return TabInsertionGeometry.isNoOpInsertion(
+                movingID: occupyingVisualID(tabID: payload.tabID, windowID: pin.windowID, visualIDs: visibleIDs),
+                visibleInsertion: pin.insertionIndex,
+                visibleIDs: visibleIDs
+            )
+        case .split(let preview):
+            guard let model = AppDelegate.current?.controllers[preview.windowID]?.model else { return false }
+            return TabSplitGeometry.isNoOp(
+                movingID: payload.tabID,
+                side: preview.side,
+                selectedID: model.selectedID,
+                split: model.visibleSplit
+            )
+        case .windowNoOp(_):
+            return true
+        }
     }
 
     func markCancelled() {
         cancelled = true
         destination = nil
         pin = nil
+        splitPreview = nil
         stopAutoScroll()
         refreshReturnAnimation()
     }
@@ -179,8 +208,14 @@ final class TabDragCoordinator: ObservableObject {
         guard payload != nil, !cancelled else { return }
         let next = resolveDestination(at: screenPoint)
         destination = next
-        setVisualPin(next)
-        updateAutoScroll(destinationWindowID: next?.windowID, screenPoint: screenPoint)
+        applyVisuals(next)
+        let listWindowID: UUID?
+        if case .list(let pin) = next {
+            listWindowID = pin.windowID
+        } else {
+            listWindowID = nil
+        }
+        updateAutoScroll(destinationWindowID: listWindowID, screenPoint: screenPoint)
         refreshReturnAnimation()
     }
 
@@ -207,45 +242,54 @@ final class TabDragCoordinator: ObservableObject {
         payload = nil
         destination = nil
         pin = nil
+        splitPreview = nil
         cancelled = false
         finishing = false
         draggingSession = nil
         zones.removeAll()
+        details.removeAll()
         rows.removeAll()
     }
 
     // MARK: Destination
 
-    private func resolveDestination(at screenPoint: CGPoint) -> TabDragPin? {
+    private func resolveDestination(at screenPoint: CGPoint) -> TabDragDestination? {
         let topNumber = NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: 0)
         let topWindow = NSApp.windows.first { $0.windowNumber == topNumber }
+        let topController = topWindow.flatMap { $0.windowController as? TerminalWindowController }
 
-        if let topWindow,
-           let controller = topWindow.windowController as? TerminalWindowController,
-           controller.model.sidebarVisible {
-            let clip = clipFrame(for: controller.model.id)
+        if let topController, topController.model.sidebarVisible {
+            let clip = clipFrame(for: topController.model.id)
             if clip.contains(screenPoint) {
-                return pin(in: controller.model.id, at: screenPoint)
+                return .list(pin(in: topController.model.id, at: screenPoint))
             }
         }
 
-        if let current = destination {
-            let clip = clipFrame(for: current.windowID)
-            if TabInsertionGeometry.distance(from: screenPoint, to: clip) <= TabInsertionGeometry.releaseDistance,
-               !listContainsPointerUnderAnotherWindow(screenPoint, excluding: current.windowID) {
-                return pin(in: current.windowID, at: screenPoint)
+        if let current = destination, case .list(let pin) = current {
+            let clip = clipFrame(for: pin.windowID)
+            let overDetail = detailFrame(for: pin.windowID).contains(screenPoint)
+            if !overDetail,
+               TabInsertionGeometry.distance(from: screenPoint, to: clip) <= TabInsertionGeometry.releaseDistance,
+               !listContainsPointerUnderAnotherWindow(screenPoint, excluding: pin.windowID) {
+                return .list(self.pin(in: pin.windowID, at: screenPoint))
             }
         }
 
-        if let topWindow,
-           let controller = topWindow.windowController as? TerminalWindowController,
-           controller.model.sidebarVisible {
-            let clip = clipFrame(for: controller.model.id)
+        if let topController, let split = splitDestination(in: topController, at: screenPoint) {
+            return .split(split)
+        }
+
+        if let topController, topController.model.sidebarVisible {
+            let clip = clipFrame(for: topController.model.id)
             let distance = TabInsertionGeometry.distance(from: screenPoint, to: clip)
-            if distance <= TabInsertionGeometry.acquireDistance {
-                return pin(in: controller.model.id, at: screenPoint)
+            if distance <= TabInsertionGeometry.acquireDistance,
+               !detailFrame(for: topController.model.id).contains(screenPoint) {
+                return .list(pin(in: topController.model.id, at: screenPoint))
             }
-            return nil
+        }
+
+        if topController != nil {
+            return topController.map { .windowNoOp($0.model.id) }
         }
 
         for window in NSApp.orderedWindows {
@@ -253,11 +297,18 @@ final class TabDragCoordinator: ObservableObject {
                   controller.model.sidebarVisible else { continue }
             let clip = clipFrame(for: controller.model.id)
             let distance = TabInsertionGeometry.distance(from: screenPoint, to: clip)
-            if distance <= TabInsertionGeometry.acquireDistance {
-                return pin(in: controller.model.id, at: screenPoint)
+            if distance <= TabInsertionGeometry.acquireDistance,
+               !detailFrame(for: controller.model.id).contains(screenPoint) {
+                return .list(pin(in: controller.model.id, at: screenPoint))
             }
         }
         return nil
+    }
+
+    private func splitDestination(in controller: TerminalWindowController, at screenPoint: CGPoint) -> TabSplitPreview? {
+        let detail = detailFrame(for: controller.model.id)
+        guard let side = TabSplitGeometry.side(at: screenPoint, in: detail, split: controller.model.visibleSplit) else { return nil }
+        return TabSplitPreview(windowID: controller.model.id, side: side)
     }
 
     private func listContainsPointerUnderAnotherWindow(_ screenPoint: CGPoint, excluding windowID: UUID) -> Bool {
@@ -290,19 +341,60 @@ final class TabDragCoordinator: ObservableObject {
         return frames.dropFirst().reduce(first) { $0.union($1) }
     }
 
+    private func detailFrame(for windowID: UUID) -> CGRect {
+        if let zone = details[windowID]?.view {
+            let frame = zone.detailScreenFrame
+            if !frame.isNull, frame.width > 1, frame.height > 1 { return frame }
+        }
+        return .null
+    }
+
     private func scrollView(for windowID: UUID) -> NSScrollView? {
         zones[windowID]?.view?.enclosingScrollView
             ?? rows.values.compactMap(\.view).first { $0.windowID == windowID }?.enclosingScrollView
     }
 
     private func visibleRowFrames(in windowID: UUID) -> [(id: UUID, frame: CGRect)] {
-        rows.values.compactMap(\.view).compactMap { view -> (UUID, CGRect)? in
-            guard view.windowID == windowID, let window = view.window, let tabID = view.tabID else { return nil }
+        var rowFrames: [UUID: CGRect] = [:]
+        for view in rows.values.compactMap(\.view) where view.windowID == windowID {
+            guard let window = view.window, let tabID = view.tabID else { continue }
+            let rowID = view.listRowID ?? tabID
             let rect = window.convertToScreen(view.convert(view.bounds, to: nil))
-            return (tabID, rect)
+            rowFrames[rowID] = rowFrames[rowID]?.union(rect) ?? rect
         }
-        .sorted { $0.1.midY > $1.1.midY }
-        .map { (id: $0.0, frame: $0.1) }
+        return rowFrames.map { (id: $0.key, frame: $0.value) }
+            .sorted { lhs, rhs in
+                if abs(lhs.frame.midY - rhs.frame.midY) > 4 { return lhs.frame.midY > rhs.frame.midY }
+                return lhs.frame.minX < rhs.frame.minX
+            }
+    }
+
+    private func occupyingVisualID(tabID: UUID, windowID: UUID, visualIDs: [UUID]) -> UUID {
+        if visualIDs.contains(tabID) { return tabID }
+        if let view = rows.values.compactMap(\.view).first(where: { $0.tabID == tabID && $0.windowID == windowID }),
+           let listRowID = view.listRowID,
+           visualIDs.contains(listRowID) {
+            return listRowID
+        }
+        guard let model = AppDelegate.current?.controllers[windowID]?.model,
+              let split = model.split(containing: tabID),
+              let partner = split.partner(of: tabID),
+              visualIDs.contains(partner) else { return tabID }
+        return partner
+    }
+
+    private func applyVisuals(_ next: TabDragDestination?) {
+        switch next {
+        case .list(let pin):
+            setVisualPin(pin)
+            setSplitPreview(nil)
+        case .split(let preview):
+            setVisualPin(nil)
+            setSplitPreview(preview)
+        case .windowNoOp(_), nil:
+            setVisualPin(nil)
+            setSplitPreview(nil)
+        }
     }
 
     private func setVisualPin(_ next: TabDragPin?) {
@@ -310,7 +402,7 @@ final class TabDragCoordinator: ObservableObject {
         if let next, let payload, next.windowID == payload.sourceWindowID {
             let visibleIDs = visibleRowFrames(in: next.windowID).map(\.id)
             visual = TabInsertionGeometry.isNoOpInsertion(
-                movingID: payload.tabID,
+                movingID: occupyingVisualID(tabID: payload.tabID, windowID: next.windowID, visualIDs: visibleIDs),
                 visibleInsertion: next.insertionIndex,
                 visibleIDs: visibleIDs
             ) ? nil : next
@@ -320,6 +412,14 @@ final class TabDragCoordinator: ObservableObject {
         guard pin != visual else { return }
         pin = visual
         if visual != nil {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+
+    private func setSplitPreview(_ next: TabSplitPreview?) {
+        guard splitPreview != next else { return }
+        splitPreview = next
+        if next != nil {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
     }
@@ -403,19 +503,19 @@ final class TabDragCoordinator: ObservableObject {
 
     // MARK: Commit
 
-    private func commit(_ payload: TabDragPayload, destination: TabDragPin?, screenPoint: CGPoint) {
+    private func commit(_ payload: TabDragPayload, destination: TabDragDestination?, screenPoint: CGPoint) {
         guard let app = AppDelegate.current,
               let source = app.controllers[payload.sourceWindowID],
               source.model.tabs.contains(where: { $0.id == payload.tabID }) else { return }
 
-        if let destination, destination.windowID == payload.sourceWindowID {
-            let canonical = canonicalIndex(for: destination, in: source.model)
+        switch destination {
+        case .list(let pin) where pin.windowID == payload.sourceWindowID:
+            let canonical = canonicalIndex(for: pin, in: source.model)
             source.model.moveTab(payload.tabID, to: canonical)
             return
-        }
-
-        if let destination, let dest = app.controllers[destination.windowID] {
-            let canonical = canonicalIndex(for: destination, in: dest.model)
+        case .list(let pin):
+            guard let dest = app.controllers[pin.windowID] else { return }
+            let canonical = canonicalIndex(for: pin, in: dest.model)
             guard let tab = source.model.detachTab(payload.tabID) else { return }
             dest.model.adopt(tab, at: canonical, selecting: true)
             dest.refresh()
@@ -423,6 +523,13 @@ final class TabDragCoordinator: ObservableObject {
             dest.window?.makeKeyAndOrderFront(nil)
             DispatchQueue.main.async { dest.focusTerminal() }
             return
+        case .split(let preview):
+            commitSplit(payload, preview: preview, source: source, app: app)
+            return
+        case .windowNoOp(_):
+            return
+        case nil:
+            break
         }
 
         guard let tab = source.model.detachTab(payload.tabID) else { return }
@@ -431,10 +538,33 @@ final class TabDragCoordinator: ObservableObject {
         DispatchQueue.main.async { created.focusTerminal() }
     }
 
+    private func commitSplit(
+        _ payload: TabDragPayload,
+        preview: TabSplitPreview,
+        source: TerminalWindowController,
+        app: AppDelegate
+    ) {
+        if preview.windowID == payload.sourceWindowID {
+            source.model.split(with: payload.tabID, on: preview.side)
+            source.refresh()
+            DispatchQueue.main.async { source.focusTerminal() }
+            return
+        }
+        guard let dest = app.controllers[preview.windowID] else { return }
+        guard let tab = source.model.detachTab(payload.tabID) else { return }
+        dest.model.adopt(tab, at: dest.model.tabs.count, selecting: false)
+        dest.model.split(with: tab.id, on: preview.side)
+        dest.refresh()
+        closeIfEmpty(source)
+        dest.window?.makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { dest.focusTerminal() }
+    }
+
     private func canonicalIndex(for destination: TabDragPin, in model: TerminalModel) -> Int {
-        TabInsertionGeometry.canonicalInsertionIndex(
+        let visibleIDs = visibleRowFrames(in: model.id).map(\.id)
+        return TabInsertionGeometry.canonicalInsertionIndex(
             visibleInsertion: destination.insertionIndex,
-            visibleIDs: model.filteredTabs.map(\.id),
+            visibleIDs: visibleIDs.isEmpty ? model.sidebarItems.map(\.id) : visibleIDs,
             canonicalIDs: model.tabs.map(\.id)
         )
     }
@@ -453,6 +583,7 @@ final class TabDragCoordinator: ObservableObject {
         payload = nil
         destination = nil
         pin = nil
+        splitPreview = nil
         cancelled = false
         draggingSession = nil
     }
@@ -482,6 +613,11 @@ final class TabDragCoordinator: ObservableObject {
 private struct WeakDropZone {
     weak var view: TabListDropZoneNSView?
     init(_ view: TabListDropZoneNSView) { self.view = view }
+}
+
+private struct WeakDetailZone {
+    weak var view: TabDetailDropZoneNSView?
+    init(_ view: TabDetailDropZoneNSView) { self.view = view }
 }
 
 private struct WeakRow {
@@ -604,11 +740,15 @@ struct TabInsertionPin: View {
 struct TabRowHitRepresentable: NSViewRepresentable {
     let windowID: UUID
     let tabID: UUID
+    var listRowID: UUID?
     let title: String
     let symbol: String
     let onSelect: () -> Void
     let onClose: () -> Void
     let onHover: (Bool) -> Void
+    var splitWithActiveEnabled = false
+    var onSplitWithActive: (() -> Void)?
+    var onUnsplit: (() -> Void)?
 
     func makeNSView(context: Context) -> TabRowHitNSView {
         TabRowHitNSView()
@@ -617,22 +757,30 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: TabRowHitNSView, context: Context) {
         nsView.windowID = windowID
         nsView.tabID = tabID
+        nsView.listRowID = listRowID
         nsView.titleText = title
         nsView.symbol = symbol
         nsView.onSelect = onSelect
         nsView.onClose = onClose
         nsView.onHover = onHover
+        nsView.splitWithActiveEnabled = splitWithActiveEnabled
+        nsView.onSplitWithActive = onSplitWithActive
+        nsView.onUnsplit = onUnsplit
     }
 }
 
 final class TabRowHitNSView: NSView, NSDraggingSource {
     var windowID = UUID()
     var tabID: UUID?
+    var listRowID: UUID?
     var titleText = ""
     var symbol = "terminal"
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
     var onHover: ((Bool) -> Void)?
+    var splitWithActiveEnabled = false
+    var onSplitWithActive: (() -> Void)?
+    var onUnsplit: (() -> Void)?
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
@@ -717,14 +865,46 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
-        let item = NSMenuItem(title: "Close Tab", action: #selector(closeFromMenu(_:)), keyEquivalent: "")
-        item.target = self
-        menu.addItem(item)
+        menu.autoenablesItems = false
+
+        let splitItem = NSMenuItem(
+            title: "Split with Active",
+            action: #selector(splitWithActiveFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        splitItem.target = self
+        splitItem.isEnabled = splitWithActiveEnabled
+        menu.addItem(splitItem)
+
+        if onUnsplit != nil {
+            let unsplitItem = NSMenuItem(
+                title: "Unsplit Tabs",
+                action: #selector(unsplitFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            unsplitItem.target = self
+            unsplitItem.isEnabled = true
+            menu.addItem(unsplitItem)
+        }
+
+        menu.addItem(.separator())
+        let closeItem = NSMenuItem(title: "Close Tab", action: #selector(closeFromMenu(_:)), keyEquivalent: "")
+        closeItem.target = self
+        closeItem.isEnabled = true
+        menu.addItem(closeItem)
         return menu
     }
 
     @objc private func closeFromMenu(_ sender: Any?) {
         onClose?()
+    }
+
+    @objc private func splitWithActiveFromMenu(_ sender: Any?) {
+        onSplitWithActive?()
+    }
+
+    @objc private func unsplitFromMenu(_ sender: Any?) {
+        onUnsplit?()
     }
 
     private func beginTabDrag(current: NSEvent) {

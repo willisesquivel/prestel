@@ -16,6 +16,7 @@
 		A10000000000000000000008 /* TerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* TerminalSession.swift */; };
 		A10000000000000000000009 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* TerminalView.swift */; };
 		A10000000000000000000010 /* TabDrag.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* TabDrag.swift */; };
+		A10000000000000000000011 /* TabSplit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* TabSplit.swift */; };
 		A10000000000000000000021 /* ShellLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* ShellLayout.swift */; };
 		A10000000000000000000022 /* ReviewTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022 /* ReviewTypes.swift */; };
 		A10000000000000000000023 /* GitProcessRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* GitProcessRunner.swift */; };
@@ -60,6 +61,7 @@
 		A20000000000000000000008 /* TerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSession.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		A20000000000000000000010 /* TabDrag.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabDrag.swift; sourceTree = "<group>"; };
+		A20000000000000000000011 /* TabSplit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabSplit.swift; sourceTree = "<group>"; };
 		A20000000000000000000021 /* ShellLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellLayout.swift; sourceTree = "<group>"; };
 		A20000000000000000000022 /* ReviewTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewTypes.swift; sourceTree = "<group>"; };
 		A20000000000000000000023 /* GitProcessRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitProcessRunner.swift; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 				A20000000000000000000008,
 				A20000000000000000000009,
 				A20000000000000000000010,
+				A20000000000000000000011,
 				A20000000000000000000021,
 				A20000000000000000000032,
 				A20000000000000000000033,
@@ -226,6 +229,7 @@
 				A10000000000000000000008,
 				A10000000000000000000009,
 				A10000000000000000000010,
+				A10000000000000000000011,
 				A10000000000000000000021,
 				A10000000000000000000022,
 				A10000000000000000000023,

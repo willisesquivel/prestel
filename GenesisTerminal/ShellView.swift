@@ -259,11 +259,123 @@ private final class SidebarResizeNSView: NSView {
 
 private struct TerminalDetailSurface: View {
     @ObservedObject var model: TerminalModel
+    @ObservedObject private var dragCoordinator = TabDragCoordinator.shared
     @Environment(\.colorScheme) private var colorScheme
+    @State private var splitResizeStartFraction: Double?
+
+    var body: some View {
+        Group {
+            if let split = model.visibleSplit,
+               let leading = model.tab(id: split.leadingID),
+               let trailing = model.tab(id: split.trailingID) {
+                splitCards(split: split, leading: leading, trailing: trailing)
+            } else {
+                DetailCard {
+                    if model.selectedTab?.kind == .settings {
+                        GenesisSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
+                    } else {
+                        VStack(spacing: 0) {
+                            TerminalToolbar(model: model)
+                            TerminalSurface(model: model)
+                        }
+                    }
+                }
+            }
+        }
+        .overlay {
+            if let preview = dragCoordinator.splitPreview, preview.windowID == model.id, model.visibleSplit == nil {
+                TabSplitDropOverlay(side: preview.side, axis: preview.side.axis)
+                    .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
+            }
+        }
+        .background {
+            TabDetailDropZone(windowID: model.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityLabel("\(model.selectedTab?.title ?? "Local") terminal")
+    }
+
+    @ViewBuilder
+    private func splitCards(split: SplitState, leading: TerminalSession, trailing: TerminalSession) -> some View {
+        GeometryReader { proxy in
+            let extent = split.axis == .horizontal ? proxy.size.width : proxy.size.height
+            let fraction = TabSplitGeometry.clampFraction(split.fraction, along: extent)
+            let layout = SplitCardLayout.cards(
+                in: proxy.size,
+                axis: split.axis,
+                fraction: fraction,
+                gap: ShellMetrics.splitCardGap
+            )
+            ZStack(alignment: .topLeading) {
+                paneCard(session: leading, isFocused: model.selectedID == leading.id, frame: layout.primary, split: split, isPrimary: true)
+                paneCard(session: trailing, isFocused: model.selectedID == trailing.id, frame: layout.secondary, split: split, isPrimary: false)
+
+                SplitResizeHandle(
+                    axis: split.axis,
+                    length: split.axis == .horizontal ? proxy.size.height : proxy.size.width,
+                    onChanged: { translation in
+                        if splitResizeStartFraction == nil {
+                            splitResizeStartFraction = split.fraction
+                        }
+                        let span = split.axis == .horizontal ? proxy.size.width : proxy.size.height
+                        model.resizeSplit(
+                            to: (splitResizeStartFraction ?? split.fraction) + Double(translation / span),
+                            along: span
+                        )
+                    },
+                    onEnded: { splitResizeStartFraction = nil },
+                    onReset: {
+                        model.resizeSplit(to: 0.5, along: split.axis == .horizontal ? proxy.size.width : proxy.size.height)
+                    }
+                )
+                .frame(
+                    width: split.axis == .horizontal ? ShellMetrics.splitCardGap : proxy.size.width,
+                    height: split.axis == .horizontal ? proxy.size.height : ShellMetrics.splitCardGap
+                )
+                .offset(
+                    x: split.axis == .horizontal ? layout.primary.maxX : 0,
+                    y: split.axis == .vertical ? layout.primary.maxY : 0
+                )
+
+                if let preview = dragCoordinator.splitPreview, preview.windowID == model.id {
+                    TabSplitDropOverlay(
+                        side: preview.side,
+                        fraction: fraction,
+                        axis: split.axis,
+                        gap: ShellMetrics.splitCardGap
+                    )
+                }
+            }
+        }
+    }
+
+    private func paneCard(session: TerminalSession, isFocused: Bool, frame: CGRect, split: SplitState, isPrimary: Bool) -> some View {
+        DetailCard(isFocused: isFocused) {
+            VStack(spacing: 0) {
+                TerminalToolbar(
+                    model: model,
+                    session: session,
+                    showsNavigation: isPrimary,
+                    showsReviewToggle: split.axis == .horizontal ? !isPrimary : isPrimary
+                )
+                TerminalPane(session: session, isFocused: isFocused) {
+                    model.select(session.id)
+                }
+            }
+        }
+        .frame(width: max(0, frame.width), height: max(0, frame.height))
+        .offset(x: frame.minX, y: frame.minY)
+    }
+}
+
+private struct DetailCard<Content: View>: View {
+    var isFocused = false
+    @Environment(\.colorScheme) private var colorScheme
+    @ViewBuilder var content: Content
 
     var body: some View {
         ZStack {
-                RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous)
                 .fill(
                     colorScheme == .dark
                         ? Color.black.opacity(0.38)
@@ -280,26 +392,86 @@ private struct TerminalDetailSurface: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
 
-            Group {
-                if model.selectedTab?.kind == .settings {
-                    GenesisSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
-                } else {
-                    VStack(spacing: 0) {
-                        TerminalToolbar(model: model)
-                        TerminalSurface(model: model)
-                    }
-                }
-            }
+            content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
         }
         .overlay {
             RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(colorScheme == .dark ? 0.045 : 0.10),
+                    isFocused
+                        ? Color.white.opacity(colorScheme == .dark ? 0.12 : 0.18)
+                        : Color.white.opacity(colorScheme == .dark ? 0.045 : 0.10),
                     lineWidth: 0.5
                 )
         }
-        .accessibilityLabel("\(model.selectedTab?.title ?? "Local") terminal")
+    }
+}
+
+private struct SplitResizeHandle: NSViewRepresentable {
+    let axis: SplitAxis
+    let length: CGFloat
+    let onChanged: (CGFloat) -> Void
+    let onEnded: () -> Void
+    let onReset: () -> Void
+
+    func makeNSView(context: Context) -> SplitResizeNSView {
+        SplitResizeNSView()
+    }
+
+    func updateNSView(_ nsView: SplitResizeNSView, context: Context) {
+        nsView.axis = axis
+        nsView.onChanged = onChanged
+        nsView.onEnded = onEnded
+        nsView.onReset = onReset
+        nsView.window?.invalidateCursorRects(for: nsView)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: SplitResizeNSView,
+        context: Context
+    ) -> CGSize? {
+        axis == .horizontal
+            ? CGSize(width: ShellMetrics.splitCardGap, height: length)
+            : CGSize(width: length, height: ShellMetrics.splitCardGap)
+    }
+}
+
+private final class SplitResizeNSView: NSView {
+    var axis: SplitAxis = .horizontal
+    var onChanged: ((CGFloat) -> Void)?
+    var onEnded: (() -> Void)?
+    var onReset: (() -> Void)?
+    private var dragStart: CGFloat?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: axis == .horizontal ? .resizeLeftRight : .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onReset?()
+            dragStart = nil
+            return
+        }
+        dragStart = axis == .horizontal ? event.locationInWindow.x : event.locationInWindow.y
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let dragStart else { return }
+        if axis == .horizontal {
+            onChanged?(event.locationInWindow.x - dragStart)
+        } else {
+            onChanged?(dragStart - event.locationInWindow.y)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStart = nil
+        onEnded?()
     }
 }

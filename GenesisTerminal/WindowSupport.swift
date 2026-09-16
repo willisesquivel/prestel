@@ -354,8 +354,10 @@ enum ShellMetrics {
     static let sidebarMinimumWidth: CGFloat = 150
     static let sidebarMaximumWidth: CGFloat = 300
     static let minimumDetailWidth: CGFloat = 320
+    static let minimumSplitPaneWidth: CGFloat = 160
     static let detailInset: CGFloat = 10
     static let detailCornerRadius: CGFloat = 20
+    static let splitCardGap: CGFloat = 8
 
     static let searchHeight: CGFloat = 30
     static let searchCornerRadius: CGFloat = 15
@@ -395,12 +397,12 @@ enum ShellMetrics {
 }
 
 struct TerminalToolbarHeader: View {
-    @ObservedObject var model: TerminalModel
+    @ObservedObject var session: TerminalSession
     var body: some View {
         HStack(spacing: 8) {
-            SidebarTile(symbol: model.selectedTab?.kind == .settings ? "gearshape.fill" : "terminal", size: 22)
+            SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal", size: 22)
             VStack(alignment: .leading, spacing: 1) {
-                Text(model.selectedTab?.title ?? "Local")
+                Text(session.title)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -419,28 +421,37 @@ struct TerminalToolbarHeader: View {
     }
 
     private var subtitle: String {
-        guard model.selectedTab?.kind != .settings else { return "Preferences" }
+        guard session.kind != .settings else { return "Preferences" }
         let shell = URL(fileURLWithPath: ShellConfiguration.loginShell).lastPathComponent
-        let directory = model.selectedTab.map { ShellConfiguration.displayDirectory($0.directory) } ?? ""
-        return "\(shell) — \(directory)"
+        return "\(shell) — \(ShellConfiguration.displayDirectory(session.directory))"
     }
 }
 
 struct TerminalToolbar: View {
     @ObservedObject var model: TerminalModel
+    var session: TerminalSession?
+    var showsNavigation = true
+    var showsReviewToggle = true
+
     var body: some View {
         HStack(spacing: 12) {
-            NavigationCapsule(model: model)
-            TerminalToolbarHeader(model: model)
+            if showsNavigation {
+                NavigationCapsule(model: model)
+            }
+            if let headerSession = session ?? model.selectedTab {
+                TerminalToolbarHeader(session: headerSession)
+            }
             Spacer(minLength: 0)
-            CodeReviewToggle(model: model)
+            if showsReviewToggle {
+                CodeReviewToggle(model: model)
+            }
         }
         // Same horizontal inset as the terminal text below (12pt). When the
         // sidebar is collapsed the detail surface slides under the traffic
         // lights (24…76pt window), so the header shifts right to sit beside
         // them: mirror the 14pt gap between the surface edge and the lights,
         // starting the header at 80pt detail-relative.
-        .padding(.leading, model.sidebarVisible ? 12 : 80)
+        .padding(.leading, showsNavigation && !model.sidebarVisible ? 80 : 12)
         .padding(.trailing, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)

@@ -4,6 +4,10 @@ import SwiftUI
 
 @MainActor
 final class GenesisTerminalView: SwiftTerm.TerminalView {
+    var onFocus: (() -> Void)?
+    /// Unfocused split panes stay attached but must not steal first responder.
+    var claimsFocus = true
+
     func applyPreferences() {
         let stored = UserDefaults.standard.double(forKey: "terminalFontSize")
         font = .monospacedSystemFont(ofSize: stored == 0 ? 13 : min(32, max(9, stored)), weight: .regular)
@@ -41,15 +45,16 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
         if window != nil {
             refreshColorsForCurrentAppearance()
             if let window {
-                // Remember the terminal as the window's default focus target so
-                // AppKit focuses it when the window first becomes key. The
-                // explicit makeFirstResponder below covers tab switches, when
-                // the window is already key.
-                window.initialFirstResponder = self
-                if window.isKeyWindow,
-                   !(window.firstResponder is NSText),
-                   !ReviewFocus.isProtected(window.firstResponder) {
-                    window.makeFirstResponder(self)
+                // Remember the focused terminal as the window's default focus
+                // target so AppKit focuses it when the window first becomes key.
+                // Unfocused split panes stay attached without stealing responder.
+                if claimsFocus {
+                    window.initialFirstResponder = self
+                    if window.isKeyWindow,
+                       !(window.firstResponder is NSText),
+                       !ReviewFocus.isProtected(window.firstResponder) {
+                        window.makeFirstResponder(self)
+                    }
                 }
             }
         }
@@ -57,6 +62,10 @@ final class GenesisTerminalView: SwiftTerm.TerminalView {
     override func copy(_ sender: Any) {
         guard selectionActive else { return }
         super.copy(sender)
+    }
+    override func mouseDown(with event: NSEvent) {
+        onFocus?()
+        super.mouseDown(with: event)
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
@@ -81,10 +90,34 @@ struct TerminalSurface: View {
             // surface is pinned into it. Recreating the host per selection
             // lets speculative containers steal the shared surface and strand
             // it when SwiftUI discards them, blanking the terminal.
-            TerminalDirectHost(surface: surface)
+            TerminalDirectHost(surface: surface, isFocused: true) {
+                if let id = model.selectedID { model.select(id) }
+            }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 12)
         }
+    }
+}
+
+struct TerminalPane: View {
+    @ObservedObject var session: TerminalSession
+    var isFocused: Bool
+    var onFocus: () -> Void
+
+    var body: some View {
+        Group {
+            if session.kind == .settings {
+                GenesisSettingsView()
+                    .simultaneousGesture(TapGesture().onEnded { onFocus() })
+            } else if let surface = session.surface {
+                TerminalDirectHost(surface: surface, isFocused: isFocused, onFocus: onFocus)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel("\(session.title) terminal")
+        .accessibilityAddTraits(isFocused ? .isSelected : [])
     }
 }
 
@@ -94,64 +127,74 @@ struct TerminalSurface: View {
 /// the terminal's scroller and broke scrolling.
 private struct TerminalDirectHost: NSViewRepresentable {
     let surface: GenesisTerminalView
+    var isFocused: Bool
+    var onFocus: () -> Void
 
-    func makeNSView(context: Context) -> NSView {
+    func makeNSView(context: Context) -> TerminalHostContainer {
         // Never attach here: SwiftUI creates speculative hosts it may discard
         // without inserting. Stealing the shared live surface into one of them
-        // orphans it and blanks the terminal. updateNSView always follows and
-        // is the only place that may attach.
-        NSView()
+        // orphans it and blanks the terminal. Pinning happens only once the
+        // container is in a real window.
+        TerminalHostContainer()
     }
 
-    func updateNSView(_ container: NSView, context: Context) {
-        let didAttach = surface.superview !== container
-        if didAttach, shouldAttach(to: container) {
-            pin(surface, in: container)
-        }
-        // Only focus when the selected surface is newly attached (or nothing else
-        // has focus). Focusing on every model update would pull focus out of the
-        // sidebar search field.
-        if let window = container.window {
-            window.initialFirstResponder = surface
-                if window.isKeyWindow,
-                   (didAttach || window.firstResponder === window),
-                   !(window.firstResponder is NSText),
-                   !ReviewFocus.isProtected(window.firstResponder) {
-                    window.makeFirstResponder(surface)
-                }
-        }
+    func updateNSView(_ container: TerminalHostContainer, context: Context) {
+        container.isFocused = isFocused
+        container.onFocus = onFocus
+        container.pin(surface)
+    }
+}
+
+/// Hosts one `GenesisTerminalView`. Attachment waits until the container has a
+/// window so speculative SwiftUI hosts cannot steal a live surface (GEN-46).
+private final class TerminalHostContainer: NSView {
+    var isFocused = true
+    var onFocus: (() -> Void)?
+    private var pending: GenesisTerminalView?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachIfNeeded()
     }
 
-    /// A windowless container may be speculative (never inserted). Pulling a
-    /// live-in-window surface into one strands it when SwiftUI discards the
-    /// container, leaving a blank terminal. Windowed containers always win;
-    /// homeless surfaces, or ones stuck in a windowless container, attach anywhere.
-    private func shouldAttach(to container: NSView) -> Bool {
-        if container.window != nil { return true }
-        return surface.superview?.window == nil
+    func pin(_ surface: GenesisTerminalView) {
+        pending = surface
+        surface.onFocus = onFocus
+        surface.claimsFocus = isFocused
+        attachIfNeeded()
     }
 
-    private func pin(_ surface: GenesisTerminalView, in container: NSView) {
-        // The container persists across tab switches now (no .id()), so evict
-        // the previously hosted surface. Otherwise every selected tab piles
-        // on top and switching appears to do nothing.
-        for subview in container.subviews where subview !== surface {
-            subview.removeFromSuperview()
+    private func attachIfNeeded() {
+        guard window != nil, let surface = pending else { return }
+        let alreadyHere = surface.superview === self
+        if !alreadyHere {
+            for subview in subviews where subview !== surface {
+                subview.removeFromSuperview()
+            }
+            for constraint in constraints where constraint.firstItem is GenesisTerminalView || constraint.secondItem is GenesisTerminalView {
+                constraint.isActive = false
+            }
+            surface.removeFromSuperview()
+            surface.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(surface)
+            NSLayoutConstraint.activate([
+                surface.leadingAnchor.constraint(equalTo: leadingAnchor),
+                surface.trailingAnchor.constraint(equalTo: trailingAnchor),
+                surface.topAnchor.constraint(equalTo: topAnchor),
+                surface.bottomAnchor.constraint(equalTo: bottomAnchor)
+            ])
         }
-        // The container is dedicated to the terminal surface, so drop only our
-        // own stale edge constraints instead of accumulating a new set on
-        // every switch. Anything SwiftUI owns is left alone.
-        for constraint in container.constraints where constraint.firstItem is GenesisTerminalView || constraint.secondItem is GenesisTerminalView {
-            constraint.isActive = false
+        applyFocus(to: surface, didAttach: !alreadyHere)
+    }
+
+    private func applyFocus(to surface: GenesisTerminalView, didAttach: Bool) {
+        guard isFocused, let window else { return }
+        window.initialFirstResponder = surface
+        if window.isKeyWindow,
+           (didAttach || window.firstResponder === window),
+           !(window.firstResponder is NSText),
+           !ReviewFocus.isProtected(window.firstResponder) {
+            window.makeFirstResponder(surface)
         }
-        surface.removeFromSuperview()
-        surface.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(surface)
-        NSLayoutConstraint.activate([
-            surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            surface.topAnchor.constraint(equalTo: container.topAnchor),
-            surface.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        ])
     }
 }
