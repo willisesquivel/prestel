@@ -9,6 +9,39 @@ protocol ReviewDiffCoordinating: AnyObject {
     var onFocusChange: (Bool) -> Void { get }
 }
 
+/// Sticky math for an expanded file header. Warp overlays a second header and
+/// hides the original; we keep the original in layout and translate it so the
+/// row is never duplicated. The header is translucent, so the diff is culled
+/// by the same offset and never draws through it.
+enum ReviewFileStickyMetrics {
+    static let headerHeight: CGFloat = 40
+    static let headerCornerRadius: CGFloat = 7
+    /// Same fill as a selected sidebar tab.
+    static let expandedHeaderFill = Color.primary.opacity(0.16)
+    /// Same fill as a hovered sidebar tab.
+    static let hoverHeaderFill = Color.primary.opacity(0.075)
+
+    /// Offset applied to the original header so it stays `sidebarInset` below
+    /// the list header while its file is on screen, then is pushed out by the
+    /// file's bottom. `.scrollView` frames are already below the safe-area bar,
+    /// so pin against `ShellMetrics.sidebarInset`, not `contentInsets.top`.
+    static func headerOffset(
+        sectionMinY: CGFloat,
+        sectionMaxY: CGFloat,
+        pinTop: CGFloat,
+        headerHeight: CGFloat = headerHeight
+    ) -> CGFloat {
+        let distancePastPin = pinTop - sectionMinY
+        let roomInsideSection = sectionMaxY - sectionMinY - headerHeight
+        return min(max(distancePastPin, 0), max(roomInsideSection, 0))
+    }
+
+    /// Top of the diff to hide so it never intersects the translated header.
+    static func contentCull(headerOffset: CGFloat) -> CGFloat {
+        max(headerOffset, 0)
+    }
+}
+
 /// File header row (40pt) for the SwiftUI review file list. Mirrors the old
 /// AppKit header: disclosure chevron, basename + status subtitle, monospaced
 /// +/− counts, and a file-actions menu. Tapping anywhere but the menu toggles.
@@ -21,6 +54,8 @@ struct ReviewFileHeaderRow: View {
     let onCopyRelative: () -> Void
     let onCopyAbsolute: () -> Void
     let onCopyPatch: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -49,10 +84,10 @@ struct ReviewFileHeaderRow: View {
             if !file.hasBinaryComparison {
                 Text("+\(file.additions)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .systemGreen))
+                    .foregroundStyle(AppColors.reviewAddition)
                 Text("−\(file.deletions)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .foregroundStyle(AppColors.reviewDeletion)
                     .padding(.leading, 6)
             }
 
@@ -75,17 +110,19 @@ struct ReviewFileHeaderRow: View {
             .help("File actions")
             .padding(.trailing, 8)
         }
-        .frame(height: 40)
+        .frame(height: ReviewFileStickyMetrics.headerHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Same fill as a selected sidebar tab. Nothing frosted, nothing opaque.
         .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(0.16))
+            RoundedRectangle(cornerRadius: ReviewFileStickyMetrics.headerCornerRadius, style: .continuous)
+                .fill(backgroundColor)
         }
         .contentShape(
             .interaction,
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: ReviewFileStickyMetrics.headerCornerRadius, style: .continuous)
         )
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.14), value: isHovered)
+        .animation(.easeInOut(duration: 0.16), value: expanded)
         .onTapGesture(perform: onToggle)
         .contextMenu {
             Button("Copy Relative Path", action: onCopyRelative)
@@ -105,8 +142,97 @@ struct ReviewFileHeaderRow: View {
         .accessibilityAction(named: expanded ? "Collapse" : "Expand", onToggle)
     }
 
+    private var backgroundColor: Color {
+        if expanded {
+            return ReviewFileStickyMetrics.expandedHeaderFill
+        }
+        if isHovered {
+            return ReviewFileStickyMetrics.hoverHeaderFill
+        }
+        return .clear
+    }
+
     private var pathHelp: String {
         file.oldPath.map { "\($0.display) → \(file.identityPath.display)" } ?? file.identityPath.display
+    }
+}
+
+/// One file in the review list. Expanded files keep their original header in
+/// layout and translate it to `pinTop` while the file is on screen.
+struct ReviewFileCard: View {
+    @ObservedObject var model: CodeReviewModel
+    var file: ChangedFile
+    var paneHeight: CGFloat
+    var onEscape: () -> Void
+    var onCollapseWhilePinned: () -> Void
+
+    @State private var stickyOffset: CGFloat = 0
+
+    private var expanded: Bool {
+        model.presentation.expandedFileIDs.contains(file.id)
+    }
+
+    var body: some View {
+        let offset = expanded ? stickyOffset : 0
+        let cull = ReviewFileStickyMetrics.contentCull(headerOffset: offset)
+        VStack(spacing: 0) {
+            ReviewFileHeaderRow(
+                file: file,
+                expanded: expanded,
+                onToggle: toggle,
+                onOpen: { model.openFile(file) },
+                onReveal: { model.reveal(file) },
+                onCopyRelative: { model.copyPath(file, absolute: false) },
+                onCopyAbsolute: { model.copyPath(file, absolute: true) },
+                onCopyPatch: { model.copyPatch(for: file) }
+            )
+            .offset(y: offset)
+            .zIndex(1)
+
+            if expanded {
+                ReviewDiffHost(
+                    model: model,
+                    file: file,
+                    onEscape: onEscape,
+                    onFocusChange: { _ in }
+                )
+                .frame(height: paneHeight, alignment: .top)
+                // Flatten the AppKit pane first so the mask actually culls its
+                // pixels. NSViewRepresentable otherwise paints through SwiftUI
+                // clips, and the header fill is translucent.
+                .compositingGroup()
+                .mask(alignment: .top) {
+                    Rectangle()
+                        .padding(.top, cull)
+                }
+            }
+        }
+        .animation(nil, value: stickyOffset)
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .scrollView(axis: .vertical))
+        } action: { frame in
+            let next: CGFloat
+            if expanded {
+                next = ReviewFileStickyMetrics.headerOffset(
+                    sectionMinY: frame.minY,
+                    sectionMaxY: frame.maxY,
+                    pinTop: ShellMetrics.sidebarInset
+                )
+            } else {
+                next = 0
+            }
+            if abs(next - stickyOffset) > 0.5 {
+                stickyOffset = next
+            }
+        }
+    }
+
+    private func toggle() {
+        let collapsingPinned = expanded && stickyOffset > 0.5
+        model.toggleFile(file.id)
+        if collapsingPinned {
+            onCollapseWhilePinned()
+        }
     }
 }
 
@@ -206,32 +332,32 @@ enum ReviewDiffMetrics {
 
     /// Opaque, mid-weight gray. `tertiaryLabelColor` is too faint on window glass
     /// and on the add/delete fills, in both appearances.
+    /// Color lives in `Assets.xcassets/ReviewGutterNumber` (Any + Dark).
     static func gutterNumberColor(dark: Bool) -> NSColor {
-        if dark {
-            return NSColor(srgbRed: 0.80, green: 0.81, blue: 0.83, alpha: 1)
-        }
-        return NSColor(srgbRed: 0.30, green: 0.31, blue: 0.34, alpha: 1)
+        return AppColors.gutterNumber(dark: dark)
     }
 
+    /// Row backgrounds. Colors live in `ReviewAdditionFill` / `ReviewDeletionFill`.
     static func changeFillColor(kind: DiffLineKind, dark: Bool) -> NSColor? {
         switch kind {
         case .addition:
-            NSColor.systemGreen.withAlphaComponent(dark ? 0.16 : 0.10)
+            return AppColors.additionFill(dark: dark)
         case .deletion:
-            NSColor.systemRed.withAlphaComponent(dark ? 0.14 : 0.08)
+            return AppColors.deletionFill(dark: dark)
         case .context:
-            nil
+            return nil
         }
     }
 
-    static func changeBarColor(kind: DiffLineKind) -> NSColor? {
+    /// 2pt gutter edge. Colors live in `ReviewAdditionBar` / `ReviewDeletionBar`.
+    static func changeBarColor(kind: DiffLineKind, dark: Bool) -> NSColor? {
         switch kind {
         case .addition:
-            NSColor.systemGreen.withAlphaComponent(0.85)
+            return AppColors.additionBar(dark: dark)
         case .deletion:
-            NSColor.systemRed.withAlphaComponent(0.85)
+            return AppColors.deletionBar(dark: dark)
         case .context:
-            nil
+            return nil
         }
     }
 }
@@ -426,12 +552,23 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     }
 
     private func layoutDocument() {
-        let gutterWidth = max(document.stickyWidth, 1)
+        let sticky = document.stickyWidth
         let height = max(bounds.height, 1)
-        let codeWidth = max(bounds.width - gutterWidth, 1)
-        gutter.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: height)
-        scrollView.frame = NSRect(x: gutterWidth, y: 0, width: codeWidth, height: height)
-        document.sizeToFit(clipWidth: codeWidth)
+        if sticky <= 0.5 {
+            // Message-only panes (binary, mode-only, etc.) have no line numbers:
+            // hide the gutter so the message centers to the full file width,
+            // i.e. to the header, not to the code area beside an empty gutter.
+            gutter.isHidden = true
+            scrollView.frame = NSRect(x: 0, y: 0, width: max(bounds.width, 1), height: height)
+            document.sizeToFit(clipWidth: max(bounds.width, 1))
+        } else {
+            gutter.isHidden = false
+            let gutterWidth = max(sticky, 1)
+            let codeWidth = max(bounds.width - gutterWidth, 1)
+            gutter.frame = NSRect(x: 0, y: 0, width: gutterWidth, height: height)
+            scrollView.frame = NSRect(x: gutterWidth, y: 0, width: codeWidth, height: height)
+            document.sizeToFit(clipWidth: codeWidth)
+        }
         syncStickyGutter()
     }
 
@@ -508,6 +645,7 @@ private final class ReviewDiffDocumentView: NSView {
     private let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var gutterWidth: CGFloat = 44
     private var maxCodeWidth: CGFloat = 0
+    private var isMessageOnly = false
     private let selection = ReviewSelectionController()
 
     override var isFlipped: Bool { true }
@@ -515,7 +653,10 @@ private final class ReviewDiffDocumentView: NSView {
     override var isOpaque: Bool { false }
     override var acceptsFirstResponder: Bool { true }
 
-    var stickyWidth: CGFloat { ReviewDiffMetrics.stickyWidth(gutterWidth: gutterWidth) }
+    var stickyWidth: CGFloat {
+        guard !isMessageOnly, gutterWidth > 0 else { return 0 }
+        return ReviewDiffMetrics.stickyWidth(gutterWidth: gutterWidth)
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -536,7 +677,9 @@ private final class ReviewDiffDocumentView: NSView {
         self.highlights = highlights
         self.showWhitespace = showWhitespace
         self.file = file
-        gutterWidth = ReviewDiffMetrics.lineNumberGutterWidth(for: rows, font: font)
+        let hasCode = rows.contains(where: { if case .code = $0 { return true }; return false })
+        isMessageOnly = !hasCode
+        gutterWidth = hasCode ? ReviewDiffMetrics.lineNumberGutterWidth(for: rows, font: font) : 0
         maxCodeWidth = Self.maxCodeWidth(for: rows, font: font)
         needsDisplay = true
     }
@@ -659,7 +802,11 @@ private final class ReviewDiffDocumentView: NSView {
         case .comparisonHeader(_, let comparison):
             drawLabel("\(comparison.kind.shortTitle)  \(comparison.kind.subtitle)", in: rect, font: .systemFont(ofSize: 11, weight: .medium), color: .secondaryLabelColor)
         case .message(_, let text):
-            drawLabel(text, in: rect, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
+            if isMessageOnly {
+                drawCenteredLabel(text, in: rect, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
+            } else {
+                drawLabel(text, in: rect, font: .systemFont(ofSize: 12), color: .secondaryLabelColor)
+            }
         case .folded(_, let text, _):
             drawLabel(text, in: rect, font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
         case .hunkHeader(let header):
@@ -673,6 +820,17 @@ private final class ReviewDiffDocumentView: NSView {
         let x = rect.minX + 8
         let drawRect = NSRect(x: x, y: rect.minY + 4, width: max(0, rect.maxX - x - 8), height: max(0, rect.height - 8))
         (text as NSString).draw(in: drawRect, withAttributes: [.font: font, .foregroundColor: color])
+    }
+
+    /// File-level placeholders (Binary file changed., mode-only, etc.) center
+    /// horizontally to the file header. The pane hides the gutter for these,
+    /// so `rect` already spans the full file width.
+    private func drawCenteredLabel(_ text: String, in rect: NSRect, font: NSFont, color: NSColor) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byTruncatingTail
+        let drawRect = NSRect(x: rect.minX, y: rect.minY + 4, width: rect.width, height: max(0, rect.height - 8))
+        (text as NSString).draw(in: drawRect, withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
     }
 
     private func drawCode(line: DiffLine, fileID: String, comparison: FileComparisonKind, in rect: NSRect) {
@@ -739,7 +897,7 @@ private final class ReviewDiffDocumentView: NSView {
             fill.setFill()
             rect.fill()
         }
-        if let bar = ReviewDiffMetrics.changeBarColor(kind: line.kind) {
+        if let bar = ReviewDiffMetrics.changeBarColor(kind: line.kind, dark: dark) {
             bar.setFill()
             NSRect(x: rect.minX, y: rect.minY, width: ReviewDiffMetrics.changeBarWidth, height: rect.height).fill()
         }
@@ -763,10 +921,10 @@ private final class ReviewDiffDocumentView: NSView {
         switch line.kind {
         case .addition:
             marker = "+"
-            markerColor = .systemGreen
+            markerColor = AppColors.addition(dark: dark)
         case .deletion:
             marker = "−"
-            markerColor = .systemRed
+            markerColor = AppColors.deletion(dark: dark)
         case .context:
             marker = " "
             markerColor = numberColor

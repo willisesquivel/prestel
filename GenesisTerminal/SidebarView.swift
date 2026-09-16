@@ -7,7 +7,7 @@ struct SidebarView: View {
     var closeTab: (UUID) -> Void
     @FocusState private var focusedTarget: SidebarFocusTarget?
 
-    private var rowWidth: CGFloat { width - ShellMetrics.sidebarHorizontalInset * 2 }
+    private var rowWidth: CGFloat { width - ShellMetrics.sidebarInset * 2 }
 
     var body: some View {
         ScrollView(.vertical) {
@@ -31,7 +31,7 @@ struct SidebarView: View {
             .overlay(alignment: .topLeading) {
                 if let pin = dragCoordinator.pin, pin.windowID == model.id {
                     TabInsertionPin(width: rowWidth)
-                        .offset(x: ShellMetrics.sidebarHorizontalInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
+                        .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
                 }
             }
             .background(TabListDropZone(windowID: model.id).frame(width: 0, height: 0))
@@ -43,7 +43,7 @@ struct SidebarView: View {
         .safeAreaBar(edge: .top, spacing: 0) {
             SidebarSearchField(text: $model.searchText)
                 .frame(height: ShellMetrics.searchHeight)
-                .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
+                .padding(.horizontal, ShellMetrics.sidebarInset)
                 .frame(width: width)
                 .padding(.top, 42)
                 .padding(.bottom, 12)

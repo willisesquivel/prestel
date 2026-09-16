@@ -231,6 +231,28 @@ struct CodeReviewUITests {
         #expect(runs?.first?.location == 0 && runs?.first?.length == 3)
     }
 
+    @Test func stickyFileHeaderStaysPinnedThenPushesOutWithTheFile() {
+        let header = ReviewFileStickyMetrics.headerHeight
+        let pinTop: CGFloat = 12
+
+        #expect(ReviewFileStickyMetrics.headerOffset(sectionMinY: pinTop, sectionMaxY: 400, pinTop: pinTop) == 0)
+        #expect(ReviewFileStickyMetrics.headerOffset(sectionMinY: 80, sectionMaxY: 400, pinTop: pinTop) == 0)
+
+        let pinned = ReviewFileStickyMetrics.headerOffset(sectionMinY: -20, sectionMaxY: 500, pinTop: pinTop)
+        #expect(pinned == pinTop - (-20))
+
+        let leaving = ReviewFileStickyMetrics.headerOffset(sectionMinY: -200, sectionMaxY: 30, pinTop: pinTop)
+        #expect(leaving == 30 - (-200) - header)
+        #expect(-200 + leaving + header == 30)
+        #expect(ReviewFileStickyMetrics.contentCull(headerOffset: leaving) == leaving)
+    }
+
+    @Test func stickyFileHeaderCullMatchesOverlap() {
+        #expect(ReviewFileStickyMetrics.contentCull(headerOffset: 0) == 0)
+        #expect(ReviewFileStickyMetrics.contentCull(headerOffset: 18) == 18)
+        #expect(ReviewFileStickyMetrics.contentCull(headerOffset: -4) == 0)
+    }
+
     @Test func highlightMissingSpansFallsBackToLabelColor() {
         let fileID = "Missing.swift"
         let deletion = DiffLine(kind: .deletion, oldNumber: 1, newNumber: nil, text: "let x = 1", missingNewline: false)

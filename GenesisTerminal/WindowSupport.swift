@@ -369,7 +369,7 @@ enum ShellMetrics {
     static let sidebarRowHeight: CGFloat = 28
     static let sidebarRowSpacing: CGFloat = 1
     static let sidebarGroupSpacing: CGFloat = 12
-    static let sidebarHorizontalInset: CGFloat = 10
+    static let sidebarInset: CGFloat = 12
 
     // Larger session-row metrics (reserved; sidebar rows currently use the
     // single-line row height above so every tab stays the same height).

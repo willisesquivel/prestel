@@ -102,45 +102,40 @@ struct CodeReviewPanel: View {
     }
 
     private func fileListScroll(_ snapshot: ReviewSnapshot) -> some View {
-        ScrollView(.vertical) {
-            VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                ForEach(model.visibleFiles(in: snapshot)) { file in
-                    VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                        ReviewFileHeaderRow(
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                LazyVStack(spacing: ShellMetrics.sidebarInset) {
+                    ForEach(model.visibleFiles(in: snapshot)) { file in
+                        ReviewFileCard(
+                            model: model,
                             file: file,
-                            expanded: model.presentation.expandedFileIDs.contains(file.id),
-                            onToggle: { model.toggleFile(file.id) },
-                            onOpen: { model.openFile(file) },
-                            onReveal: { model.reveal(file) },
-                            onCopyRelative: { model.copyPath(file, absolute: false) },
-                            onCopyAbsolute: { model.copyPath(file, absolute: true) },
-                            onCopyPatch: { model.copyPatch(for: file) }
+                            paneHeight: paneHeight(for: file),
+                            onEscape: { model.onRestoreTerminalFocus?() },
+                            onCollapseWhilePinned: {
+                                var transaction = Transaction()
+                                transaction.animation = nil
+                                withTransaction(transaction) {
+                                    proxy.scrollTo(file.id, anchor: .top)
+                                }
+                            }
                         )
-                        if model.presentation.expandedFileIDs.contains(file.id) {
-                            ReviewDiffHost(
-                                model: model,
-                                file: file,
-                                onEscape: { model.onRestoreTerminalFocus?() },
-                                onFocusChange: { _ in }
-                            )
-                            .frame(height: paneHeight(for: file))
-                        }
+                        .id(file.id)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, ShellMetrics.sidebarInset)
+                .padding(.top, ShellMetrics.sidebarInset)
+                .padding(.bottom, ShellMetrics.sidebarInset)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
-            .padding(.top, 12)
-            .padding(.bottom, 16)
+            // AppKit needs the native scroller to render the safe-area edge effect.
+            .scrollIndicators(.automatic)
+            .safeAreaBar(edge: .top, spacing: 0) {
+                panelBar(snapshot)
+            }
+            .scrollClipDisabled()
+            .scrollEdgeEffectStyle(.hard, for: .vertical)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        // AppKit needs the native scroller to render the safe-area edge effect.
-        .scrollIndicators(.automatic)
-        .safeAreaBar(edge: .top, spacing: 0) {
-            panelBar(snapshot)
-        }
-        .scrollClipDisabled()
-        .scrollEdgeEffectStyle(.hard, for: .vertical)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func panelBar(_ snapshot: ReviewSnapshot) -> some View {
@@ -181,15 +176,15 @@ struct CodeReviewPanel: View {
                 Text("\(totals.count) file\(totals.count == 1 ? "" : "s")")
                     .foregroundStyle(.secondary)
                 Text("+\(totals.additions)")
-                    .foregroundStyle(Color(nsColor: .systemGreen))
+                    .foregroundStyle(AppColors.reviewAddition)
                 Text("−\(totals.deletions)")
-                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .foregroundStyle(AppColors.reviewDeletion)
             }
             .font(.system(size: 11, design: .monospaced))
             .help(totalsHelp(snapshot))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
+        .padding(.horizontal, ShellMetrics.sidebarInset)
         .padding(.top, 6)
         .padding(.bottom, 6)
         .contextMenu {
@@ -247,7 +242,7 @@ struct CodeReviewPanel: View {
             .menuStyle(.borderlessButton)
             .help("More")
         }
-        .padding(.horizontal, ShellMetrics.sidebarHorizontalInset)
+        .padding(.horizontal, ShellMetrics.sidebarInset)
         .padding(.bottom, 6)
         .accessibilityElement(children: .contain)
     }
