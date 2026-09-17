@@ -34,7 +34,8 @@ Xcode resolves SwiftTerm on first build (network required once).
 
 - ⌘T new tab (inherits cwd), ⌘W close tab / ⇧⌘W close window, ⇧⌘T reopen,
   ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌘S toggle sidebar, ⌘R toggle Code Review.
-  Last tab closes its window.
+  ⌘+ / ⌘= larger terminal text, ⌘- smaller, ⌘0 default size — the window
+  resizes to preserve the grid (no rewrap); window chrome stays put. Last tab closes its window.
 - Title comes from the shell (OSC title), cwd from OSC 7; file drops insert
   shell-quoted paths; only http(s)/mailto/file links open.
 - Code Review uses that same local cwd. It does not infer directories from

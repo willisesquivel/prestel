@@ -128,13 +128,22 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
 
-    /// Translates macOS-style navigation/deletion combos into shell codes.
-    /// Returns nil when the event was handled (so AppKit does not also dispatch
-    /// it). Only acts when this window's terminal itself is focused, so sidebar
-    /// search and Settings fields keep their normal behavior.
+    /// Terminal zoom (Cmd+= / Cmd+-) is handled for this key window regardless
+    /// of first responder so the chords never reach the shell. The window
+    /// resizes to preserve the grid; chrome never scales. Navigation and
+    /// deletion combos still require the terminal itself to be focused, so
+    /// sidebar search and Settings fields keep their normal behavior.
+    /// Returns nil when the event was handled (so AppKit does not also dispatch it).
     private func interceptTerminalKeyDown(_ event: NSEvent) -> NSEvent? {
-        guard let window, event.window === window, window.isKeyWindow,
-              let surface = model.selectedTab?.surface,
+        guard let window, event.window === window, window.isKeyWindow else { return event }
+        // Scale the terminal grid, never the window chrome. Handle this before
+        // the first-responder check so Cmd+= / Cmd+- work from search too,
+        // and so SwiftTerm never sees those chords as input.
+        if let shortcut = TerminalFontSize.shortcut(for: event) {
+            TerminalFontSize.perform(shortcut)
+            return nil
+        }
+        guard let surface = model.selectedTab?.surface,
               window.firstResponder === surface else { return event }
         let flags = event.modifierFlags
         let hasControl = flags.contains(.control)
@@ -294,6 +303,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 /// origin that SwiftUI uses for its layout.
 private final class WindowRootView: NSView {
     override var isFlipped: Bool { true }
+    /// Terminal font zoom must snap, never glide. Keep hosting hierarchy
+    /// geometry instant even if another animation context is in flight.
+    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 }
 
 @MainActor
@@ -321,6 +333,10 @@ final class ThemedGlassView: NSGlassEffectView {
         super.init(coder: coder)
         configureGlass()
     }
+
+    /// Terminal content (hosted inside this glass) must snap on font zoom,
+    /// never scale/glide. Opt out of AppKit implicit animations permanently.
+    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 
     private func configureGlass() {
         style = .regular

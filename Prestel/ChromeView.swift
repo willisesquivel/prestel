@@ -42,6 +42,16 @@ struct PrestelCommands: Commands {
                 .keyboardShortcut("k").disabled(window?.model.selectedTab?.kind != .terminal)
             Button("Unsplit Tabs") { window?.model.unsplit() }
                 .disabled(window?.model.visibleSplit == nil)
+            Divider()
+            Button("Zoom In") { TerminalFontSize.increase() }
+                .keyboardShortcut("+")
+                .disabled(!TerminalFontSize.canIncrease)
+            Button("Zoom Out") { TerminalFontSize.decrease() }
+                .keyboardShortcut("-")
+                .disabled(!TerminalFontSize.canDecrease)
+            Button("Actual Size") { TerminalFontSize.reset() }
+                .keyboardShortcut("0")
+                .disabled(TerminalFontSize.isDefault)
         }
     }
 }

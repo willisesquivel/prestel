@@ -121,7 +121,11 @@ struct PrestelSettingsView: View {
     var body: some View {
         Form {
             Section("Terminal") {
-                Stepper("Font size: \(Int(fontSize)) pt", value: $fontSize, in: 9...32)
+                Stepper(
+                    "Font size: \(Int(fontSize)) pt",
+                    value: $fontSize,
+                    in: Double(TerminalFontSize.minimum)...Double(TerminalFontSize.maximum)
+                )
                 Toggle("Use Option as Meta", isOn: $optionAsMeta)
                 Text("With Meta disabled, Option enters accented and alternate characters using your macOS input source.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -135,12 +139,7 @@ struct PrestelSettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .onChange(of: fontSize) { applyPreferences() }
-        .onChange(of: optionAsMeta) { applyPreferences() }
-    }
-    private func applyPreferences() {
-        for window in NSApp.windows {
-            (window.windowController as? TerminalWindowController)?.model.tabs.forEach { $0.surface?.applyPreferences() }
-        }
+        .onChange(of: fontSize) { TerminalFontSize.applyToOpenTerminals() }
+        .onChange(of: optionAsMeta) { TerminalFontSize.applyToOpenTerminals() }
     }
 }

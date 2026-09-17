@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import QuartzCore
 import SwiftTerm
 import SwiftUI
 import Testing
@@ -129,6 +130,121 @@ struct PrestelTests {
         #expect(abs((glass.tintColor?.cgColor.alpha ?? -1) - 0.12) < 0.001)
     }
 
+    @Test func terminalFontSizeClampsAndStepsWithoutLeavingTheRange() {
+        withTerminalFontSize(nil) {
+            #expect(TerminalFontSize.current == 13)
+            #expect(TerminalFontSize.clamp(8 as CGFloat) == 9)
+            #expect(TerminalFontSize.clamp(40 as CGFloat) == 32)
+            #expect(TerminalFontSize.clamp(CGFloat.nan) == 13)
+            #expect(TerminalFontSize.increase() == 14)
+            #expect(TerminalFontSize.decrease() == 13)
+            #expect(TerminalFontSize.set(32) == 32)
+            #expect(TerminalFontSize.increase() == 32)
+            #expect(!TerminalFontSize.canIncrease)
+            #expect(TerminalFontSize.set(9) == 9)
+            #expect(TerminalFontSize.decrease() == 9)
+            #expect(!TerminalFontSize.canDecrease)
+            #expect(TerminalFontSize.reset() == 13)
+            #expect(TerminalFontSize.isDefault)
+        }
+    }
+
+    @Test func commandPlusAndMinusAreTerminalScaleShortcuts() {
+        func event(characters: String, keyCode: UInt16, flags: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: flags,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: characters,
+                charactersIgnoringModifiers: characters,
+                isARepeat: false,
+                keyCode: keyCode
+            )!
+        }
+        #expect(TerminalFontSize.shortcut(for: event(characters: "=", keyCode: 24, flags: .command)) == .increase)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "+", keyCode: 24, flags: [.command, .shift])) == .increase)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "-", keyCode: 27, flags: .command)) == .decrease)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "0", keyCode: 29, flags: .command)) == .reset)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "+", keyCode: 69, flags: .command)) == .increase)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "-", keyCode: 78, flags: .command)) == .decrease)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "=", keyCode: 24, flags: [.command, .option])) == nil)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "=", keyCode: 24, flags: [])) == nil)
+        #expect(TerminalFontSize.shortcut(for: event(characters: "k", keyCode: 40, flags: .command)) == nil)
+    }
+
+    @Test func applyingALargerFontPreservesGridByResizingWindow() async throws {
+        try await withTerminalFontSize(13) {
+            let model = TerminalModel()
+            let controller = TerminalWindowController(model: model)
+            let window = try #require(controller.window)
+            defer {
+                window.orderOut(nil)
+                controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+            }
+            window.orderFrontRegardless()
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(300))
+            window.contentView?.layoutSubtreeIfNeeded()
+
+            let surface = try #require(model.selectedTab?.surface)
+            surface.applyPreferences()
+            window.contentView?.layoutSubtreeIfNeeded()
+            let windowSize = window.frame.size
+            let cols = surface.terminalDimensions.cols
+            let rows = surface.terminalDimensions.rows
+            #expect(surface.font.pointSize == 13)
+            #expect(cols > 0 && rows > 0)
+
+            // Grow: same grid, bigger window, no animation.
+            TerminalFontSize.increase()
+            surface.applyPreferences()
+            window.contentView?.layoutSubtreeIfNeeded()
+            #expect(surface.font.pointSize == 14)
+            #expect(surface.terminalDimensions.cols == cols)
+            #expect(surface.terminalDimensions.rows == rows)
+            #expect(window.frame.width > windowSize.width)
+            #expect(window.frame.height > windowSize.height)
+            #expect(surface.layer?.animationKeys()?.isEmpty != false)
+            let grownSize = window.frame.size
+
+            TerminalFontSize.set(16)
+            surface.applyPreferences()
+            window.contentView?.layoutSubtreeIfNeeded()
+            #expect(surface.font.pointSize == 16)
+            #expect(surface.terminalDimensions.cols == cols)
+            #expect(surface.terminalDimensions.rows == rows)
+            #expect(window.frame.width > grownSize.width)
+
+            // Shrink: same grid, smaller window.
+            let preShrinkWin = window.frame.size
+            TerminalFontSize.decrease()
+            surface.applyPreferences()
+            window.contentView?.layoutSubtreeIfNeeded()
+            #expect(surface.font.pointSize == 15)
+            #expect(surface.terminalDimensions.cols == cols)
+            #expect(surface.terminalDimensions.rows == rows)
+            #expect(window.frame.width < preShrinkWin.width)
+            #expect(window.frame.height < preShrinkWin.height)
+        }
+    }
+
+    @Test func terminalFontSizeChangesAreNotAnimated() {
+        var durationIsZero = false
+        var implicitAnimationDisabled = false
+        var layerActionsDisabled = false
+        TerminalFontSize.withoutAnimations {
+            durationIsZero = NSAnimationContext.current.duration == 0
+            implicitAnimationDisabled = NSAnimationContext.current.allowsImplicitAnimation == false
+            layerActionsDisabled = CATransaction.disableActions()
+        }
+        #expect(durationIsZero)
+        #expect(implicitAnimationDisabled)
+        #expect(layerActionsDisabled)
+    }
+
     @Test func markedTextIsNotSentBeforeCommitAndClipboardIsDenied() async throws {
         let session = TerminalSession(descriptor: TabDescriptor())
         session.start()
@@ -221,6 +337,42 @@ struct PrestelTests {
 
     private func buffer(_ session: TerminalSession) -> String {
         session.surface.map { String(decoding: $0.getBufferAsData(), as: UTF8.self) } ?? ""
+    }
+
+    private func withTerminalFontSize(_ size: CGFloat?, _ body: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: TerminalFontSize.defaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: TerminalFontSize.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: TerminalFontSize.defaultsKey)
+            }
+        }
+        if let size {
+            defaults.set(Double(size), forKey: TerminalFontSize.defaultsKey)
+        } else {
+            defaults.removeObject(forKey: TerminalFontSize.defaultsKey)
+        }
+        try body()
+    }
+
+    private func withTerminalFontSize(_ size: CGFloat?, _ body: () async throws -> Void) async rethrows {
+        let defaults = UserDefaults.standard
+        let previous = defaults.object(forKey: TerminalFontSize.defaultsKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: TerminalFontSize.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: TerminalFontSize.defaultsKey)
+            }
+        }
+        if let size {
+            defaults.set(Double(size), forKey: TerminalFontSize.defaultsKey)
+        } else {
+            defaults.removeObject(forKey: TerminalFontSize.defaultsKey)
+        }
+        try await body()
     }
     @Test func searchFieldTabDoesNotInsertGlyph() {
         let textView = SearchEditorTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 20))
