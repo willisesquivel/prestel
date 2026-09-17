@@ -5,7 +5,7 @@ private final class AppColorsBundleFinder: NSObject {}
 
 /// Central access to `Assets.xcassets` colors.
 ///
-/// Edit values in Xcode: `GenesisTerminal/Assets.xcassets`.
+/// Edit values in Xcode: `Prestel/Assets.xcassets`.
 /// Each `Review*` set has Any + Dark variants.
 ///
 /// - SwiftUI (`reviewAddition` / `reviewDeletion`) returns a dynamic

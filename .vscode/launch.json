@@ -4,8 +4,8 @@
         {
             "type": "lldb-dap",
             "request": "launch",
-            "name": "Debug Genesis",
-            "program": "${workspaceFolder}/.build/Build/Products/Debug/Genesis.app/Contents/MacOS/Genesis",
+            "name": "Debug Prestel",
+            "program": "${workspaceFolder}/.build/Build/Products/Debug/Prestel.app/Contents/MacOS/Prestel",
             "preLaunchTask": "build-debug",
             "cwd": "${workspaceFolder}",
             "args": [],

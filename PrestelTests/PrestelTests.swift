@@ -3,11 +3,11 @@ import Darwin
 import SwiftTerm
 import SwiftUI
 import Testing
-@testable import GenesisTerminal
+@testable import Prestel
 
 @Suite(.serialized)
 @MainActor
-struct GenesisTerminalTests {
+struct PrestelTests {
     @Test func independentModelsAndFilteringPreserveSessions() {
         let a = TerminalModel()
         let b = TerminalModel()
@@ -70,7 +70,7 @@ struct GenesisTerminalTests {
 
     @Test func invalidRestorationFallsBackSafely() {
         let id = UUID()
-        let descriptor = WindowDescriptor(id: UUID(), tabs: [TabDescriptor(id: id, directory: "/missing-genesis-folder"), TabDescriptor(id: id)], selectedID: UUID(), sidebarVisible: true, sidebarWidth: 900)
+        let descriptor = WindowDescriptor(id: UUID(), tabs: [TabDescriptor(id: id, directory: "/missing-prestel-folder"), TabDescriptor(id: id)], selectedID: UUID(), sidebarVisible: true, sidebarWidth: 900)
         let restored = TerminalModel(restoration: descriptor)
         #expect(restored.tabs.count == 1)
         #expect(restored.selectedID == id)
@@ -88,11 +88,11 @@ struct GenesisTerminalTests {
         // Universal TUI glass contract: truecolor advertisement + identity so
         // every TUI (not just OpenCode `system`) can inherit the terminal bg.
         #expect(ShellConfiguration.environment.contains("COLORTERM=truecolor"))
-        #expect(ShellConfiguration.environment.contains("TERM_PROGRAM=Genesis"))
+        #expect(ShellConfiguration.environment.contains("TERM_PROGRAM=Prestel"))
     }
 
     @Test func parserHandlesFragmentedUTF8AndAlternateScreen() {
-        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
         let bytes = Array("Aé文🙂e\u{301}".utf8)
         for byte in bytes { view.feed(byteArray: [byte][...]) }
         #expect(view.terminalStateSnapshot().visibleRows.first?.text.contains("Aé文🙂e\u{301}") == true)
@@ -103,7 +103,7 @@ struct GenesisTerminalTests {
     }
 
     @Test func appearanceChangeRefreshesTerminalAndGlass() {
-        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
         view.applyPreferences()
         view.feed(byteArray: Array("theme".utf8)[...])
 
@@ -196,8 +196,8 @@ struct GenesisTerminalTests {
 
     @Test func headerDirectoryFollowsShellWithoutOSC7() async throws {
         // Regression: header showed the tab's starting directory (e.g.
-        // ~/terminals) after `cd ~/genesis` because zsh with
-        // TERM_PROGRAM=Genesis never sends OSC 7. The session must fall back
+        // ~/terminals) after `cd ~/prestel` because zsh with
+        // TERM_PROGRAM=Prestel never sends OSC 7. The session must fall back
         // to kernel truth via proc_pidinfo — and fast, not just via the 2s
         // backup poll.
         let session = TerminalSession(descriptor: TabDescriptor(directory: "/"))
@@ -776,7 +776,7 @@ struct GenesisTerminalTests {
     }
 
     @Test func terminalColorsResolveAgainstTheViewsAppearance() throws {
-        let view = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+        let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             view.appearance = NSAppearance(named: name)
             view.refreshColorsForCurrentAppearance()
@@ -991,7 +991,7 @@ struct GenesisTerminalTests {
         // underneath: piled-up surfaces all render at once and switching
         // appears to do nothing.
         #expect(first.surface?.superview == nil)
-        let hostedCount = selectedSurface.superview?.subviews.filter { $0 is GenesisTerminalView }.count ?? -1
+        let hostedCount = selectedSurface.superview?.subviews.filter { $0 is PrestelView }.count ?? -1
         #expect(hostedCount == 1)
 
         model.select(first.id)

@@ -114,7 +114,7 @@ private final class StreamBox: @unchecked Sendable {
     private var stopped = false
 
     init() {
-        queue = DispatchQueue(label: "genesis.review.fsevents")
+        queue = DispatchQueue(label: "prestel.review.fsevents")
         queue.setSpecific(key: Self.queueKey, value: 1)
     }
 

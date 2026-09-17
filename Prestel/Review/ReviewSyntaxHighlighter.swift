@@ -9,7 +9,7 @@ final class ReviewSyntaxHighlighter: Sendable {
     }
 
     private let core = Core()
-    private let queue = DispatchQueue(label: "genesis.review.highlight")
+    private let queue = DispatchQueue(label: "prestel.review.highlight")
 
     func highlight(snapshot: SourceSnapshot, path: String, dark: Bool, appearanceGeneration: UInt64) async -> HighlightedSource? {
         guard let text = snapshot.text else { return nil }

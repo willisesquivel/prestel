@@ -116,7 +116,7 @@ struct ShellView: View {
     }
 }
 
-/// Genesis's original traffic lights and their original sidebar transition.
+/// Prestel's original traffic lights and their original sidebar transition.
 private struct ManualTrafficLights: View {
     let sidebarVisible: Bool
     @State private var isHoveringGroup = false
@@ -272,7 +272,7 @@ private struct TerminalDetailSurface: View {
             } else {
                 DetailCard {
                     if model.selectedTab?.kind == .settings {
-                        GenesisSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
+                        PrestelSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
                     } else {
                         VStack(spacing: 0) {
                             TerminalToolbar(model: model)

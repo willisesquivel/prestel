@@ -1,6 +1,6 @@
 import AppKit
 import Testing
-@testable import GenesisTerminal
+@testable import Prestel
 
 @Suite
 @MainActor

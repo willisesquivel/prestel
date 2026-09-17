@@ -3,7 +3,7 @@ import SwiftUI
 
 extension NSPasteboard.PasteboardType {
     /// In-app tab drag only. Not a public UTI; other apps receive no useful session data.
-    static let genesisTab = NSPasteboard.PasteboardType("com.example.GenesisTerminal.tab-drag")
+    static let prestelTab = NSPasteboard.PasteboardType("com.example.Prestel.tab-drag")
 }
 
 /// Transient identifiers for a live tab. Resolves through the window registry; never serializes a PTY.
@@ -820,7 +820,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         if window != nil {
             TabDragCoordinator.shared.registerRow(self)
             if !registered {
-                registerForDraggedTypes([.genesisTab])
+                registerForDraggedTypes([.prestelTab])
                 registered = true
             }
             installScrollObservers()
@@ -913,7 +913,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         let payload = TabDragPayload(dragID: UUID(), tabID: tabID, sourceWindowID: windowID)
         let pasteboardItem = NSPasteboardItem()
         if let data = try? JSONEncoder().encode(payload) {
-            pasteboardItem.setData(data, forType: .genesisTab)
+            pasteboardItem.setData(data, forType: .prestelTab)
         }
         let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
         let preview = TabDragPreview.image(title: titleText, symbol: symbol, appearance: effectiveAppearance)
@@ -956,7 +956,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.availableType(from: [.genesisTab]) == nil ? [] : .move
+        sender.draggingPasteboard.availableType(from: [.prestelTab]) == nil ? [] : .move
     }
 
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -964,7 +964,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        guard sender.draggingPasteboard.availableType(from: [.genesisTab]) != nil else { return false }
+        guard sender.draggingPasteboard.availableType(from: [.prestelTab]) != nil else { return false }
         return !TabDragCoordinator.shared.shouldAnimateReturn
     }
 

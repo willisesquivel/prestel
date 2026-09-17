@@ -3,11 +3,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct GenesisTerminalApp: App {
+struct PrestelApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         Settings { EmptyView() }
-            .commands { GenesisCommands(app: appDelegate) }
+            .commands { PrestelCommands(app: appDelegate) }
     }
 }
 
@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if quitting { return .terminateNow }
         let active = controllers.values.flatMap { $0.model.tabs }.filter(\.hasActiveJobs)
-        guard CloseConfirmation.confirm(tabs: active, action: "Quit Genesis") else { return .terminateCancel }
+        guard CloseConfirmation.confirm(tabs: active, action: "Quit Prestel") else { return .terminateCancel }
         quitting = true
         for controller in controllers.values {
             controller.preserveForQuit()
@@ -114,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 }
 
-struct GenesisSettingsView: View {
+struct PrestelSettingsView: View {
     @AppStorage("terminalFontSize") private var fontSize = 13.0
     @AppStorage("optionAsMeta") private var optionAsMeta = false
     @AppStorage("startingDirectory") private var directory = ""

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct GenesisCommands: Commands {
+struct PrestelCommands: Commands {
     @ObservedObject var app: AppDelegate
     var body: some Commands {
         let _ = app.commandRevision
@@ -63,7 +63,7 @@ enum CloseConfirmation {
 
 // NOTE: Window controls are the native titlebar buttons plus the floating
 // navigation capsule below. Sidebar toggle, tab cycling and history also
-// live in the menu bar and keyboard shortcuts (see GenesisCommands).
+// live in the menu bar and keyboard shortcuts (see PrestelCommands).
 
 struct NavigationCapsule: View {
     @ObservedObject var model: TerminalModel

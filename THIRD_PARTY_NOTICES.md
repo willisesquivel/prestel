@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-Genesis includes the following third-party software.
+Prestel includes the following third-party software.
 
 ## Highlighter (HighlighterSwift)
 

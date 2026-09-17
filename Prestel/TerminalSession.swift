@@ -24,19 +24,19 @@ enum ShellConfiguration {
         var values = ProcessInfo.processInfo.environment
         for key in ["XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID", "SHLVL", "_", "PWD", "OLDPWD"] { values.removeValue(forKey: key) }
         // Universal TUI transparency contract (same pattern as OpenCode `system`):
-        // Genesis renders default-background cells transparently so the glass
+        // Prestel renders default-background cells transparently so the glass
         // shows through (SwiftTerm skips filling default-bg runs; see
         // AppleTerminalView). TUIs only inherit the glass when they paint
         // `none`/default backgrounds. These vars let every TUI opt in:
         // - TERM=xterm-256color: widely-recognized 256-color entry.
         // - COLORTERM=truecolor: advertises 24-bit color (OpenCode/Gemini docs
         //   check `echo $COLORTERM` for `truecolor`/`24bit`).
-        // - TERM_PROGRAM=Genesis (+ version): lets shells/TUIs detect us
+        // - TERM_PROGRAM=Prestel (+ version): lets shells/TUIs detect us
         //   (e.g. zsh disables Apple's OSC 7 hook; Gemini/Claude auto-themes
         //   use OSC 11, which SwiftTerm already answers from our native colors).
         values["TERM"] = "xterm-256color"
         values["COLORTERM"] = "truecolor"
-        values["TERM_PROGRAM"] = "Genesis"
+        values["TERM_PROGRAM"] = "Prestel"
         values["TERM_PROGRAM_VERSION"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1"
         values["SHELL"] = loginShell
         values["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
@@ -57,7 +57,7 @@ enum ShellConfiguration {
 
 /// Feeds incremental bytes on the serial I/O queue. Only metadata/exit crosses to AppKit.
 private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
-    weak var surface: GenesisTerminalView?
+    weak var surface: PrestelView?
     private let lock = NSLock()
     private var size = winsize(ws_row: 24, ws_col: 80, ws_xpixel: 0, ws_ypixel: 0)
     var onExit: (@MainActor @Sendable (Int32?) -> Void)?
@@ -104,7 +104,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     @Published private(set) var title: String
     @Published private(set) var directory: String
     @Published private(set) var state: State = .ready
-    private(set) var surface: GenesisTerminalView?
+    private(set) var surface: PrestelView?
     private(set) var process: LocalProcess?
     private var adapter: ProcessAdapter?
     private var cwdPollTimer: Timer?
@@ -129,7 +129,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     }
     func start() {
         guard kind == .terminal, state == .ready else { return }
-        let surface = GenesisTerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 500),
+        let surface = PrestelView(frame: NSRect(x: 0, y: 0, width: 720, height: 500),
                                           options: TerminalOptions(cursorStyle: .steadyBlock, scrollback: 10_000))
         surface.terminalDelegate = self
         surface.applyPreferences()
@@ -191,13 +191,13 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         if self.title.isEmpty { self.title = "Local" }
         // Titles are usually sent alongside a prompt redraw, so the shell cwd
         // has likely just changed too. Opportunistically re-read it: shells
-        // that don't emit OSC 7 (e.g. zsh with TERM_PROGRAM=Genesis, which
+        // that don't emit OSC 7 (e.g. zsh with TERM_PROGRAM=Prestel, which
         // disables Apple's precmd hook) would otherwise leave the header stale.
         refreshDirectoryFromProcess()
     }
     /// Kernel truth for the shell's cwd. Used as a fallback when the shell
     /// doesn't report OSC 7, otherwise the header keeps showing the tab's
-    /// starting directory (e.g. ~/terminals after cd ~/genesis).
+    /// starting directory (e.g. ~/terminals after cd ~/prestel).
     func refreshDirectoryFromProcess() {
         guard state == .running, let process, process.running,
               let actual = ProcessInspection.directory(pid: process.shellPid),

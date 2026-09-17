@@ -1,4 +1,4 @@
-# Genesis
+# Prestel
 
 A native macOS terminal with a glass window treatment, inset detail surface,
 collapsible sidebar, custom rows, and a search capsule.
@@ -12,7 +12,7 @@ unstaged Git changes, and never stages, discards, commits, or pushes.
 
 ## Status: real PTY via SwiftTerm (integration branch)
 
-- Each tab owns a `LocalProcess` PTY + `GenesisTerminalView` (SwiftTerm core:
+- Each tab owns a `LocalProcess` PTY + `PrestelView` (SwiftTerm core:
   grid, SGR/cursor parsing, alt-screen TUIs, Unicode/IME, selection).
 - SwiftTerm is pinned via SwiftPM (`12ea7f5`); HighlighterSwift is pinned at
   `fe7aae9c` for review syntax highlighting. See `Package.resolved`.
@@ -22,7 +22,7 @@ unstaged Git changes, and never stages, discards, commits, or pushes.
 
 ## Run
 
-Open `GenesisTerminal.xcodeproj` in Xcode 26.5+ and run the `GenesisTerminal` scheme; the built application is named `Genesis`.
+Open `Prestel.xcodeproj` in Xcode 26.5+ and run the `Prestel` scheme; the built application is named `Prestel`.
 Xcode resolves SwiftTerm on first build (network required once).
 
 - Baseline window 960×650, min 760×540.
@@ -46,7 +46,7 @@ Xcode resolves SwiftTerm on first build (network required once).
 
 ## Files
 
-- `GenesisTerminalApp.swift`: multi-window ownership, menus, Settings screen,
+- `PrestelApp.swift`: multi-window ownership, menus, Settings screen,
   quit/close confirmation, restoration.
 - `WindowSupport.swift`: `TerminalWindowController`, restoration,
   `ShellMetrics`, glass backdrop, toolbar header.
@@ -59,7 +59,7 @@ Xcode resolves SwiftTerm on first build (network required once).
 
 ## TUI transparency (glass background)
 
-Genesis renders default-background cells transparently so the glass shows
+Prestel renders default-background cells transparently so the glass shows
 through (`backgroundOpacity = 0`, `window.isOpaque = false`; SwiftTerm skips
 filling default-bg runs). Any TUI inherits it when it paints the
 terminal-default background (`none`) instead of an explicit opaque fill —
@@ -67,8 +67,8 @@ the same pattern as the OpenCode `system` theme (text/background `none`).
 Explicit hex/black fills stay opaque by design; panels, selections, and
 diffs often keep subtle fills for readability.
 
-Genesis side (automatic, locked by tests): `TERM=xterm-256color`,
-`COLORTERM=truecolor`, `TERM_PROGRAM=Genesis`, plus OSC 10/11 answers from
+Prestel side (automatic, locked by tests): `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `TERM_PROGRAM=Prestel`, plus OSC 10/11 answers from
 the native colors so auto-themes detect light/dark. Check with
 `echo $COLORTERM` (expect `truecolor`).
 
@@ -122,7 +122,7 @@ Recipes (restart the TUI after changing):
   catppuccin) or `transparent.nvim` work too.
 - tmux (passthrough): `set -g default-terminal "tmux-256color"` plus
   `set -ag terminal-overrides ",xterm-256color:RGB"` so truecolor and OSC
-  queries reach Genesis.
+  queries reach Prestel.
 - Any other TUI (helix, lazygit, btop/htop, yazi, k9s, fzf, bat, …): look for
   background `none` / `transparent` / `default` in its theme and pick that.
   Same rule everywhere: `none` = glass, explicit color = opaque.

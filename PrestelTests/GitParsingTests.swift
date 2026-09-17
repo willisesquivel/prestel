@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GenesisTerminal
+@testable import Prestel
 
 @Suite
 struct GitParsingTests {
@@ -149,7 +149,7 @@ struct GitParsingTests {
 enum GitFixture {
     static func make() throws -> String {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("genesis-review-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("prestel-review-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         func git(_ arguments: [String]) throws {
             let process = Process()
@@ -159,10 +159,10 @@ enum GitFixture {
             process.environment = [
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_SYSTEM": "/dev/null",
-                "GIT_AUTHOR_NAME": "Genesis",
-                "GIT_AUTHOR_EMAIL": "genesis@example.com",
-                "GIT_COMMITTER_NAME": "Genesis",
-                "GIT_COMMITTER_EMAIL": "genesis@example.com",
+                "GIT_AUTHOR_NAME": "Prestel",
+                "GIT_AUTHOR_EMAIL": "prestel@example.com",
+                "GIT_COMMITTER_NAME": "Prestel",
+                "GIT_COMMITTER_EMAIL": "prestel@example.com",
                 "HOME": root.path
             ]
             try process.run()

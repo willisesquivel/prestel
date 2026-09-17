@@ -46,10 +46,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         window.titlebarAppearsTransparent = true
         window.delegate = self
         window.minSize = NSSize(width: 760, height: 540)
-        window.title = "Genesis"
+        window.title = "Prestel"
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
-        // Genesis draws its original fixed traffic lights in the SwiftUI shell.
+        // Prestel draws its original fixed traffic lights in the SwiftUI shell.
         // Keep AppKit's duplicate controls out of the hit-test tree so there
         // is one stable, unambiguous control surface.
         window.standardWindowButton(.closeButton)?.isHidden = true
@@ -57,9 +57,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
-        window.identifier = .init("Genesis.\(model.id.uuidString)")
+        window.identifier = .init("Prestel.\(model.id.uuidString)")
         window.isRestorable = true
-        window.restorationClass = GenesisWindowRestoration.self
+        window.restorationClass = PrestelWindowRestoration.self
         updates = model.objectWillChange.sink { [weak self] in self?.scheduleRefresh() }
         selectionUpdates = model.$selectedID.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async {
@@ -102,7 +102,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     func refresh() {
         for tab in model.tabs { tab.start() }
         let tab = model.selectedTab
-        window?.title = "\(tab?.title ?? "Terminal") — Genesis"
+        window?.title = "\(tab?.title ?? "Terminal") — Prestel"
         window?.invalidateRestorableState()
         AppDelegate.current?.commandRevision &+= 1
     }
@@ -268,7 +268,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     }
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
         let descriptor = savedForQuit ?? model.descriptor
-        if let data = try? JSONEncoder().encode(descriptor) { state.encode(data as NSData, forKey: "Genesis.window") }
+        if let data = try? JSONEncoder().encode(descriptor) { state.encode(data as NSData, forKey: "Prestel.window") }
     }
     func preserveForQuit() { savedForQuit = model.descriptor }
     func windowDidMiniaturize(_ notification: Notification) {
@@ -297,9 +297,9 @@ private final class WindowRootView: NSView {
 }
 
 @MainActor
-final class GenesisWindowRestoration: NSObject, NSWindowRestoration {
+final class PrestelWindowRestoration: NSObject, NSWindowRestoration {
     static func restoreWindow(withIdentifier identifier: NSUserInterfaceItemIdentifier, state: NSCoder, completionHandler: @escaping (NSWindow?, (any Error)?) -> Void) {
-        guard let data = state.decodeObject(of: NSData.self, forKey: "Genesis.window") as Data?,
+        guard let data = state.decodeObject(of: NSData.self, forKey: "Prestel.window") as Data?,
               let descriptor = try? JSONDecoder().decode(WindowDescriptor.self, from: data),
               let app = AppDelegate.current else { completionHandler(nil, nil); return }
         let controller = app.createWindow(restoration: descriptor, show: false)
@@ -341,7 +341,7 @@ final class ThemedGlassView: NSGlassEffectView {
 
 // MARK: - Shell metrics
 //
-// Genesis chrome: glass backdrop, search capsule, sidebar rows, native window
+// Prestel chrome: glass backdrop, search capsule, sidebar rows, native window
 // controls, inset detail surface. The baseline window is sized so a terminal
 // fits while keeping at least 320pt for the detail area.
 

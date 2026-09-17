@@ -1,6 +1,6 @@
 # Daily problem reviews
 
-Owned by Genesis Coder for review-only daily passes. Application source stays untouched unless a separate implement job is authorized.
+Owned by Prestel Coder for review-only daily passes. Application source stays untouched unless a separate implement job is authorized.
 
 ## Files
 
@@ -10,7 +10,7 @@ Owned by Genesis Coder for review-only daily passes. Application source stays un
 
 ## Finding fields
 
-Stable ID, area, problem, evidence/cause, status, next action. Prefer `GENESIS-YYYYMMDD-NNN` IDs for review findings; cite Linear `GEN-N` when the mismatch is tracker vs tree.
+Stable ID, area, problem, evidence/cause, status, next action. Prefer `PRESTEL-YYYYMMDD-NNN` IDs for review findings; cite Linear `GEN-N` when the mismatch is tracker vs tree.
 
 ## Rules
 

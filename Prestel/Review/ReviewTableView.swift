@@ -173,6 +173,12 @@ struct ReviewFileCard: View {
     }
 
     var body: some View {
+        // Snapshot Sendable values for the visualEffect closure below, which
+        // cannot reference main-actor-isolated view state.
+        let visualExpanded = expanded
+        let visualPaneHeight = paneHeight
+        // State-driven value now feeds the diff mask only. Header position is
+        // synchronous (visualEffect below). Same math, same numbers.
         let offset = expanded ? stickyOffset : 0
         let cull = ReviewFileStickyMetrics.contentCull(headerOffset: offset)
         VStack(spacing: 0) {
@@ -186,7 +192,23 @@ struct ReviewFileCard: View {
                 onCopyAbsolute: { model.copyPath(file, absolute: true) },
                 onCopyPatch: { model.copyPatch(for: file) }
             )
-            .offset(y: offset)
+            .visualEffect { content, proxy in
+                // Synchronous with the scroll pass: no @State round-trip, so
+                // fast flings can't leave the header a frame behind to snap
+                // back later. Layout frame is pre-effect, so no feedback loop.
+                let minY = proxy.frame(in: .scrollView(axis: .vertical)).minY
+                let offset: CGFloat
+                if visualExpanded {
+                    offset = ReviewFileStickyMetrics.headerOffset(
+                        sectionMinY: minY,
+                        sectionMaxY: minY + ReviewFileStickyMetrics.headerHeight + visualPaneHeight,
+                        pinTop: ShellMetrics.sidebarInset
+                    )
+                } else {
+                    offset = 0
+                }
+                return content.offset(y: offset)
+            }
             .zIndex(1)
 
             if expanded {
@@ -509,7 +531,6 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         scrollView.horizontalScrollElasticity = .allowed
         scrollView.verticalScrollElasticity = .none
         scrollView.allowsMagnification = false
-        scrollView.contentView.copiesOnScroll = false
         scrollView.documentView = document
         scrollView.onDidScroll = { [weak self] in
             self?.syncStickyGutter()

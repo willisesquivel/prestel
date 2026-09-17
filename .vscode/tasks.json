@@ -7,9 +7,9 @@
             "command": "xcodebuild",
             "args": [
                 "-project",
-                "${workspaceFolder}/GenesisTerminal.xcodeproj",
+                "${workspaceFolder}/Prestel.xcodeproj",
                 "-scheme",
-                "GenesisTerminal",
+                "Prestel",
                 "-configuration",
                 "Debug",
                 "-derivedDataPath",

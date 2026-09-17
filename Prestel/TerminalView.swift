@@ -3,7 +3,7 @@ import SwiftTerm
 import SwiftUI
 
 @MainActor
-final class GenesisTerminalView: SwiftTerm.TerminalView {
+final class PrestelView: SwiftTerm.TerminalView {
     var onFocus: (() -> Void)?
     /// Unfocused split panes stay attached but must not steal first responder.
     var claimsFocus = true
@@ -107,7 +107,7 @@ struct TerminalPane: View {
     var body: some View {
         Group {
             if session.kind == .settings {
-                GenesisSettingsView()
+                PrestelSettingsView()
                     .simultaneousGesture(TapGesture().onEnded { onFocus() })
             } else if let surface = session.surface {
                 TerminalDirectHost(surface: surface, isFocused: isFocused, onFocus: onFocus)
@@ -126,7 +126,7 @@ struct TerminalPane: View {
 /// effect here: wrapping the terminal in a second scroll container fought
 /// the terminal's scroller and broke scrolling.
 private struct TerminalDirectHost: NSViewRepresentable {
-    let surface: GenesisTerminalView
+    let surface: PrestelView
     var isFocused: Bool
     var onFocus: () -> Void
 
@@ -145,19 +145,19 @@ private struct TerminalDirectHost: NSViewRepresentable {
     }
 }
 
-/// Hosts one `GenesisTerminalView`. Attachment waits until the container has a
+/// Hosts one `PrestelView`. Attachment waits until the container has a
 /// window so speculative SwiftUI hosts cannot steal a live surface (GEN-46).
 private final class TerminalHostContainer: NSView {
     var isFocused = true
     var onFocus: (() -> Void)?
-    private var pending: GenesisTerminalView?
+    private var pending: PrestelView?
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         attachIfNeeded()
     }
 
-    func pin(_ surface: GenesisTerminalView) {
+    func pin(_ surface: PrestelView) {
         pending = surface
         surface.onFocus = onFocus
         surface.claimsFocus = isFocused
@@ -171,7 +171,7 @@ private final class TerminalHostContainer: NSView {
             for subview in subviews where subview !== surface {
                 subview.removeFromSuperview()
             }
-            for constraint in constraints where constraint.firstItem is GenesisTerminalView || constraint.secondItem is GenesisTerminalView {
+            for constraint in constraints where constraint.firstItem is PrestelView || constraint.secondItem is PrestelView {
                 constraint.isActive = false
             }
             surface.removeFromSuperview()
@@ -187,7 +187,7 @@ private final class TerminalHostContainer: NSView {
         applyFocus(to: surface, didAttach: !alreadyHere)
     }
 
-    private func applyFocus(to surface: GenesisTerminalView, didAttach: Bool) {
+    private func applyFocus(to surface: PrestelView, didAttach: Bool) {
         guard isFocused, let window else { return }
         window.initialFirstResponder = surface
         if window.isKeyWindow,
