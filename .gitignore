@@ -2,3 +2,8 @@
 **/xcuserdata/
 *.xcuserstate
 .build/
+
+.swp
+*.swp
+*.profraw
+.DS_Store
