@@ -572,7 +572,7 @@ struct GenesisTerminalTests {
         model.cycle(1)
         #expect(model.selectedID == fourth)
         model.cycle(-1)
-        #expect(model.selectedID == second)
+        #expect(model.selectedID == third)
     }
 
     @Test func splitCycleBackwardFollowsVisualOrder() {
@@ -602,8 +602,14 @@ struct GenesisTerminalTests {
         let third = model.newTab().id
         model.select(second)
         model.split(with: third, on: .trailing)
+        // Dragging a paired tab moves the whole pair, so moving the pair onto
+        // its current slot is a no-op and keeps both tabs adjacent.
         model.moveTab(third, to: 1)
-        #expect(model.tabs.map(\.id) == [first, third, second])
+        #expect(model.tabs.map(\.id) == [first, second, third])
+        // Move a singleton between the pair members so the pair is truly
+        // non-adjacent in the canonical array while staying one sidebar row.
+        model.moveTab(first, to: 2)
+        #expect(model.tabs.map(\.id) == [second, first, third])
 
         model.select(third)
         model.cycle(-1)

@@ -116,8 +116,13 @@ enum SidebarTabLayout {
                 if emittedPairs.contains(split.leadingID) { continue }
                 emittedPairs.insert(split.leadingID)
                 let members = [split.leadingID, split.trailingID].filter { id in tabs.contains { $0.id == id } }
-                guard members.count == 2, let primary = members.first else { continue }
-                items.append(SidebarTabItem(id: primary, members: members))
+                if members.count == 2, let primary = members.first {
+                    items.append(SidebarTabItem(id: primary, members: members))
+                } else {
+                    // Filtered view (or stale split): only one member is visible.
+                    // Emit the visible tab as a singleton so search never hides matches.
+                    items.append(SidebarTabItem(id: tab.id, members: [tab.id]))
+                }
             } else {
                 items.append(SidebarTabItem(id: tab.id, members: [tab.id]))
             }
@@ -193,7 +198,7 @@ enum TabSplitGeometry {
     static func side(at point: CGPoint, in detail: CGRect, split: SplitState?) -> SplitSide? {
         guard detail.contains(point), detail.width > 1, detail.height > 1 else { return nil }
         if let split {
-            let fraction = CGFloat(min(max(split.fraction, 0), 1))
+            let fraction = CGFloat(clampFraction(split.fraction))
             switch split.axis {
             case .horizontal:
                 let divider = detail.minX + detail.width * fraction

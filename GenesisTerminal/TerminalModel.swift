@@ -65,7 +65,17 @@ struct WindowDescriptor: Codable, Equatable {
         let rawWidth = try container.decodeIfPresent(Double.self, forKey: .reviewWidth) ?? 420
         reviewWidth = Self.clampedReviewWidth(rawWidth)
         if let decoded = try container.decodeIfPresent([SplitState].self, forKey: .splits) {
-            splits = decoded
+            splits = decoded.compactMap { split in
+                guard split.leadingID != split.trailingID else { return nil }
+                let focused = split.contains(split.focusedID) ? split.focusedID : split.leadingID
+                return SplitState(
+                    leadingID: split.leadingID,
+                    trailingID: split.trailingID,
+                    fraction: TabSplitGeometry.clampFraction(split.fraction),
+                    focusedID: focused,
+                    axis: split.axis
+                )
+            }
         } else if let leading = try container.decodeIfPresent(UUID.self, forKey: .splitLeadingID),
                   let trailing = try container.decodeIfPresent(UUID.self, forKey: .splitTrailingID),
                   leading != trailing {
@@ -218,7 +228,11 @@ final class TerminalModel: ObservableObject {
             return
         }
         if let existing = visibleSplit, selectedID.map(existing.contains) == true,
-           let index = splits.firstIndex(where: { $0.leadingID == existing.leadingID && $0.trailingID == existing.trailingID }) {
+           splits.contains(where: { $0.leadingID == existing.leadingID && $0.trailingID == existing.trailingID }) {
+            // A tab can only live in one pair. Dissolve any other pair containing
+            // the dragged tab so it doesn't end up in two splits at once.
+            splits.removeAll { $0.contains(tabID) && !($0.leadingID == existing.leadingID && $0.trailingID == existing.trailingID) }
+            guard let index = splits.firstIndex(where: { $0.leadingID == existing.leadingID && $0.trailingID == existing.trailingID }) else { return }
             let effectiveSide = side.axis == existing.axis
                 ? side
                 : (side.isPrimary ? (existing.axis == .horizontal ? .leading : .top) : (existing.axis == .horizontal ? .trailing : .bottom))
@@ -276,7 +290,7 @@ final class TerminalModel: ObservableObject {
         let order = sidebarItems.flatMap(\.members)
         guard !order.isEmpty else { return }
         let index = order.firstIndex { $0 == selectedID } ?? 0
-        let next = (index + offset % order.count + order.count) % order.count
+        let next = ((index + offset) % order.count + order.count) % order.count
         select(order[next])
     }
 
@@ -393,20 +407,27 @@ final class TerminalModel: ObservableObject {
     }
 
     private func restoreSplit(from restoration: WindowDescriptor) {
+        var seen = Set<UUID>()
         splits = restoration.splits.compactMap { split in
             guard split.leadingID != split.trailingID,
                   tabs.contains(where: { $0.id == split.leadingID }),
-                  tabs.contains(where: { $0.id == split.trailingID }) else { return nil }
+                  tabs.contains(where: { $0.id == split.trailingID }),
+                  !seen.contains(split.leadingID),
+                  !seen.contains(split.trailingID) else { return nil }
             let focusedID: UUID
             if let selectedID, split.contains(selectedID) {
                 focusedID = selectedID
-            } else {
+            } else if split.contains(split.focusedID) {
                 focusedID = split.focusedID
+            } else {
+                focusedID = split.leadingID
             }
+            seen.insert(split.leadingID)
+            seen.insert(split.trailingID)
             return SplitState(
                 leadingID: split.leadingID,
                 trailingID: split.trailingID,
-                fraction: split.fraction,
+                fraction: TabSplitGeometry.clampFraction(split.fraction),
                 focusedID: focusedID,
                 axis: split.axis
             )

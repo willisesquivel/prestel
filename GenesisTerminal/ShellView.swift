@@ -341,7 +341,7 @@ private struct TerminalDetailSurface: View {
                     TabSplitDropOverlay(
                         side: preview.side,
                         fraction: fraction,
-                        axis: split.axis,
+                        axis: preview.side.axis,
                         gap: ShellMetrics.splitCardGap
                     )
                 }
@@ -356,7 +356,7 @@ private struct TerminalDetailSurface: View {
                     model: model,
                     session: session,
                     showsNavigation: isPrimary,
-                    showsReviewToggle: split.axis == .horizontal ? !isPrimary : isPrimary
+                    showsReviewToggle: !isPrimary
                 )
                 TerminalPane(session: session, isFocused: isFocused) {
                     model.select(session.id)
