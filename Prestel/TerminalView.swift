@@ -59,22 +59,56 @@ enum TerminalFontSize {
         withoutAnimations {
             for window in NSApp.windows {
                 guard let controller = window.windowController as? TerminalWindowController else { continue }
-                // Record the visible grid BEFORE changing the font. Split panes
-                // only preserve the selected pane; the secondary may drift a
-                // column (far better than reflowing both).
+                // Record each surface's grid BEFORE changing the font. Split
+                // panes only preserve the selected pane's window sizing; the
+                // secondary may drift a column (far better than reflowing both).
                 let target = controller.model.selectedTab?.surface
                 let oldCols = target.map { $0.terminalDimensions.cols }
                 let oldRows = target.map { $0.terminalDimensions.rows }
                 let oldFrame = window.frame
                 let isSplit = controller.model.visibleSplit != nil
-                controller.model.tabs.forEach { $0.surface?.applyPreferences() }
-                // Grow/shrink the window so the same cols/rows fit at the new
-                // cell size. No rewrap, no scroll jump, no movement. Instant:
-                // animate:false inside the disabled transaction above.
-                if !isSplit,
-                   let surface = target, surface.window === window,
-                   let cols = oldCols, let rows = oldRows, cols > 0, rows > 0,
-                   let newCell = cellSize(of: surface) {
+                // Never steal focus: zoom must leave the field editor, search,
+                // or terminal exactly where it was.
+                let focused = window.firstResponder
+                let tabs = controller.model.tabs
+                // Prospective cell size at the NEW font, measured with
+                // SwiftTerm's own computation (hidden zero-frame probe in this
+                // window, so backing scale matches). Exact — no font-math dup.
+                // The probe never attaches a session, so no PTY traffic.
+                // claimsFocus=false: attaching any PrestelView otherwise makes
+                // it the window's initialFirstResponder and steals key focus
+                // into a hidden view that is immediately removed (unfocusing).
+                let newCell: CGSize? = {
+                    let probe = PrestelView(frame: .zero, font: TerminalFontSize.font())
+                    probe.claimsFocus = false
+                    probe.isHidden = true
+                    window.contentView?.addSubview(probe)
+                    probe.font = TerminalFontSize.font()
+                    let size = cellSize(of: probe)
+                    probe.removeFromSuperview()
+                    return size
+                }()
+                let oldCell: CGSize? = target.flatMap { cellSize(of: $0) }
+                // Order matters: the transient must only ever ADD blank cells
+                // (lossless). Growing cells → resize window first (old small
+                // cells in the bigger frame pad blanks), then font (back to
+                // identical grid). Shrinking cells → font first (new small
+                // cells in the old frame pad blanks), then window (back).
+                // Shrink-first on grow (or vice versa) rewraps = lossy and
+                // garbles alternate-buffer TUIs. Both steps notify normally;
+                // FrameDriver coalesces the repaint.
+                let growing: Bool = {
+                    guard let oldCell, let newCell else { return true }
+                    return newCell.width >= oldCell.width
+                }()
+                let canPreserve = !isSplit
+                    && target != nil && target?.window === window
+                    && (oldCols ?? 0) > 0 && (oldRows ?? 0) > 0
+                    && newCell != nil
+                @MainActor func resizeWindowToFit() {
+                    guard let surface = target,
+                          let cols = oldCols, let rows = oldRows,
+                          let newCell else { return }
                     let reserve = scrollerReserve(for: surface)
                     // +1pt lands mid-interval so floor() can't slip a column
                     // on floating-point boundaries.
@@ -82,23 +116,44 @@ enum TerminalFontSize {
                     let wantSurfaceH = CGFloat(rows) * newCell.height + 1
                     let dW = wantSurfaceW - surface.frame.width
                     let dH = wantSurfaceH - surface.frame.height
-                    if abs(dW) >= 0.5 || abs(dH) >= 0.5 {
-                        var frame = oldFrame
-                        frame.size.width += dW
-                        frame.size.height += dH
-                        // Keep top-left anchored (grow right/down).
-                        frame.origin.y -= dH
-                        // Respect min size and screen.
-                        frame.size.width = max(frame.size.width, window.minSize.width)
-                        frame.size.height = max(frame.size.height, window.minSize.height)
-                        if let screen = window.screen?.visibleFrame {
-                            frame.size.width = min(frame.size.width, screen.width)
-                            frame.size.height = min(frame.size.height, screen.height)
-                            frame.origin.x = min(max(frame.origin.x, screen.minX), screen.maxX - frame.size.width)
-                            frame.origin.y = min(max(frame.origin.y, screen.minY), screen.maxY - frame.size.height)
-                        }
-                        window.setFrame(frame, display: true, animate: false)
+                    guard abs(dW) >= 0.5 || abs(dH) >= 0.5 else { return }
+                    var size = oldFrame.size
+                    size.width += dW
+                    size.height += dH
+                    // Respect min size and screen BEFORE anchoring, so a
+                    // clamped resize never drifts the origin (that drift
+                    // is what nudged the window upward at minimum size).
+                    size.width = max(size.width, window.minSize.width)
+                    size.height = max(size.height, window.minSize.height)
+                    if let screen = window.screen?.visibleFrame {
+                        size.width = min(size.width, screen.width)
+                        size.height = min(size.height, screen.height)
                     }
+                    var frame = NSRect(origin: oldFrame.origin, size: size)
+                    // Keep top-left anchored (grow right/down).
+                    frame.origin.x = oldFrame.minX
+                    frame.origin.y = oldFrame.maxY - size.height
+                    if let screen = window.screen?.visibleFrame {
+                        frame.origin.x = min(max(frame.origin.x, screen.minX), screen.maxX - frame.size.width)
+                        frame.origin.y = min(max(frame.origin.y, screen.minY), screen.maxY - frame.size.height)
+                    }
+                    window.setFrame(frame, display: true, animate: false)
+                }
+                if canPreserve, growing {
+                    resizeWindowToFit()
+                    tabs.forEach { $0.surface?.applyPreferences() }
+                } else if canPreserve {
+                    tabs.forEach { $0.surface?.applyPreferences() }
+                    resizeWindowToFit()
+                } else {
+                    tabs.forEach { $0.surface?.applyPreferences() }
+                }
+                // Restore focus if the probe, resize, or menu refresh moved it.
+                // Sync block: no user input can interleave, so unconditional
+                // restore-to-saved (when still in this window) is correct.
+                if let focused, window.firstResponder !== focused,
+                   (focused as? NSView)?.window === window {
+                    window.makeFirstResponder(focused)
                 }
             }
             AppDelegate.current?.commandRevision &+= 1
