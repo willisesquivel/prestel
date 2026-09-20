@@ -95,6 +95,33 @@ struct CodeReviewModelTests {
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
+
+    @Test func bindFromPanelOpenAnimationReachesReadyWithoutAnotherTab() async {
+        let runner = GatedReviewService()
+        let model = CodeReviewModel(service: runner, watcher: NullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
+        await runner.release("b")
+        ShellPanelAnimation.run {
+            model.bind(visible: true, windowID: UUID(), session: session)
+        }
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(model.loadState == .ready)
+        #expect(model.snapshot?.revision.key.basename == "repo-b")
+    }
+
+    @Test func cancelledFirstLoadRetriesOnTheSameTab() async {
+        let runner = GatedReviewService()
+        let model = CodeReviewModel(service: runner, watcher: NullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
+        model.bind(visible: true, windowID: UUID(), session: session)
+        try? await Task.sleep(for: .milliseconds(20))
+        model.bind(visible: false, windowID: UUID(), session: session)
+        await runner.release("b")
+        model.bind(visible: true, windowID: UUID(), session: session)
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(model.loadState == .ready)
+        #expect(model.snapshot?.revision.key.basename == "repo-b")
+    }
 }
 
 private actor GatedReviewService: GitReviewServicing {

@@ -2,6 +2,89 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// Host-side encoding for chords SwiftTerm cannot remap from Prestel
+/// (`keyDown` is not overridable outside the SwiftTerm module).
+///
+/// Shell mode keeps readline/zsh bindings (ESC-b word jumps, Ctrl-A/E).
+/// Application-keyboard mode (DECCKM or Kitty protocol) sends xterm/Kitty
+/// modified-key sequences so TUIs see one Alt+Left, not ESC then `b`.
+enum TerminalKeyIntercept {
+    static func bytesToSend(
+        keyCode: UInt16,
+        flags: NSEvent.ModifierFlags,
+        applicationKeyboard: Bool
+    ) -> [UInt8]? {
+        let hasControl = flags.contains(.control)
+        let hasOption = flags.contains(.option)
+        let hasCommand = flags.contains(.command)
+        let hasShift = flags.contains(.shift)
+        let isArrow = keyCode == 123 || keyCode == 124 || keyCode == 125 || keyCode == 126
+        let isDelete = keyCode == 51 || keyCode == 117
+        let isReturn = keyCode == 36 || keyCode == 76
+        let isSpace = keyCode == 49
+
+        if isArrow && hasCommand && !hasControl && !hasOption && !hasShift {
+            switch keyCode {
+            case 123: return [0x01]
+            case 124: return [0x05]
+            default: return nil
+            }
+        }
+
+        if isArrow && !hasCommand && !hasShift && (hasOption != hasControl) {
+            if applicationKeyboard {
+                return modifiedArrow(keyCode, option: hasOption, control: hasControl)
+            }
+            switch keyCode {
+            case 123: return [0x1b, 0x62]
+            case 124: return [0x1b, 0x66]
+            case 126: return [0x01]
+            case 125: return [0x05]
+            default: return nil
+            }
+        }
+
+        if isDelete && hasCommand && !hasControl {
+            return keyCode == 117 ? [0x0b] : [0x15]
+        }
+        if isDelete && hasOption && !hasCommand && !hasControl {
+            return keyCode == 117 ? [0x1b, 0x64] : [0x1b, 0x7f]
+        }
+
+        // TUIs need the shift/alt modifier on Enter and Space. Without Kitty
+        // encoding, AppKit delivers a plain CR or space and newline chords die.
+        if applicationKeyboard, !hasCommand {
+            if isReturn, hasShift, !hasOption, !hasControl {
+                return Array("\u{1b}[13;2u".utf8)
+            }
+            if isReturn, hasOption, !hasShift, !hasControl {
+                return Array("\u{1b}[13;3u".utf8)
+            }
+            if isReturn, hasControl, !hasShift, !hasOption {
+                return Array("\u{1b}[13;5u".utf8)
+            }
+            if isSpace, hasShift, !hasOption, !hasControl {
+                return Array("\u{1b}[32;2u".utf8)
+            }
+        }
+        return nil
+    }
+
+    /// CSI 1;{1+alt*2+ctrl*4}{A,B,C,D} — xterm modified arrows.
+    private static func modifiedArrow(_ keyCode: UInt16, option: Bool, control: Bool) -> [UInt8]? {
+        let letter: UInt8
+        switch keyCode {
+        case 126: letter = 0x41
+        case 125: letter = 0x42
+        case 124: letter = 0x43
+        case 123: letter = 0x44
+        default: return nil
+        }
+        let modifier = 1 + (option ? 2 : 0) + (control ? 4 : 0)
+        return [0x1b, 0x5b, 0x31, 0x3b, 0x30 + UInt8(modifier), letter]
+    }
+}
+
 @MainActor
 final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMenuItemValidation {
     let model: TerminalModel
@@ -83,8 +166,14 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         // SwiftTerm's view methods are not overridable from here, so intercept the
         // requested Cmd/Ctrl/Option navigation combos before dispatch. The terminal
         // view itself stays first responder, keeping the focused caret visible.
+        //
+        // Return the interceptor result as-is. `self?.intercept(...) ?? event`
+        // re-dispatches consumed keys: a nil "I handled this" result coalesces
+        // back to the original event, so SwiftTerm also encodes it. TUIs then
+        // see two movements (ESC-b plus Alt+Left, for example).
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.interceptTerminalKeyDown(event) ?? event
+            guard let self else { return event }
+            return self.interceptTerminalKeyDown(event)
         }
         refresh()
     }
@@ -152,63 +241,34 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         let hasShift = flags.contains(.shift)
         let code = event.keyCode
         let isArrow = code == 123 || code == 124 || code == 125 || code == 126
-        let isDelete = code == 51 || code == 117
 
-        // Cmd+arrows: line start/end, document top/bottom.
+        // Cmd+Up/Down: scroll the history when there is scrollback. Alternate
+        // screen TUIs have no thumb, so the event is left for SwiftTerm.
         if isArrow && hasCommand && !hasControl && !hasOption && !hasShift {
             switch code {
-            case 123: // Cmd+Left: beginning of line
-                surface.send([0x01])
-                return nil
-            case 124: // Cmd+Right: end of line
-                surface.send([0x05])
-                return nil
-            case 126: // Cmd+Up: beginning of scrollback/entire text
+            case 126:
                 if surface.scrollThumbsize != 0 {
                     surface.scroll(toPosition: 0)
                     return nil
                 }
                 return event
-            case 125: // Cmd+Down: end of scrollback/entire text
+            case 125:
                 if surface.scrollThumbsize != 0 {
                     surface.scroll(toPosition: 1)
                     return nil
                 }
                 return event
-            default: return event
+            default:
+                break
             }
         }
 
-        // Option+arrows and Ctrl+arrows: word/paragraph movement.
-        // Exactly one of Option/Ctrl (no Cmd, no Shift) so system shortcuts and
-        // text selection behavior are otherwise preserved.
-        if isArrow && !hasCommand && !hasShift && (hasOption != hasControl) {
-            switch code {
-            case 123: // backward word
-                surface.send([0x1b, 0x62])
-                return nil
-            case 124: // forward word
-                surface.send([0x1b, 0x66])
-                return nil
-            case 126: // paragraph start ~= line start
-                surface.send([0x01])
-                return nil
-            case 125: // paragraph end ~= line end
-                surface.send([0x05])
-                return nil
-            default: return event
-            }
-        }
-
-        // Cmd+Backspace/Delete: whole line; Option+Backspace/Delete: whole word.
-        if isDelete && hasCommand && !hasControl {
-            if code == 117 { surface.send([0x0b]) } // Cmd+Fn+Backspace: kill to end
-            else { surface.send([0x15]) } // Cmd+Backspace: discard line
-            return nil
-        }
-        if isDelete && hasOption && !hasCommand && !hasControl {
-            if code == 117 { surface.send([0x1b, 0x64]) } // Option+Fn+Backspace: kill word forward
-            else { surface.send([0x1b, 0x7f]) } // Option+Backspace: backward-kill-word
+        if let bytes = TerminalKeyIntercept.bytesToSend(
+            keyCode: code,
+            flags: flags,
+            applicationKeyboard: surface.usesApplicationKeyboard
+        ) {
+            surface.send(bytes)
             return nil
         }
         return event
@@ -292,9 +352,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
     private func syncReview(preserveFocus: Bool) {
-        review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
-        if !model.reviewVisible, !preserveFocus {
-            focusTerminal()
+        // Bind on the next turn so load-state publishes are not captured by
+        // ShellPanelAnimation's withAnimation transaction. That freeze left
+        // the first tab on "Loading repository changes…" until a later tab
+        // change rebuilt the panel.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.review.bind(visible: self.model.reviewVisible, windowID: self.model.id, session: self.model.selectedTab)
+            if !self.model.reviewVisible, !preserveFocus {
+                self.focusTerminal()
+            }
         }
     }
 }

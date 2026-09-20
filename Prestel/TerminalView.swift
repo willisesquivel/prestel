@@ -269,6 +269,50 @@ final class PrestelView: SwiftTerm.TerminalView {
     /// any `animator()`-driven geometry on this view instant.
     override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 
+    /// True when a TUI has enabled application cursor keys (DECCKM) or the
+    /// Kitty keyboard protocol. Shell-style Option remaps (ESC-b) must not
+    /// run in that state — the app needs one modified-arrow sequence.
+    var usesApplicationKeyboard: Bool {
+        var mirror: Mirror? = Mirror(reflecting: self)
+        while let m = mirror {
+            if let child = m.children.first(where: { $0.label == "terminal" }) {
+                var value: Any = child.value
+                var inner = Mirror(reflecting: value)
+                while inner.displayStyle == .optional {
+                    guard let first = inner.children.first else { return false }
+                    value = first.value
+                    inner = Mirror(reflecting: value)
+                }
+                var terminalMirror: Mirror? = Mirror(reflecting: value)
+                while let tm = terminalMirror {
+                    for property in tm.children {
+                        if property.label == "applicationCursor",
+                           let flag = property.value as? Bool, flag {
+                            return true
+                        }
+                        if property.label == "keyboardModeAlt"
+                            || property.label == "keyboardModeNormal",
+                           kittyFlagsNonEmpty(property.value) {
+                            return true
+                        }
+                    }
+                    terminalMirror = tm.superclassMirror
+                }
+                return false
+            }
+            mirror = m.superclassMirror
+        }
+        return false
+    }
+
+    private func kittyFlagsNonEmpty(_ value: Any) -> Bool {
+        for child in Mirror(reflecting: value).children where child.label == "flags" {
+            if let flags = child.value as? KittyKeyboardFlags { return !flags.isEmpty }
+            if let raw = child.value as? Int { return raw != 0 }
+        }
+        return false
+    }
+
     func applyPreferences() {
         TerminalFontSize.withoutAnimations {
             font = TerminalFontSize.font()

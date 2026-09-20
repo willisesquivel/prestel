@@ -1194,6 +1194,40 @@ struct PrestelTests {
         }
     }
 
+    @Test func optionArrowInterceptSendsReadlineWordJumpsInTheShell() {
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 123, flags: .option, applicationKeyboard: false) == [0x1b, 0x62])
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 124, flags: .option, applicationKeyboard: false) == [0x1b, 0x66])
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 123, flags: .control, applicationKeyboard: false) == [0x1b, 0x62])
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 124, flags: .command, applicationKeyboard: false) == [0x05])
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: false) == nil)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: false) == nil)
+    }
+
+    @Test func optionArrowInterceptSendsOneModifiedCSISequenceInATui() {
+        // OpenCode binds both alt+b and alt+left to word-back. Sending ESC-b
+        // AND Alt+Left (the old monitor coalescing bug) jumped two words.
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 123, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3D".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 124, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3C".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 123, flags: .control, applicationKeyboard: true) == Array("\u{1b}[1;5D".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 126, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3A".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 125, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3B".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: true) == Array("\u{1b}[13;2u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: true) == Array("\u{1b}[13;3u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: true) == Array("\u{1b}[32;2u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: [], applicationKeyboard: true) == nil)
+    }
+
+    @Test func applicationCursorAndKittyProtocolEnableTuiKeyMode() {
+        let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        #expect(!view.usesApplicationKeyboard)
+        view.feed(byteArray: Array("\u{1b}[?1h".utf8)[...])
+        #expect(view.usesApplicationKeyboard)
+        view.feed(byteArray: Array("\u{1b}[?1l".utf8)[...])
+        #expect(!view.usesApplicationKeyboard)
+        view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
+        #expect(view.usesApplicationKeyboard)
+    }
+
     private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(12)
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }

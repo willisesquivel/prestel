@@ -9,8 +9,12 @@ struct CodeReviewPanel: View {
     var body: some View {
         Group {
             switch displayedLoadState {
-            case .hidden:
-                statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
+            case .hidden, .resolving, .loading:
+                if let snapshot = model.snapshot {
+                    fileListScroll(snapshot)
+                } else {
+                    statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
+                }
             case .noTerminal:
                 statusPage { ReviewStatus(symbol: "terminal", text: "Select a terminal to review its repository.") }
             case .noRepository:
@@ -23,12 +27,6 @@ struct CodeReviewPanel: View {
                 statusPage { ReviewStatus(symbol: "exclamationmark.triangle", text: "Repository changes could not be loaded.", detail: message, retry: { model.refresh() }) }
             case .waitingForGit:
                 statusPage { ReviewStatus(symbol: "hourglass", text: "Waiting for the Git operation to finish.", retry: { model.refresh() }) }
-            case .resolving, .loading:
-                if let snapshot = model.snapshot {
-                    fileListScroll(snapshot)
-                } else {
-                    statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
-                }
             case .ready:
                 if let snapshot = model.snapshot {
                     if snapshot.isClean, model.presentation.filter == .all {
@@ -57,9 +55,11 @@ struct CodeReviewPanel: View {
     /// Bind() sets `.hidden` immediately on close so watchers stop. Keep painting
     /// the last real state so the tab can slide away instead of popping out.
     private var displayedLoadState: ReviewLoadState {
-        model.loadState == .hidden && lastVisibleLoadState != .hidden
-            ? lastVisibleLoadState
-            : model.loadState
+        ReviewDisplayedLoadState.resolve(
+            loadState: model.loadState,
+            lastVisible: lastVisibleLoadState,
+            hasSnapshot: model.snapshot != nil
+        )
     }
 
     private func rememberVisibleLoadState(_ state: ReviewLoadState) {
@@ -70,7 +70,7 @@ struct CodeReviewPanel: View {
 
     private var barSnapshot: ReviewSnapshot? {
         switch displayedLoadState {
-        case .resolving, .loading, .ready:
+        case .hidden, .resolving, .loading, .ready:
             return model.snapshot
         default:
             return nil
@@ -383,5 +383,26 @@ struct ReviewHairline: View {
             .frame(width: 1 / max(scale, 1))
             .frame(maxHeight: .infinity)
             .allowsHitTesting(false)
+    }
+}
+
+/// Visual load-state for the review panel. First-open bind publishes
+/// `.resolving` after the slide starts; keep that on `.hidden` so the
+/// spinner already off-screen is the same view that moves into place.
+enum ReviewDisplayedLoadState {
+    static func resolve(
+        loadState: ReviewLoadState,
+        lastVisible: ReviewLoadState,
+        hasSnapshot: Bool
+    ) -> ReviewLoadState {
+        if loadState == .hidden, lastVisible != .hidden {
+            return lastVisible
+        }
+        switch loadState {
+        case .resolving, .loading:
+            return hasSnapshot ? loadState : .hidden
+        default:
+            return loadState
+        }
     }
 }

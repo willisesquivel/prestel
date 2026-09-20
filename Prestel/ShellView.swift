@@ -3,7 +3,9 @@ import SwiftUI
 
 struct ShellView: View {
     @ObservedObject var model: TerminalModel
-    @ObservedObject var review: CodeReviewModel
+    /// Not `@ObservedObject`: this view owns the panel offsets. Review load-state
+    /// publishes with `disablesAnimations`, and observing them here snaps the slide.
+    let review: CodeReviewModel
     var closeTab: (UUID) -> Void = { _ in }
     @State private var sidebarResizeStartWidth: CGFloat?
     @State private var reviewResizeStartWidth: CGFloat?
@@ -41,17 +43,25 @@ struct ShellView: View {
                     )
                     .offset(x: layout.detailOriginX, y: ShellMetrics.detailInset)
 
-                SidebarView(model: model, width: layout.restingSidebarWidth, closeTab: closeTab)
-                    .frame(width: layout.restingSidebarWidth, height: size.height)
-                    .offset(x: layout.showsSidebar ? 0 : -layout.restingSidebarWidth)
-                    .allowsHitTesting(layout.showsSidebar)
-                    .accessibilityHidden(!layout.showsSidebar)
+                SlidingSidePanel(
+                    visible: layout.showsSidebar,
+                    shownX: 0,
+                    hiddenX: -layout.restingSidebarWidth,
+                    width: layout.restingSidebarWidth,
+                    height: size.height
+                ) {
+                    SidebarView(model: model, width: layout.restingSidebarWidth, closeTab: closeTab)
+                }
 
-                CodeReviewPanel(model: review)
-                    .frame(width: layout.restingReviewWidth, height: size.height)
-                    .offset(x: layout.showsReview ? layout.restingReviewOriginX : size.width)
-                    .allowsHitTesting(layout.showsReview)
-                    .accessibilityHidden(!layout.showsReview)
+                SlidingSidePanel(
+                    visible: layout.showsReview,
+                    shownX: layout.restingReviewOriginX,
+                    hiddenX: size.width,
+                    width: layout.restingReviewWidth,
+                    height: size.height
+                ) {
+                    CodeReviewPanel(model: review)
+                }
 
                 if layout.showsSidebar {
                     SidebarResizeHandle(
@@ -101,18 +111,59 @@ struct ShellView: View {
         }
         .ignoresSafeArea()
         .background(Color.clear)
-        .onAppear {
+        .task(id: ReviewBindIdentity(
+            visible: model.reviewVisible,
+            windowID: model.id,
+            sessionID: model.selectedTab?.id,
+            directory: model.selectedTab?.directory
+        )) {
+            // `.task` runs after the current view transaction, so the first
+            // open's load-state publishes are not captured by withAnimation.
             review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
         }
-        .onChange(of: model.reviewVisible) { _, visible in
-            review.bind(visible: visible, windowID: model.id, session: model.selectedTab)
-        }
-        .onChange(of: model.selectedID) { _, _ in
-            review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
-        }
-        .onChange(of: model.selectedTab?.directory) { _, _ in
-            review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
-        }
+    }
+}
+
+private struct ReviewBindIdentity: Hashable {
+    var visible: Bool
+    var windowID: UUID
+    var sessionID: UUID?
+    var directory: String?
+}
+
+/// Offset-only slide shared by the tab sidebar and Code Review. Content must
+/// not observe models that publish with `disablesAnimations` during the slide.
+private struct SlidingSidePanel<Content: View>: View {
+    var visible: Bool
+    var shownX: CGFloat
+    var hiddenX: CGFloat
+    var width: CGFloat
+    var height: CGFloat
+    var content: Content
+
+    init(
+        visible: Bool,
+        shownX: CGFloat,
+        hiddenX: CGFloat,
+        width: CGFloat,
+        height: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.visible = visible
+        self.shownX = shownX
+        self.hiddenX = hiddenX
+        self.width = width
+        self.height = height
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(width: width, height: height)
+            .geometryGroup()
+            .offset(x: visible ? shownX : hiddenX)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
     }
 }
 

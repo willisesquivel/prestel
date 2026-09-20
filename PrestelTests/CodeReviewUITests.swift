@@ -52,6 +52,27 @@ struct CodeReviewUITests {
         #expect(closed.headerLeadingPadding == 80)
     }
 
+    @Test func firstOpenSpinnerStaysOnHiddenIdentityUntilASnapshotExists() {
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .hidden, lastVisible: .hidden, hasSnapshot: false) == .hidden
+        )
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .resolving, lastVisible: .hidden, hasSnapshot: false) == .hidden
+        )
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .loading, lastVisible: .hidden, hasSnapshot: false) == .hidden
+        )
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .ready, lastVisible: .hidden, hasSnapshot: true) == .ready
+        )
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .hidden, lastVisible: .ready, hasSnapshot: true) == .ready
+        )
+        #expect(
+            ReviewDisplayedLoadState.resolve(loadState: .noRepository, lastVisible: .hidden, hasSnapshot: false) == .noRepository
+        )
+    }
+
     @Test func closedPanelsKeepRestingWidthSoShowHideCanSlide() {
         let closed = ShellLayout.resolve(.init(windowWidth: 960, sidebarVisible: false, reviewVisible: false, preferredSidebarWidth: 172, preferredReviewWidth: 420))
         #expect(closed.effectiveSidebarWidth == 0)
@@ -75,6 +96,37 @@ struct CodeReviewUITests {
         #expect(both.restingSidebarWidth == both.effectiveSidebarWidth)
         #expect(both.restingReviewWidth == both.effectiveReviewWidth)
         #expect(both.restingReviewOriginX == both.reviewOriginX)
+    }
+
+    @Test func openingReviewOnFirstTabReachesReadyWithoutSwitchingTabs() async throws {
+        let repo = try makeTemporaryGitRepository()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let model = TerminalModel(directory: repo.path)
+        let controller = TerminalWindowController(model: model)
+        let window = try #require(controller.window)
+        defer { controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window)) }
+        window.setFrame(NSRect(x: 0, y: 0, width: 960, height: 650), display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+
+        ShellPanelAnimation.run { model.reviewVisible = true }
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            switch controller.review.loadState {
+            case .ready, .noRepository, .noWorkingTree, .unavailable, .error, .noTerminal:
+                break
+            default:
+                try await Task.sleep(for: .milliseconds(50))
+                continue
+            }
+            break
+        }
+
+        #expect(controller.review.loadState == .ready)
+        #expect(controller.review.snapshot != nil)
+        #expect(model.tabs.count == 1)
     }
 
     @Test func hostedReviewToggleDoesNotRecreateSelectedSurface() async throws {
@@ -271,4 +323,21 @@ struct CodeReviewUITests {
         let badLine = DiffLine(kind: .deletion, oldNumber: 99, newNumber: nil, text: "let x = 1", missingNewline: false)
         #expect(ReviewHighlightMapper.runs(for: badLine, fileID: fileID, comparison: .unstaged, highlights: ["old:\(key)": outOfRange]) == nil)
     }
+}
+
+private func makeTemporaryGitRepository() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("prestel-review-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = ["-c", "init.defaultBranch=main", "init"]
+    process.currentDirectoryURL = url
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw NSError(domain: "PrestelTests", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "git init failed"])
+    }
+    return url
 }

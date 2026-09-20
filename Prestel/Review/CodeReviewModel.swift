@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import SwiftUI
 
 @MainActor
 final class CodeReviewModel: ObservableObject {
@@ -68,8 +69,12 @@ final class CodeReviewModel: ObservableObject {
         let sameContext = lastSessionID == session.id && lastDirectory == directory
         if sameContext {
             switch loadState {
-            case .resolving, .loading, .ready, .waitingForGit:
+            case .ready:
                 return
+            case .resolving, .loading, .waitingForGit:
+                // A cancelled first-open load used to stay on .resolving forever
+                // because later binds of the same tab returned here.
+                if let loadTask, !loadTask.isCancelled { return }
             case .hidden, .noTerminal, .noRepository, .noWorkingTree, .unavailable, .error:
                 break
             }
@@ -77,19 +82,12 @@ final class CodeReviewModel: ObservableObject {
         lastSessionID = session.id
         lastDirectory = directory
         if sameContext, snapshot != nil {
-            loadState = .ready
-            contextGeneration += 1
-            let next = ReviewContext(windowID: windowID, sessionID: session.id, directory: directory, generation: contextGeneration)
-            context = next
-            loadTask?.cancel()
-            loadTask = Task { [weak self] in
-                await self?.resolve(next)
-            }
+            publishWithoutAnimation { loadState = .ready }
+            startLoad(
+                ReviewContext(windowID: windowID, sessionID: session.id, directory: directory, generation: nextGeneration())
+            )
             return
         }
-        contextGeneration += 1
-        let next = ReviewContext(windowID: windowID, sessionID: session.id, directory: directory, generation: contextGeneration)
-        context = next
         if !sameContext {
             diffs = [:]
             highlights = [:]
@@ -97,22 +95,18 @@ final class CodeReviewModel: ObservableObject {
             watcher.stopAll()
             activeKey = nil
         }
-        loadState = .resolving
-        loadTask?.cancel()
+        publishWithoutAnimation { loadState = .resolving }
         watchTask?.cancel()
-        loadTask = Task { [weak self] in
-            await self?.resolve(next)
-        }
+        startLoad(
+            ReviewContext(windowID: windowID, sessionID: session.id, directory: directory, generation: nextGeneration())
+        )
     }
 
     func refresh(userInitiated: Bool = true) {
         guard let context else { return }
         if userInitiated { isRefreshing = true }
         snapshotGeneration += 1
-        loadTask?.cancel()
-        loadTask = Task { [weak self] in
-            await self?.resolve(context)
-        }
+        startLoad(context)
     }
 
     func toggleFile(_ fileID: String) {
@@ -240,7 +234,7 @@ final class CodeReviewModel: ObservableObject {
             presentationCache[activeKey] = presentation
             trimPresentationCache()
         }
-        loadState = .hidden
+        publishWithoutAnimation { loadState = .hidden }
         isRefreshing = false
     }
 
@@ -265,7 +259,7 @@ final class CodeReviewModel: ObservableObject {
             guard self.context?.generation == context.generation else { return }
             guard let key else {
                 snapshot = nil
-                loadState = .noRepository
+                publishWithoutAnimation { loadState = .noRepository }
                 isRefreshing = false
                 return
             }
@@ -279,18 +273,20 @@ final class CodeReviewModel: ObservableObject {
                 diffs = [:]
                 highlights = [:]
             }
-            loadState = snapshot == nil ? .loading : loadState
+            publishWithoutAnimation { loadState = snapshot == nil ? .loading : loadState }
             snapshotGeneration += 1
             let generation = snapshotGeneration
             let loaded = try await service.loadCatalog(for: key, generation: generation)
             guard self.context?.generation == context.generation else { return }
             if loaded.waitingOnIndexLock {
                 if snapshot == nil {
-                    loadState = .waitingForGit
+                    publishWithoutAnimation { loadState = .waitingForGit }
                 }
             } else {
-                snapshot = loaded
-                loadState = .ready
+                publishWithoutAnimation {
+                    snapshot = loaded
+                    loadState = .ready
+                }
                 diagnostic = loaded.diagnostic
                 applyDefaultExpansion(loaded)
                 for fileID in presentation.expandedFileIDs {
@@ -303,12 +299,12 @@ final class CodeReviewModel: ObservableObject {
         } catch GitReviewServiceError.bareRepository {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
-            loadState = .noWorkingTree
+            publishWithoutAnimation { loadState = .noWorkingTree }
             isRefreshing = false
         } catch GitRunnerError.gitUnavailable(let message) {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
-            loadState = .unavailable(message)
+            publishWithoutAnimation { loadState = .unavailable(message) }
             isRefreshing = false
         } catch GitRunnerError.cancelled {
             return
@@ -317,12 +313,37 @@ final class CodeReviewModel: ObservableObject {
         } catch {
             guard self.context?.generation == context.generation else { return }
             if snapshot == nil {
-                loadState = .error(error.localizedDescription)
+                publishWithoutAnimation { loadState = .error(error.localizedDescription) }
             } else {
                 diagnostic = error.localizedDescription
             }
             isRefreshing = false
         }
+    }
+
+    private func nextGeneration() -> UInt64 {
+        contextGeneration += 1
+        return contextGeneration
+    }
+
+    private func startLoad(_ context: ReviewContext) {
+        self.context = context
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
+            // Leave the reviewVisible withAnimation transaction before
+            // publishing load-state, otherwise the first-open spinner is
+            // captured as the animated end state until the next tab change.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            guard let self, self.context?.generation == context.generation else { return }
+            await self.resolve(context)
+        }
+    }
+
+    private func publishWithoutAnimation(_ body: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, body)
     }
 
     private func loadBodies(for fileID: String, forceLarge: Bool = false) {
