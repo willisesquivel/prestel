@@ -7,8 +7,10 @@ struct ShellView: View {
     /// publishes with `disablesAnimations`, and observing them here snaps the slide.
     let review: CodeReviewModel
     var closeTab: (UUID) -> Void = { _ in }
+    var closeArchivedTab: (UUID) -> Void = { _ in }
     @State private var sidebarResizeStartWidth: CGFloat?
     @State private var reviewResizeStartWidth: CGFloat?
+    @State private var openReviewBindTask: Task<Void, Never>?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -48,9 +50,15 @@ struct ShellView: View {
                     shownX: 0,
                     hiddenX: -layout.restingSidebarWidth,
                     width: layout.restingSidebarWidth,
-                    height: size.height
+                    height: size.height,
+                    animation: animation
                 ) {
-                    SidebarView(model: model, width: layout.restingSidebarWidth, closeTab: closeTab)
+                    SidebarView(
+                        model: model,
+                        width: layout.restingSidebarWidth,
+                        closeTab: closeTab,
+                        closeArchivedTab: closeArchivedTab
+                    )
                 }
 
                 SlidingSidePanel(
@@ -58,9 +66,10 @@ struct ShellView: View {
                     shownX: layout.restingReviewOriginX,
                     hiddenX: size.width,
                     width: layout.restingReviewWidth,
-                    height: size.height
+                    height: size.height,
+                    animation: animation
                 ) {
-                    CodeReviewPanel(model: review)
+                    CodeReviewPanel(model: review, visible: layout.showsReview)
                 }
 
                 if layout.showsSidebar {
@@ -111,21 +120,35 @@ struct ShellView: View {
         }
         .ignoresSafeArea()
         .background(Color.clear)
-        .task(id: ReviewBindIdentity(
-            visible: model.reviewVisible,
+        .task(id: ReviewSessionBindIdentity(
             windowID: model.id,
             sessionID: model.selectedTab?.id,
             directory: model.selectedTab?.directory
         )) {
-            // `.task` runs after the current view transaction, so the first
-            // open's load-state publishes are not captured by withAnimation.
-            review.bind(visible: model.reviewVisible, windowID: model.id, session: model.selectedTab)
+            guard model.reviewVisible else { return }
+            review.bind(visible: true, windowID: model.id, session: model.selectedTab)
+        }
+        .onChange(of: model.reviewVisible) { _, visible in
+            openReviewBindTask?.cancel()
+            if visible {
+                // Bind after the slide. A same-turn load-state publish can
+                // replace the off-screen spinner with the file list at rest.
+                let duration = reduceMotion ? 0 : ShellMetrics.sidebarAnimationDuration
+                openReviewBindTask = Task { @MainActor in
+                    if duration > 0 {
+                        try? await Task.sleep(for: .seconds(duration))
+                    }
+                    guard !Task.isCancelled, model.reviewVisible else { return }
+                    review.bind(visible: true, windowID: model.id, session: model.selectedTab)
+                }
+            } else {
+                review.bind(visible: false, windowID: model.id, session: model.selectedTab)
+            }
         }
     }
 }
 
-private struct ReviewBindIdentity: Hashable {
-    var visible: Bool
+private struct ReviewSessionBindIdentity: Hashable {
     var windowID: UUID
     var sessionID: UUID?
     var directory: String?
@@ -139,6 +162,7 @@ private struct SlidingSidePanel<Content: View>: View {
     var hiddenX: CGFloat
     var width: CGFloat
     var height: CGFloat
+    var animation: Animation?
     var content: Content
 
     init(
@@ -147,6 +171,7 @@ private struct SlidingSidePanel<Content: View>: View {
         hiddenX: CGFloat,
         width: CGFloat,
         height: CGFloat,
+        animation: Animation? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.visible = visible
@@ -154,6 +179,7 @@ private struct SlidingSidePanel<Content: View>: View {
         self.hiddenX = hiddenX
         self.width = width
         self.height = height
+        self.animation = animation
         self.content = content()
     }
 
@@ -162,6 +188,7 @@ private struct SlidingSidePanel<Content: View>: View {
             .frame(width: width, height: height)
             .geometryGroup()
             .offset(x: visible ? shownX : hiddenX)
+            .animation(animation, value: visible)
             .allowsHitTesting(visible)
             .accessibilityHidden(!visible)
     }

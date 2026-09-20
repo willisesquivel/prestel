@@ -3,14 +3,18 @@ import SwiftUI
 
 struct CodeReviewPanel: View {
     @ObservedObject var model: CodeReviewModel
+    var visible: Bool
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lastVisibleLoadState: ReviewLoadState = .hidden
+    @State private var frozenPaint: ReviewSlidePaint?
+    @State private var freezeToken = UUID()
 
     var body: some View {
         Group {
-            switch displayedLoadState {
+            switch painted.loadState {
             case .hidden, .resolving, .loading:
-                if let snapshot = model.snapshot {
+                if painted.hasSnapshot, let snapshot = model.snapshot {
                     fileListScroll(snapshot)
                 } else {
                     statusPage { ReviewStatus(symbol: "progress.indicator", text: "Loading repository changes…", spinning: true) }
@@ -28,7 +32,7 @@ struct CodeReviewPanel: View {
             case .waitingForGit:
                 statusPage { ReviewStatus(symbol: "hourglass", text: "Waiting for the Git operation to finish.", retry: { model.refresh() }) }
             case .ready:
-                if let snapshot = model.snapshot {
+                if painted.hasSnapshot, let snapshot = model.snapshot {
                     if snapshot.isClean, model.presentation.filter == .all {
                         statusPage { ReviewStatus(symbol: "checkmark.circle", text: "No uncommitted changes.") }
                     } else {
@@ -44,6 +48,9 @@ struct CodeReviewPanel: View {
         .onAppear { rememberVisibleLoadState(model.loadState) }
         .onChange(of: model.loadState) { _, newValue in
             rememberVisibleLoadState(newValue)
+        }
+        .onChange(of: visible) { _, _ in
+            freezePaintedContentForSlide()
         }
         .onChange(of: colorScheme) { _, newValue in
             model.updateAppearance(newValue == .dark)
@@ -62,23 +69,51 @@ struct CodeReviewPanel: View {
         )
     }
 
+    private var painted: ReviewSlidePaint {
+        frozenPaint ?? ReviewSlidePaint(
+            loadState: displayedLoadState,
+            hasSnapshot: model.snapshot != nil
+        )
+    }
+
     private func rememberVisibleLoadState(_ state: ReviewLoadState) {
         if state != .hidden {
             lastVisibleLoadState = state
         }
     }
 
+    /// Bind can publish `.ready` while the offset is still interpolating. A new
+    /// file-list identity then appears at rest. Hold the current paint until
+    /// the sidebar-matching slide finishes.
+    private func freezePaintedContentForSlide() {
+        let token = UUID()
+        freezeToken = token
+        frozenPaint = ReviewSlidePaint(
+            loadState: displayedLoadState,
+            hasSnapshot: model.snapshot != nil
+        )
+        let delay = reduceMotion ? 0 : ShellMetrics.sidebarAnimationDuration
+        Task { @MainActor in
+            if delay > 0 {
+                try? await Task.sleep(for: .seconds(delay))
+            }
+            guard freezeToken == token else { return }
+            frozenPaint = nil
+        }
+    }
+
     private var barSnapshot: ReviewSnapshot? {
-        switch displayedLoadState {
+        switch painted.loadState {
         case .hidden, .resolving, .loading, .ready:
-            return model.snapshot
+            return painted.hasSnapshot ? model.snapshot : nil
         default:
             return nil
         }
     }
 
     private var isCleanStatus: Bool {
-        if case .ready = displayedLoadState,
+        if case .ready = painted.loadState,
+           painted.hasSnapshot,
            let snapshot = model.snapshot,
            snapshot.isClean,
            model.presentation.filter == .all {
@@ -405,4 +440,9 @@ enum ReviewDisplayedLoadState {
             return loadState
         }
     }
+}
+
+struct ReviewSlidePaint: Equatable {
+    var loadState: ReviewLoadState
+    var hasSnapshot: Bool
 }

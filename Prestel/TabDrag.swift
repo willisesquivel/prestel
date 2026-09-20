@@ -749,6 +749,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var splitWithActiveEnabled = false
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
+    var onArchive: (() -> Void)?
 
     func makeNSView(context: Context) -> TabRowHitNSView {
         TabRowHitNSView()
@@ -766,6 +767,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.splitWithActiveEnabled = splitWithActiveEnabled
         nsView.onSplitWithActive = onSplitWithActive
         nsView.onUnsplit = onUnsplit
+        nsView.onArchive = onArchive
     }
 }
 
@@ -781,6 +783,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var splitWithActiveEnabled = false
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
+    var onArchive: (() -> Void)?
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
@@ -888,6 +891,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
 
         menu.addItem(.separator())
+        if onArchive != nil {
+            let archiveItem = NSMenuItem(title: "Archive", action: #selector(archiveFromMenu(_:)), keyEquivalent: "")
+            archiveItem.target = self
+            archiveItem.isEnabled = true
+            menu.addItem(archiveItem)
+        }
         let closeItem = NSMenuItem(title: "Close Tab", action: #selector(closeFromMenu(_:)), keyEquivalent: "")
         closeItem.target = self
         closeItem.isEnabled = true
@@ -897,6 +906,10 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     @objc private func closeFromMenu(_ sender: Any?) {
         onClose?()
+    }
+
+    @objc private func archiveFromMenu(_ sender: Any?) {
+        onArchive?()
     }
 
     @objc private func splitWithActiveFromMenu(_ sender: Any?) {

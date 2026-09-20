@@ -53,6 +53,140 @@ struct PrestelTests {
         #expect(model.tabs.allSatisfy { $0.state == .ready })
     }
 
+    @Test func archiveRemovesTabWithoutClosingTheSession() {
+        let model = TerminalModel()
+        let first = model.selectedTab!
+        let second = model.newTab()
+        model.select(first.id)
+        model.archiveTab(first.id)
+        #expect(model.tabs.map(\.id) == [second.id])
+        #expect(model.archived.map(\.id) == [first.id])
+        #expect(model.archived.first === first)
+        #expect(model.selectedID == second.id)
+        #expect(model.recentlyClosed.isEmpty)
+        #expect(first.state == .ready)
+        model.unarchiveTab(first.id)
+        #expect(model.tabs.map(\.id) == [second.id, first.id])
+        #expect(model.archived.isEmpty)
+        #expect(model.selectedID == first.id)
+        #expect(model.tabs.last === first)
+        #expect(!model.showingArchive)
+    }
+
+    @Test func archivingTheLastTabOpensAReplacement() {
+        let model = TerminalModel()
+        let first = model.selectedTab!
+        model.archiveTab(first.id)
+        #expect(model.archived.map(\.id) == [first.id])
+        #expect(model.tabs.count == 1)
+        #expect(model.tabs[0].id != first.id)
+        #expect(model.selectedID == model.tabs[0].id)
+    }
+
+    @Test func archiveDissolvesASplitPair() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        #expect(model.visibleSplit != nil)
+        model.archiveTab(second)
+        #expect(model.visibleSplit == nil)
+        #expect(model.archived.map(\.id) == [second])
+        #expect(model.tabs.map(\.id) == [first])
+        #expect(model.selectedID == first)
+    }
+
+    @Test func archivedTabsRestoreAndLegacyWindowsDecode() throws {
+        let model = TerminalModel()
+        let keep = model.selectedID!
+        let archived = model.newTab(directory: "/private/tmp")
+        model.archiveTab(archived.id)
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let descriptor = try JSONDecoder().decode(WindowDescriptor.self, from: encoded)
+        #expect(descriptor.archivedTabs.map(\.id) == [archived.id])
+        #expect(descriptor.tabs.map(\.id) == [keep])
+        let restored = TerminalModel(restoration: descriptor)
+        #expect(restored.tabs.map(\.id) == [keep])
+        #expect(restored.archived.map(\.id) == [archived.id])
+        #expect(restored.archived[0].directory == "/private/tmp")
+        #expect(restored.archived[0].process == nil)
+        #expect(restored.selectedID == keep)
+
+        let legacy = try JSONDecoder().decode(
+            WindowDescriptor.self,
+            from: Data(#"{"id":"00000000-0000-0000-0000-000000000001","tabs":[{"id":"00000000-0000-0000-0000-000000000002","kind":"terminal","title":"Local","directory":"/tmp"}],"selectedID":"00000000-0000-0000-0000-000000000002","sidebarVisible":true,"sidebarWidth":172}"#.utf8)
+        )
+        #expect(legacy.archivedTabs.isEmpty)
+    }
+
+    @Test func closeArchivedTabRecordsRecentlyClosed() {
+        let model = TerminalModel()
+        let first = model.selectedTab!
+        let second = model.newTab()
+        model.archiveTab(second.id)
+        model.closeArchivedTab(second.id)
+        #expect(model.archived.isEmpty)
+        #expect(model.recentlyClosed.last?.directory == second.directory)
+        #expect(second.state == .closed)
+        #expect(model.tabs.map(\.id) == [first.id])
+    }
+
+    @Test func tabContextMenuIncludesArchive() {
+        let hit = TabRowHitNSView(frame: .zero)
+        hit.onArchive = {}
+        hit.onClose = {}
+        let event = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )!
+        let titles = hit.menu(for: event)?.items.map(\.title) ?? []
+        #expect(titles.contains("Archive"))
+        #expect(titles.contains("Close Tab"))
+    }
+
+    @Test func archiveListSearchAndShowingArchive() {
+        let model = TerminalModel()
+        let keep = model.selectedID!
+        let tmp = model.newTab(directory: "/private/tmp")
+        model.archiveTab(tmp.id)
+        model.showingArchive = true
+        #expect(model.filteredArchived.map(\.id) == [tmp.id])
+        model.searchText = "tmp"
+        #expect(model.filteredArchived.map(\.id) == [tmp.id])
+        model.searchText = "no-such-tab"
+        #expect(model.filteredArchived.isEmpty)
+        model.searchText = ""
+        model.select(keep)
+        #expect(!model.showingArchive)
+    }
+
+    @Test func selectingAnArchivedTabDoesNotUnarchiveIt() {
+        let model = TerminalModel()
+        let keep = model.selectedID!
+        let archived = model.newTab()
+        model.archiveTab(archived.id)
+        model.showingArchive = true
+        model.select(archived.id)
+        #expect(model.archived.map(\.id) == [archived.id])
+        #expect(model.tabs.map(\.id) == [keep])
+        #expect(model.selectedID == archived.id)
+        #expect(model.selectedTab === archived)
+        #expect(model.showingArchive)
+        model.unarchiveTab(archived.id)
+        #expect(model.archived.isEmpty)
+        #expect(model.tabs.map(\.id) == [keep, archived.id])
+        #expect(model.selectedID == archived.id)
+        #expect(!model.showingArchive)
+    }
+
     @Test func restorationIsOnlyLightweightContext() throws {
         let model = TerminalModel()
         model.newTab(directory: "/private/tmp")
@@ -955,6 +1089,7 @@ struct PrestelTests {
         }
         let list = try #require(scrollViews(in: host).first { !($0 is SearchTextBoxView) })
         #expect(list.contentInsets.top >= 72)
+        #expect(list.contentInsets.bottom >= 40)
     }
 
     @Test func searchCompositionAndUndoPublishOnlyCommittedText() throws {

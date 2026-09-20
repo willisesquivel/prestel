@@ -13,6 +13,7 @@ struct TabDescriptor: Codable, Equatable, Identifiable {
 struct WindowDescriptor: Codable, Equatable {
     var id: UUID
     var tabs: [TabDescriptor]
+    var archivedTabs: [TabDescriptor]
     var selectedID: UUID?
     var sidebarVisible: Bool
     var sidebarWidth: Double
@@ -28,10 +29,12 @@ struct WindowDescriptor: Codable, Equatable {
         sidebarWidth: Double,
         reviewVisible: Bool = false,
         reviewWidth: Double = 420,
-        splits: [SplitState] = []
+        splits: [SplitState] = [],
+        archivedTabs: [TabDescriptor] = []
     ) {
         self.id = id
         self.tabs = tabs
+        self.archivedTabs = archivedTabs
         self.selectedID = selectedID
         self.sidebarVisible = sidebarVisible
         self.sidebarWidth = sidebarWidth
@@ -58,6 +61,7 @@ struct WindowDescriptor: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         tabs = try container.decode([TabDescriptor].self, forKey: .tabs)
+        archivedTabs = try container.decodeIfPresent([TabDescriptor].self, forKey: .archivedTabs) ?? []
         selectedID = try container.decodeIfPresent(UUID.self, forKey: .selectedID)
         sidebarVisible = try container.decode(Bool.self, forKey: .sidebarVisible)
         sidebarWidth = try container.decode(Double.self, forKey: .sidebarWidth)
@@ -99,6 +103,7 @@ struct WindowDescriptor: Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(tabs, forKey: .tabs)
+        try container.encode(archivedTabs, forKey: .archivedTabs)
         try container.encodeIfPresent(selectedID, forKey: .selectedID)
         try container.encode(sidebarVisible, forKey: .sidebarVisible)
         try container.encode(sidebarWidth, forKey: .sidebarWidth)
@@ -113,7 +118,7 @@ struct WindowDescriptor: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, tabs, selectedID, sidebarVisible, sidebarWidth, reviewVisible, reviewWidth
+        case id, tabs, archivedTabs, selectedID, sidebarVisible, sidebarWidth, reviewVisible, reviewWidth
         case splits, splitLeadingID, splitTrailingID, splitFraction, splitAxis
     }
 }
@@ -123,6 +128,8 @@ struct WindowDescriptor: Codable, Equatable {
 final class TerminalModel: ObservableObject {
     let id: UUID
     @Published private(set) var tabs: [TerminalSession] = []
+    @Published private(set) var archived: [TerminalSession] = []
+    @Published var showingArchive = false
     @Published private(set) var selectedID: UUID?
     @Published private(set) var splits: [SplitState] = []
     @Published var searchText = ""
@@ -144,6 +151,11 @@ final class TerminalModel: ObservableObject {
             reviewWidth = WindowDescriptor.clampedReviewWidth(restoration.reviewWidth)
             var seen = Set<UUID>()
             for descriptor in restoration.tabs where seen.insert(descriptor.id).inserted { append(descriptor) }
+            for descriptor in restoration.archivedTabs where seen.insert(descriptor.id).inserted {
+                let tab = TerminalSession(descriptor: descriptor)
+                archived.append(tab)
+                observe(tab)
+            }
             select(restoration.selectedID ?? tabs[0].id)
             if selectedID == nil { select(tabs[0].id) }
             restoreSplit(from: restoration)
@@ -163,7 +175,10 @@ final class TerminalModel: ObservableObject {
         historyIndex = 0
     }
 
-    var selectedTab: TerminalSession? { tabs.first { $0.id == selectedID } }
+    var selectedTab: TerminalSession? {
+        tabs.first { $0.id == selectedID } ?? archived.first { $0.id == selectedID }
+    }
+    var allSessions: [TerminalSession] { tabs + archived }
     /// The split currently on screen. Nil when the selected tab is not in a pair.
     var visibleSplit: SplitState? {
         guard let selectedID else { return nil }
@@ -173,10 +188,10 @@ final class TerminalModel: ObservableObject {
         splits.first { $0.contains(id) }
     }
     var filteredTabs: [TerminalSession] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? tabs : tabs.filter {
-            $0.title.localizedCaseInsensitiveContains(query) || $0.directory.localizedCaseInsensitiveContains(query)
-        }
+        filtered(tabs)
+    }
+    var filteredArchived: [TerminalSession] {
+        filtered(archived)
     }
     var sidebarItems: [SidebarTabItem] {
         SidebarTabLayout.items(from: filteredTabs, splits: splits)
@@ -189,11 +204,13 @@ final class TerminalModel: ObservableObject {
         let descriptor = TabDescriptor(directory: directory ?? (selectedTab?.kind == .terminal ? selectedTab?.currentDirectory : nil) ?? ShellConfiguration.defaultDirectory)
         let tab = append(descriptor)
         searchText = ""
+        showingArchive = false
         select(tab.id)
         return tab
     }
 
     func showSettings() {
+        showingArchive = false
         if let existing = tabs.first(where: { $0.kind == .settings }) { select(existing.id) }
         else { select(append(TabDescriptor(kind: .settings, title: "Settings")).id) }
         searchText = ""
@@ -203,13 +220,29 @@ final class TerminalModel: ObservableObject {
     private func append(_ descriptor: TabDescriptor) -> TerminalSession {
         let tab = TerminalSession(descriptor: descriptor)
         tabs.append(tab)
-        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        observe(tab)
         return tab
     }
 
+    private func observe(_ tab: TerminalSession) {
+        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+    }
+
+    private func filtered(_ sessions: [TerminalSession]) -> [TerminalSession] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? sessions : sessions.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.directory.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     func select(_ id: UUID) {
-        guard tabs.contains(where: { $0.id == id }) else { return }
-        reconcileSplit(selecting: id)
+        let open = tabs.first { $0.id == id }
+        let archivedSession = archived.first { $0.id == id }
+        guard let session = open ?? archivedSession else { return }
+        showingArchive = archivedSession != nil
+        if open != nil {
+            reconcileSplit(selecting: id)
+        }
         guard id != selectedID else { return }
         history = Array(history.prefix(historyIndex + 1))
         history.append(id)
@@ -218,7 +251,7 @@ final class TerminalModel: ObservableObject {
         selectedID = id
         // Show fresh cwd immediately when switching tabs instead of waiting
         // for the next poll or output.
-        tabs.first { $0.id == id }?.refreshDirectoryFromProcess()
+        session.refreshDirectoryFromProcess()
     }
 
     func split(with tabID: UUID, on side: SplitSide) {
@@ -283,7 +316,7 @@ final class TerminalModel: ObservableObject {
     }
 
     func tab(id: UUID) -> TerminalSession? {
-        tabs.first { $0.id == id }
+        tabs.first { $0.id == id } ?? archived.first { $0.id == id }
     }
 
     func cycle(_ offset: Int) {
@@ -299,7 +332,10 @@ final class TerminalModel: ObservableObject {
         guard history.indices.contains(target) else { return }
         historyIndex = target
         let id = history[target]
-        reconcileSplit(selecting: id)
+        showingArchive = archived.contains { $0.id == id }
+        if !showingArchive {
+            reconcileSplit(selecting: id)
+        }
         selectedID = id
         selectedTab?.refreshDirectoryFromProcess()
     }
@@ -360,9 +396,42 @@ final class TerminalModel: ObservableObject {
         guard !tabs.contains(where: { $0.id == tab.id }) else { return }
         let index = min(max(insertionIndex, 0), tabs.count)
         tabs.insert(tab, at: index)
-        subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        observe(tab)
         searchText = ""
         if selecting { select(tab.id) }
+    }
+
+    /// Hide a live session from the sidebar without terminating its process.
+    func archiveTab(_ id: UUID) {
+        let wasLast = tabs.count == 1
+        guard let tab = detachTab(id) else { return }
+        archived.append(tab)
+        observe(tab)
+        if wasLast { newTab() }
+    }
+
+    func unarchiveTab(_ id: UUID) {
+        guard let index = archived.firstIndex(where: { $0.id == id }) else { return }
+        let tab = archived.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        showingArchive = false
+        adopt(tab, at: tabs.count, selecting: true)
+    }
+
+    func closeArchivedTab(_ id: UUID) {
+        guard let index = archived.firstIndex(where: { $0.id == id }) else { return }
+        recentlyClosed.append(archived[index].descriptor)
+        recentlyClosed = Array(recentlyClosed.suffix(20))
+        archived[index].close()
+        archived.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        if selectedID == id {
+            if archived.isEmpty {
+                selectedID = tabs.first?.id
+            } else {
+                select(archived[min(index, archived.count - 1)].id)
+            }
+        }
     }
 
     /// Call only after the window controller has resolved close confirmation.
@@ -390,6 +459,7 @@ final class TerminalModel: ObservableObject {
         descriptor.id = UUID() // Replacement session, never a resurrected process.
         let tab = append(descriptor)
         searchText = ""
+        showingArchive = false
         select(tab.id)
     }
 
@@ -402,7 +472,8 @@ final class TerminalModel: ObservableObject {
             sidebarWidth: sidebarWidth,
             reviewVisible: reviewVisible,
             reviewWidth: reviewWidth,
-            splits: splits
+            splits: splits,
+            archivedTabs: archived.map(\.descriptor)
         )
     }
 
@@ -476,5 +547,5 @@ final class TerminalModel: ObservableObject {
     func resetReviewWidth() {
         reviewWidth = 420
     }
-    func closeAll() { tabs.forEach { $0.close() } }
+    func closeAll() { allSessions.forEach { $0.close() } }
 }

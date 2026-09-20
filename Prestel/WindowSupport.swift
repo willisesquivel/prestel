@@ -106,7 +106,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 650),
                               styleMask: [.titled, .fullSizeContentView, .resizable, .closable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: window)
-        hosting = NSHostingController(rootView: ShellView(model: model, review: review, closeTab: { [weak self] id in self?.requestCloseTab(id) }))
+        hosting = NSHostingController(rootView: ShellView(
+            model: model,
+            review: review,
+            closeTab: { [weak self] id in self?.requestCloseTab(id) },
+            closeArchivedTab: { [weak self] id in self?.requestCloseArchivedTab(id) }
+        ))
         // Put the entire SwiftUI hierarchy in the glass view's documented
         // content slot. Keeping the glass as a sibling backdrop lets AppKit
         // choose its z-order relative to transparent SwiftUI descendants,
@@ -158,9 +163,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             window.makeFirstResponder(self.model.selectedTab?.surface)
         }
         review.onRestoreTerminalFocus = { [weak self] in self?.focusTerminal() }
-        reviewUpdates = model.$reviewVisible.dropFirst().sink { [weak self] _ in
-            self?.syncReview(preserveFocus: true)
-        }
         bindReviewDirectory()
         syncReview(preserveFocus: true)
         // SwiftTerm's view methods are not overridable from here, so intercept the
@@ -190,6 +192,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     }
     func refresh() {
         for tab in model.tabs { tab.start() }
+        model.selectedTab?.start()
         let tab = model.selectedTab
         window?.title = "\(tab?.title ?? "Terminal") — Prestel"
         window?.invalidateRestorableState()
@@ -276,6 +279,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func newTab(_ sender: Any?) { model.newTab() }
     @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
     func requestCloseTab(_ id: UUID) {
+        if model.archived.contains(where: { $0.id == id }) {
+            requestCloseArchivedTab(id)
+            return
+        }
         guard let tab = model.tabs.first(where: { $0.id == id }) else { return }
         if model.tabs.count == 1 { window?.performClose(nil); return }
         guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
@@ -283,6 +290,15 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             model.closeTab(id)
+        }
+    }
+    func requestCloseArchivedTab(_ id: UUID) {
+        guard let tab = model.archived.first(where: { $0.id == id }) else { return }
+        guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            model.closeArchivedTab(id)
         }
     }
     @objc func closeTerminalWindow(_ sender: Any?) { window?.performClose(sender) }
@@ -296,7 +312,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func toggleCodeReview(_ sender: Any?) {
         let opening = !model.reviewVisible
         ShellPanelAnimation.run { model.reviewVisible.toggle() }
-        syncReview(preserveFocus: !(opening && sender is NSMenuItem))
+        if !opening {
+            syncReview(preserveFocus: true)
+        }
         if opening, sender is NSMenuItem {
             review.onFocusReview?()
         }
@@ -313,7 +331,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        CloseConfirmation.confirm(tabs: model.tabs.filter(\.hasActiveJobs), action: "Close Window")
+        CloseConfirmation.confirm(tabs: model.allSessions.filter(\.hasActiveJobs), action: "Close Window")
     }
     func windowWillClose(_ notification: Notification) {
         updates = nil

@@ -70,7 +70,7 @@ enum TerminalFontSize {
                 // Never steal focus: zoom must leave the field editor, search,
                 // or terminal exactly where it was.
                 let focused = window.firstResponder
-                let tabs = controller.model.tabs
+                let tabs = controller.model.allSessions
                 // Prospective cell size at the NEW font, measured with
                 // SwiftTerm's own computation (hidden zero-frame probe in this
                 // window, so backing scale matches). Exact — no font-math dup.

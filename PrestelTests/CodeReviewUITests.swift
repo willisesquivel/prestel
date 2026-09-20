@@ -73,6 +73,14 @@ struct CodeReviewUITests {
         )
     }
 
+    @Test func slidePaintDoesNotAdoptASnapshotThatArrivesMidSlide() {
+        let frozen = ReviewSlidePaint(loadState: .hidden, hasSnapshot: false)
+        let live = ReviewSlidePaint(loadState: .ready, hasSnapshot: true)
+        #expect(frozen != live)
+        #expect(frozen.hasSnapshot == false)
+        #expect(frozen.loadState == .hidden)
+    }
+
     @Test func closedPanelsKeepRestingWidthSoShowHideCanSlide() {
         let closed = ShellLayout.resolve(.init(windowWidth: 960, sidebarVisible: false, reviewVisible: false, preferredSidebarWidth: 172, preferredReviewWidth: 420))
         #expect(closed.effectiveSidebarWidth == 0)

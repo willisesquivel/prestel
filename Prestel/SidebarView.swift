@@ -5,6 +5,7 @@ struct SidebarView: View {
     @ObservedObject private var dragCoordinator = TabDragCoordinator.shared
     let width: CGFloat
     var closeTab: (UUID) -> Void
+    var closeArchivedTab: (UUID) -> Void = { _ in }
     @FocusState private var focusedTarget: SidebarFocusTarget?
 
     private var rowWidth: CGFloat { width - ShellMetrics.sidebarInset * 2 }
@@ -12,26 +13,34 @@ struct SidebarView: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                ForEach(model.sidebarItems) { item in
-                    SidebarItemRow(
-                        model: model,
-                        item: item,
-                        width: rowWidth,
-                        closeTab: closeTab
-                    )
-                    .focused($focusedTarget, equals: .item(item.id))
+                if model.showingArchive {
+                    archivedList
+                } else {
+                    ForEach(model.sidebarItems) { item in
+                        SidebarItemRow(
+                            model: model,
+                            item: item,
+                            width: rowWidth,
+                            closeTab: closeTab
+                        )
+                        .focused($focusedTarget, equals: .item(item.id))
+                    }
                 }
             }
             .frame(maxWidth: .infinity)
             .overlay(alignment: .topLeading) {
-                if let pin = dragCoordinator.pin, pin.windowID == model.id {
+                if !model.showingArchive, let pin = dragCoordinator.pin, pin.windowID == model.id {
                     TabInsertionPin(width: rowWidth)
                         .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
                 }
             }
-            .background(TabListDropZone(windowID: model.id).frame(width: 0, height: 0))
-            .padding(.top, 12)
-            .padding(.bottom, 16)
+            .background {
+                if !model.showingArchive {
+                    TabListDropZone(windowID: model.id).frame(width: 0, height: 0)
+                }
+            }
+            .padding(.top, ShellMetrics.sidebarInset)
+            .padding(.bottom, ShellMetrics.sidebarInset)
         }
         // AppKit needs the native scroller to render the safe-area edge effect.
         .scrollIndicators(.automatic)
@@ -41,18 +50,59 @@ struct SidebarView: View {
                 .padding(.horizontal, ShellMetrics.sidebarInset)
                 .frame(width: width)
                 .padding(.top, 42)
-                .padding(.bottom, 12)
+                .padding(.bottom, ShellMetrics.sidebarInset)
                 .focused($focusedTarget, equals: .search)
+        }
+        .safeAreaBar(edge: .bottom, spacing: 0) {
+            ArchivedSidebarButton(
+                isSelected: model.showingArchive,
+                width: rowWidth
+            ) {
+                model.showingArchive.toggle()
+            }
+            .padding(.horizontal, ShellMetrics.sidebarInset)
+            .padding(.top, ShellMetrics.sidebarInset)
+            .padding(.bottom, ShellMetrics.sidebarInset)
+            .frame(width: width)
+            .focused($focusedTarget, equals: .archived)
         }
         .scrollClipDisabled()
         .scrollEdgeEffectStyle(.hard, for: .vertical)
         .frame(width: width)
+    }
+
+    @ViewBuilder
+    private var archivedList: some View {
+        let items = model.filteredArchived
+        if items.isEmpty {
+            Text(model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                 ? "No archived tabs"
+                 : "No matching tabs")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .containerRelativeFrame(.vertical)
+        } else {
+            ForEach(items) { session in
+                ArchivedTabRow(
+                    session: session,
+                    isSelected: model.selectedID == session.id,
+                    width: rowWidth,
+                    onSelect: { model.select(session.id) },
+                    onUnarchive: { model.unarchiveTab(session.id) },
+                    onClose: { closeArchivedTab(session.id) }
+                )
+                .focused($focusedTarget, equals: .item(session.id))
+            }
+        }
     }
 }
 
 private enum SidebarFocusTarget: Hashable {
     case search
     case item(UUID)
+    case archived
     case settings
 }
 
@@ -76,7 +126,8 @@ private struct SidebarItemRow: View {
                 onSelect: { model.select($0) },
                 onClose: closeTab,
                 onSplitWithActive: { model.split(with: $0, on: .trailing) },
-                onUnsplit: { model.unsplit(tabID: leading.id) }
+                onUnsplit: { model.unsplit(tabID: leading.id) },
+                onArchive: { model.archiveTab($0) }
             )
         } else if let session = model.tab(id: item.id) {
             SidebarRow(
@@ -91,7 +142,8 @@ private struct SidebarItemRow: View {
                 onClose: { closeTab(session.id) },
                 splitWithActiveEnabled: model.selectedID != session.id,
                 onSplitWithActive: { model.split(with: session.id, on: .trailing) },
-                onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) }
+                onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) },
+                onArchive: { model.archiveTab(session.id) }
             )
         }
     }
@@ -112,6 +164,7 @@ private struct SidebarRow: View {
     var splitWithActiveEnabled = false
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
+    var onArchive: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -150,7 +203,8 @@ private struct SidebarRow: View {
                 onHover: { isHovered = $0 },
                 splitWithActiveEnabled: splitWithActiveEnabled,
                 onSplitWithActive: onSplitWithActive,
-                onUnsplit: onUnsplit
+                onUnsplit: onUnsplit,
+                onArchive: onArchive
             )
         }
         .animation(.easeInOut(duration: 0.14), value: isHovered)
@@ -186,6 +240,7 @@ private struct CombinedSidebarRow: View {
     let onClose: (UUID) -> Void
     let onSplitWithActive: (UUID) -> Void
     let onUnsplit: () -> Void
+    let onArchive: (UUID) -> Void
 
     @State private var hoveringLeading = false
     @State private var hoveringTrailing = false
@@ -262,7 +317,8 @@ private struct CombinedSidebarRow: View {
                 onHover: onHover,
                 splitWithActiveEnabled: false,
                 onSplitWithActive: { onSplitWithActive(session.id) },
-                onUnsplit: onUnsplit
+                onUnsplit: onUnsplit,
+                onArchive: { onArchive(session.id) }
             )
         }
         .accessibilityAddTraits(isFocused ? .isSelected : [])
@@ -271,6 +327,120 @@ private struct CombinedSidebarRow: View {
 
     private func segmentBackground(isFocused: Bool, isHovered: Bool) -> Color {
         if isFocused {
+            return Color.primary.opacity(0.16)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.075)
+        }
+        return .clear
+    }
+}
+
+private struct ArchivedSidebarButton: View {
+    let isSelected: Bool
+    let width: CGFloat
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 8) {
+                SidebarTile(symbol: isSelected ? "archivebox.fill" : "archivebox")
+
+                Text("Archived")
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: ShellMetrics.sidebarRowHeight)
+            .contentShape(
+                .interaction,
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(backgroundColor)
+        }
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.14), value: isHovered)
+        .animation(.easeInOut(duration: 0.16), value: isSelected)
+        .frame(width: width)
+        .contentShape(
+            .focusEffect,
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .accessibilityLabel("Archived")
+        .accessibilityIdentifier("archived-tabs")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help("Archived tabs")
+    }
+
+    private var backgroundColor: Color {
+        if isSelected {
+            return Color.primary.opacity(0.16)
+        }
+        if isHovered {
+            return Color.primary.opacity(0.075)
+        }
+        return .clear
+    }
+}
+
+private struct ArchivedTabRow: View {
+    @ObservedObject var session: TerminalSession
+    let isSelected: Bool
+    let width: CGFloat
+    let onSelect: () -> Void
+    let onUnarchive: () -> Void
+    let onClose: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 8) {
+                SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal")
+
+                Text(session.title)
+                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: ShellMetrics.sidebarRowHeight)
+            .contentShape(
+                .interaction,
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(backgroundColor)
+        }
+        .contextMenu {
+            Button("Unarchive", action: onUnarchive)
+            Button("Close Tab", action: onClose)
+        }
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.14), value: isHovered)
+        .animation(.easeInOut(duration: 0.16), value: isSelected)
+        .frame(width: width)
+        .help("\(session.title) — \(session.directory)")
+        .accessibilityLabel(session.title)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var backgroundColor: Color {
+        if isSelected {
             return Color.primary.opacity(0.16)
         }
         if isHovered {
