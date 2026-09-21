@@ -118,6 +118,7 @@ struct PrestelTests {
             from: Data(#"{"id":"00000000-0000-0000-0000-000000000001","tabs":[{"id":"00000000-0000-0000-0000-000000000002","kind":"terminal","title":"Local","directory":"/tmp"}],"selectedID":"00000000-0000-0000-0000-000000000002","sidebarVisible":true,"sidebarWidth":172}"#.utf8)
         )
         #expect(legacy.archivedTabs.isEmpty)
+        #expect(legacy.folders.isEmpty)
     }
 
     @Test func closeArchivedTabRecordsRecentlyClosed() {
@@ -148,6 +149,8 @@ struct PrestelTests {
             pressure: 1
         )!
         let titles = hit.menu(for: event)?.items.map(\.title) ?? []
+        #expect(titles.contains("Rename Tab"))
+        #expect(titles.contains("New Folder"))
         #expect(titles.contains("Archive"))
         #expect(titles.contains("Close Tab"))
     }
@@ -1361,6 +1364,175 @@ struct PrestelTests {
         #expect(!view.usesApplicationKeyboard)
         view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
         #expect(view.usesApplicationKeyboard)
+    }
+
+    @Test func renameChangesTheSidebarNameOnly() {
+        let model = TerminalModel()
+        let session = model.selectedTab!
+        let directory = session.directory
+        session.setDisplayTitle("Ship")
+        #expect(session.displayTitle == "Ship")
+        #expect(session.title == "Local")
+        #expect(session.customTitle == "Ship")
+        #expect(session.directory == directory)
+        #expect(session.process == nil)
+        #expect(session.state == .ready)
+        model.searchText = "Ship"
+        #expect(model.filteredTabs.map(\.id) == [session.id])
+        model.searchText = "Local"
+        #expect(model.filteredTabs.map(\.id) == [session.id])
+        model.searchText = ""
+
+        let surface = PrestelView(frame: NSRect(x: 0, y: 0, width: 80, height: 40), options: TerminalOptions(scrollback: 10))
+        session.setTerminalTitle(source: surface, title: "zsh")
+        #expect(session.title == "zsh")
+        #expect(session.displayTitle == "Ship")
+        #expect(session.directory == directory)
+
+        session.setDisplayTitle("   ")
+        #expect(session.customTitle == nil)
+        #expect(session.displayTitle == "zsh")
+    }
+
+    @Test func renamedTabAndFolderSurviveRestoration() throws {
+        let model = TerminalModel()
+        let kept = model.selectedTab!
+        kept.setDisplayTitle("Ship")
+        let grouped = model.newTab()
+        let folder = model.makeFolder(containing: grouped.id)!
+        model.renameFolder(folder.id, to: "Work")
+        model.toggleFolder(folder.id)
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let restored = TerminalModel(restoration: try JSONDecoder().decode(WindowDescriptor.self, from: encoded))
+        let restoredKept = restored.tabs.first { $0.id == kept.id }
+        #expect(restoredKept?.displayTitle == "Ship")
+        #expect(restoredKept?.title == "Local")
+        #expect(restored.folders.count == 1)
+        #expect(restored.folders[0].name == "Work")
+        #expect(restored.folders[0].collapsed)
+        #expect(restored.folders[0].tabIDs == [grouped.id])
+        model.renameFolder(folder.id, to: " \n ")
+        #expect(model.folders[0].name == "Work")
+    }
+
+    @Test func folderOpensInPlaceAndRenameTargetsTheFolder() {
+        let model = TerminalModel()
+        let loose = model.selectedID!
+        let grouped = model.newTab().id
+        let after = model.newTab().id
+        model.select(loose)
+        let folder = model.makeFolder(containing: grouped)!
+        #expect(model.selectedID == loose)
+        #expect(model.sidebarVisualIDs == [loose, folder.id, grouped, after])
+        model.toggleFolder(folder.id)
+        #expect(model.selectedID == loose)
+        #expect(model.folders[0].collapsed)
+        #expect(model.sidebarVisualIDs == [loose, folder.id, after])
+        model.renameFolder(folder.id, to: "Work")
+        #expect(model.tab(id: grouped)?.displayTitle == "Local")
+        #expect(model.folders[0].name == "Work")
+        model.toggleFolder(folder.id)
+        model.select(grouped)
+        let child = model.newTab()
+        #expect(model.folderContaining(child.id)?.id == folder.id)
+    }
+
+    @Test func emptyFolderKeepsItsPlace() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let folder = model.makeFolder(containing: second)!
+        model.removeFromFolder(second)
+        #expect(model.folders[0].tabIDs.isEmpty)
+        #expect(model.sidebarSections.map(\.id) == [first, folder.id, second])
+    }
+
+    @Test func droppingOnAFolderHeaderStaysOutsideTheFolder() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        let folder = model.makeFolder(containing: second)!
+        model.toggleFolder(folder.id)
+        let collapsed = model.sidebarVisualIDs
+        #expect(collapsed == [first, folder.id, third])
+        let beforeFolder = model.dropTarget(visibleInsertion: 1, visibleIDs: collapsed)
+        #expect(beforeFolder.index == 1)
+        #expect(beforeFolder.folderID == nil)
+        let afterFolder = model.dropTarget(visibleInsertion: 2, visibleIDs: collapsed)
+        #expect(afterFolder.index == 2)
+        #expect(afterFolder.folderID == nil)
+        model.toggleFolder(folder.id)
+        let expanded = model.sidebarVisualIDs
+        let inside = model.dropTarget(visibleInsertion: 2, visibleIDs: expanded)
+        #expect(inside.index == 1)
+        #expect(inside.folderID == folder.id)
+    }
+
+    @Test func droppingUnderTheLastFolderTabJoinsAtTheBottom() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let bottom = model.newTab().id
+        let after = model.newTab().id
+        let folder = model.makeFolder(containing: bottom)!
+        let visible = model.sidebarVisualIDs
+        let tabIDs = model.tabs.map(\.id)
+        #expect(visible == [first, folder.id, bottom, after])
+        let boundary = 3
+        let target = model.dropTarget(visibleInsertion: boundary, visibleIDs: visible)
+        #expect(target.folderID == folder.id)
+        #expect(target.index == tabIDs.firstIndex(of: bottom)! + 1)
+        #expect(!SidebarOutline.isStationaryDrop(
+            movingVisualID: after,
+            movingTabID: after,
+            visibleInsertion: boundary,
+            visibleIDs: visible,
+            tabIDs: tabIDs,
+            folders: model.folders
+        ))
+        #expect(SidebarOutline.isStationaryDrop(
+            movingVisualID: bottom,
+            movingTabID: bottom,
+            visibleInsertion: boundary,
+            visibleIDs: visible,
+            tabIDs: tabIDs,
+            folders: model.folders
+        ))
+        model.moveTab(after, to: target.index, folderID: target.folderID, assignsFolder: true)
+        #expect(model.folderContaining(after)?.id == folder.id)
+        #expect(model.folders[0].tabIDs == [bottom, after])
+
+        let tail = TerminalModel()
+        let head = tail.selectedID!
+        let last = tail.newTab().id
+        _ = tail.makeFolder(containing: last)
+        let tailIDs = tail.sidebarVisualIDs
+        #expect(tailIDs == [head, tail.folders[0].id, last])
+        let belowList = tail.dropTarget(visibleInsertion: tailIDs.count, visibleIDs: tailIDs)
+        #expect(belowList.folderID == tail.folders[0].id)
+        #expect(belowList.index == tail.tabs.firstIndex(where: { $0.id == last })! + 1)
+        tail.moveTab(head, to: belowList.index, folderID: belowList.folderID, assignsFolder: true)
+        #expect(tail.folderContaining(head)?.id == tail.folders[0].id)
+    }
+
+    @Test func folderMenuRenamesTheFolderRow() {
+        let hit = TabRowHitNSView(frame: .zero)
+        hit.isFolder = true
+        hit.onRename = {}
+        hit.onDeleteFolder = {}
+        let event = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )!
+        let titles = hit.menu(for: event)?.items.map(\.title) ?? []
+        #expect(titles == ["Rename Tab", "Delete Folder"])
     }
 
     private func eventually(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {

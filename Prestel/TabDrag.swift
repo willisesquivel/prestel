@@ -109,6 +109,8 @@ final class TabDragCoordinator: ObservableObject {
 
     @Published private(set) var pin: TabDragPin?
     @Published private(set) var splitPreview: TabSplitPreview?
+    /// The one row under the pointer. Rows read this instead of keeping their own hover flag.
+    @Published private(set) var hoveredRowKey: UUID?
 
     private var payload: TabDragPayload?
     private var destination: TabDragDestination?
@@ -119,6 +121,7 @@ final class TabDragCoordinator: ObservableObject {
     private weak var autoScrollView: NSScrollView?
     private var autoScrollDeltaPerSecond: CGFloat = 0
     private var escapeMonitor: Any?
+    private var hoverMonitor: Any?
     private var draggingSession: NSDraggingSession?
     private var zones: [UUID: WeakDropZone] = [:]
     private var details: [UUID: WeakDetailZone] = [:]
@@ -148,10 +151,52 @@ final class TabDragCoordinator: ObservableObject {
 
     func registerRow(_ view: TabRowHitNSView) {
         rows[ObjectIdentifier(view)] = WeakRow(view)
+        installHoverMonitor()
     }
 
     func unregisterRow(_ view: TabRowHitNSView) {
         rows.removeValue(forKey: ObjectIdentifier(view))
+    }
+
+    func setHoveredRow(_ key: UUID?) {
+        guard hoveredRowKey != key else { return }
+        hoveredRowKey = key
+    }
+
+    /// One row owns the hover. Overlapping or stale tracking rects cannot light up a second row.
+    func syncHoveredRow(at windowPoint: NSPoint, in window: NSWindow) {
+        var best: (key: UUID, distance: CGFloat)?
+        for row in rows.values {
+            guard let view = row.view, view.window === window,
+                  view.bounds.width > 1, view.bounds.height > 1 else { continue }
+            let local = view.convert(windowPoint, from: nil)
+            guard view.bounds.contains(local) else { continue }
+            guard let key = view.tabID ?? view.listRowID else { continue }
+            let distance = abs(local.y - view.bounds.midY)
+            if best == nil || distance < best!.distance {
+                best = (key, distance)
+            }
+        }
+        setHoveredRow(best?.key)
+    }
+
+    func syncHoveredRowToCursor() {
+        let screen = NSEvent.mouseLocation
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.contains(screen) }) else {
+            setHoveredRow(nil)
+            return
+        }
+        let point = window.convertFromScreen(NSRect(origin: screen, size: .zero)).origin
+        syncHoveredRow(at: point, in: window)
+    }
+
+    private func installHoverMonitor() {
+        guard hoverMonitor == nil else { return }
+        hoverMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { event in
+            guard let window = event.window else { return event }
+            TabDragCoordinator.shared.syncHoveredRow(at: event.locationInWindow, in: window)
+            return event
+        }
     }
 
     func begin(payload: TabDragPayload, at screenPoint: CGPoint, session: NSDraggingSession?) {
@@ -175,12 +220,7 @@ final class TabDragCoordinator: ObservableObject {
         switch destination {
         case .list(let pin):
             guard pin.windowID == payload.sourceWindowID else { return false }
-            let visibleIDs = visibleRowFrames(in: pin.windowID).map(\.id)
-            return TabInsertionGeometry.isNoOpInsertion(
-                movingID: occupyingVisualID(tabID: payload.tabID, windowID: pin.windowID, visualIDs: visibleIDs),
-                visibleInsertion: pin.insertionIndex,
-                visibleIDs: visibleIDs
-            )
+            return insertionIsStationary(pin, payload: payload)
         case .split(let preview):
             guard let model = AppDelegate.current?.controllers[preview.windowID]?.model else { return false }
             return TabSplitGeometry.isNoOp(
@@ -357,8 +397,8 @@ final class TabDragCoordinator: ObservableObject {
     private func visibleRowFrames(in windowID: UUID) -> [(id: UUID, frame: CGRect)] {
         var rowFrames: [UUID: CGRect] = [:]
         for view in rows.values.compactMap(\.view) where view.windowID == windowID {
-            guard let window = view.window, let tabID = view.tabID else { continue }
-            let rowID = view.listRowID ?? tabID
+            guard let rowID = view.listRowID ?? view.tabID else { continue }
+            guard let window = view.window else { continue }
             let rect = window.convertToScreen(view.convert(view.bounds, to: nil))
             rowFrames[rowID] = rowFrames[rowID]?.union(rect) ?? rect
         }
@@ -367,6 +407,26 @@ final class TabDragCoordinator: ObservableObject {
                 if abs(lhs.frame.midY - rhs.frame.midY) > 4 { return lhs.frame.midY > rhs.frame.midY }
                 return lhs.frame.minX < rhs.frame.minX
             }
+    }
+
+    private func insertionIsStationary(_ pin: TabDragPin, payload: TabDragPayload) -> Bool {
+        let visibleIDs = visibleRowFrames(in: pin.windowID).map(\.id)
+        let movingVisualID = occupyingVisualID(tabID: payload.tabID, windowID: pin.windowID, visualIDs: visibleIDs)
+        guard let model = AppDelegate.current?.controllers[pin.windowID]?.model else {
+            return TabInsertionGeometry.isNoOpInsertion(
+                movingID: movingVisualID,
+                visibleInsertion: pin.insertionIndex,
+                visibleIDs: visibleIDs
+            )
+        }
+        return SidebarOutline.isStationaryDrop(
+            movingVisualID: movingVisualID,
+            movingTabID: payload.tabID,
+            visibleInsertion: pin.insertionIndex,
+            visibleIDs: visibleIDs,
+            tabIDs: model.tabs.map(\.id),
+            folders: model.folders
+        )
     }
 
     private func occupyingVisualID(tabID: UUID, windowID: UUID, visualIDs: [UUID]) -> UUID {
@@ -400,12 +460,7 @@ final class TabDragCoordinator: ObservableObject {
     private func setVisualPin(_ next: TabDragPin?) {
         let visual: TabDragPin?
         if let next, let payload, next.windowID == payload.sourceWindowID {
-            let visibleIDs = visibleRowFrames(in: next.windowID).map(\.id)
-            visual = TabInsertionGeometry.isNoOpInsertion(
-                movingID: occupyingVisualID(tabID: payload.tabID, windowID: next.windowID, visualIDs: visibleIDs),
-                visibleInsertion: next.insertionIndex,
-                visibleIDs: visibleIDs
-            ) ? nil : next
+            visual = insertionIsStationary(next, payload: payload) ? nil : next
         } else {
             visual = next
         }
@@ -510,14 +565,17 @@ final class TabDragCoordinator: ObservableObject {
 
         switch destination {
         case .list(let pin) where pin.windowID == payload.sourceWindowID:
-            let canonical = canonicalIndex(for: pin, in: source.model)
-            source.model.moveTab(payload.tabID, to: canonical)
+            let target = dropTarget(for: pin, in: source.model)
+            source.model.moveTab(payload.tabID, to: target.index, folderID: target.folderID, assignsFolder: true)
             return
         case .list(let pin):
             guard let dest = app.controllers[pin.windowID] else { return }
-            let canonical = canonicalIndex(for: pin, in: dest.model)
+            let target = dropTarget(for: pin, in: dest.model)
             guard let tab = source.model.detachTab(payload.tabID) else { return }
-            dest.model.adopt(tab, at: canonical, selecting: true)
+            dest.model.adopt(tab, at: target.index, selecting: true)
+            if let folderID = target.folderID {
+                dest.model.setFolderMembership(tab.id, folderID: folderID)
+            }
             dest.refresh()
             closeIfEmpty(source)
             dest.window?.makeKeyAndOrderFront(nil)
@@ -560,12 +618,11 @@ final class TabDragCoordinator: ObservableObject {
         DispatchQueue.main.async { dest.focusTerminal() }
     }
 
-    private func canonicalIndex(for destination: TabDragPin, in model: TerminalModel) -> Int {
+    private func dropTarget(for destination: TabDragPin, in model: TerminalModel) -> SidebarDropTarget {
         let visibleIDs = visibleRowFrames(in: model.id).map(\.id)
-        return TabInsertionGeometry.canonicalInsertionIndex(
+        return model.dropTarget(
             visibleInsertion: destination.insertionIndex,
-            visibleIDs: visibleIDs.isEmpty ? model.sidebarItems.map(\.id) : visibleIDs,
-            canonicalIDs: model.tabs.map(\.id)
+            visibleIDs: visibleIDs.isEmpty ? model.sidebarVisualIDs : visibleIDs
         )
     }
 
@@ -739,7 +796,7 @@ struct TabInsertionPin: View {
 
 struct TabRowHitRepresentable: NSViewRepresentable {
     let windowID: UUID
-    let tabID: UUID
+    let tabID: UUID?
     var listRowID: UUID?
     let title: String
     let symbol: String
@@ -750,6 +807,13 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
+    var onRename: (() -> Void)?
+    var onNewFolder: (() -> Void)?
+    var onRemoveFromFolder: (() -> Void)?
+    var onDeleteFolder: (() -> Void)?
+    var folderDestinations: [(title: String, handler: () -> Void)] = []
+    var allowsDrag = true
+    var isFolder = false
 
     func makeNSView(context: Context) -> TabRowHitNSView {
         TabRowHitNSView()
@@ -768,6 +832,20 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.onSplitWithActive = onSplitWithActive
         nsView.onUnsplit = onUnsplit
         nsView.onArchive = onArchive
+        nsView.onRename = onRename
+        nsView.onNewFolder = onNewFolder
+        nsView.onRemoveFromFolder = onRemoveFromFolder
+        nsView.onDeleteFolder = onDeleteFolder
+        nsView.folderDestinations = folderDestinations
+        nsView.allowsDrag = allowsDrag
+        nsView.isFolder = isFolder
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TabRowHitNSView, context: Context) -> CGSize? {
+        CGSize(
+            width: proposal.width ?? nsView.bounds.width,
+            height: min(proposal.height ?? ShellMetrics.sidebarRowHeight, ShellMetrics.sidebarRowHeight)
+        )
     }
 }
 
@@ -784,11 +862,19 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
+    var onRename: (() -> Void)?
+    var onNewFolder: (() -> Void)?
+    var onRemoveFromFolder: (() -> Void)?
+    var onDeleteFolder: (() -> Void)?
+    var folderDestinations: [(title: String, handler: () -> Void)] = []
+    var allowsDrag = true
+    var isFolder = false
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
     private var hovering = false
     private var registered = false
+    private var hoverSync: DispatchWorkItem?
 
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -812,7 +898,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(
             rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow],
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow, .inVisibleRect],
             owner: self,
             userInfo: nil
         ))
@@ -828,14 +914,35 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             }
             installScrollObservers()
         } else {
+            hoverSync?.cancel()
+            hoverSync = nil
+            let key = tabID ?? listRowID
+            if TabDragCoordinator.shared.hoveredRowKey == key {
+                TabDragCoordinator.shared.setHoveredRow(nil)
+            }
             TabDragCoordinator.shared.unregisterRow(self)
             removeScrollObservers()
             setHover(false)
         }
     }
 
-    override func mouseEntered(with event: NSEvent) { syncHoverFromMouseLocation() }
-    override func mouseExited(with event: NSEvent) { syncHoverFromMouseLocation() }
+    override func mouseEntered(with event: NSEvent) {
+        guard let window = event.window else { return }
+        TabDragCoordinator.shared.syncHoveredRow(at: event.locationInWindow, in: window)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard let window = event.window else { return }
+        TabDragCoordinator.shared.syncHoveredRow(at: event.locationInWindow, in: window)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard let window = event.window else {
+            TabDragCoordinator.shared.setHoveredRow(nil)
+            return
+        }
+        TabDragCoordinator.shared.syncHoveredRow(at: event.locationInWindow, in: window)
+    }
 
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
@@ -843,7 +950,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard !didStartDrag, let mouseDownEvent else { return }
+        guard allowsDrag, !didStartDrag, let mouseDownEvent else { return }
         let start = mouseDownEvent.locationInWindow
         let current = event.locationInWindow
         guard hypot(current.x - start.x, current.y - start.y) >= 5 else { return }
@@ -851,11 +958,17 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !didStartDrag {
-            onSelect?()
+        defer {
+            mouseDownEvent = nil
+            didStartDrag = false
         }
-        mouseDownEvent = nil
-        didStartDrag = false
+        if didStartDrag { return }
+        if event.clickCount >= 2, clickIsOnTitle(event) {
+            onRename?()
+            return
+        }
+        if event.clickCount >= 2 { return }
+        onSelect?()
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -869,6 +982,15 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        if isFolder {
+            addRenameItem(to: menu)
+            if onDeleteFolder != nil {
+                let deleteItem = NSMenuItem(title: "Delete Folder", action: #selector(deleteFolderFromMenu(_:)), keyEquivalent: "")
+                deleteItem.target = self
+                menu.addItem(deleteItem)
+            }
+            return menu
+        }
 
         let splitItem = NSMenuItem(
             title: "Split with Active",
@@ -891,6 +1013,28 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
 
         menu.addItem(.separator())
+        addRenameItem(to: menu)
+        let newFolder = NSMenuItem(title: "New Folder", action: #selector(newFolderFromMenu(_:)), keyEquivalent: "")
+        newFolder.target = self
+        menu.addItem(newFolder)
+        if !folderDestinations.isEmpty {
+            let submenu = NSMenu()
+            for (index, destination) in folderDestinations.enumerated() {
+                let item = NSMenuItem(title: destination.title, action: #selector(addToFolderFromMenu(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = index
+                submenu.addItem(item)
+            }
+            let addItem = NSMenuItem(title: "Add to Folder", action: nil, keyEquivalent: "")
+            addItem.submenu = submenu
+            menu.addItem(addItem)
+        }
+        if onRemoveFromFolder != nil {
+            let removeItem = NSMenuItem(title: "Remove from Folder", action: #selector(removeFromFolderFromMenu(_:)), keyEquivalent: "")
+            removeItem.target = self
+            menu.addItem(removeItem)
+        }
+        menu.addItem(.separator())
         if onArchive != nil {
             let archiveItem = NSMenuItem(title: "Archive", action: #selector(archiveFromMenu(_:)), keyEquivalent: "")
             archiveItem.target = self
@@ -904,12 +1048,44 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         return menu
     }
 
+    private func addRenameItem(to menu: NSMenu) {
+        let renameItem = NSMenuItem(title: "Rename Tab", action: #selector(renameFromMenu(_:)), keyEquivalent: "")
+        renameItem.target = self
+        menu.addItem(renameItem)
+    }
+
+    private func clickIsOnTitle(_ event: NSEvent) -> Bool {
+        convert(event.locationInWindow, from: nil).x >= 36
+    }
+
     @objc private func closeFromMenu(_ sender: Any?) {
         onClose?()
     }
 
     @objc private func archiveFromMenu(_ sender: Any?) {
         onArchive?()
+    }
+
+    @objc private func renameFromMenu(_ sender: Any?) {
+        onRename?()
+    }
+
+    @objc private func newFolderFromMenu(_ sender: Any?) {
+        onNewFolder?()
+    }
+
+    @objc private func removeFromFolderFromMenu(_ sender: Any?) {
+        onRemoveFromFolder?()
+    }
+
+    @objc private func deleteFolderFromMenu(_ sender: Any?) {
+        onDeleteFolder?()
+    }
+
+    @objc private func addToFolderFromMenu(_ sender: NSMenuItem) {
+        let index = sender.tag
+        guard folderDestinations.indices.contains(index) else { return }
+        folderDestinations[index].handler()
     }
 
     @objc private func splitWithActiveFromMenu(_ sender: Any?) {
@@ -989,16 +1165,6 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         onHover?(value)
     }
 
-    private func syncHoverFromMouseLocation() {
-        guard let window, window.isVisible, bounds.width > 1, bounds.height > 1 else {
-            setHover(false)
-            return
-        }
-        let mouse = window.convertFromScreen(NSRect(origin: NSEvent.mouseLocation, size: .zero)).origin
-        let frameInWindow = convert(bounds, to: nil)
-        setHover(frameInWindow.contains(mouse))
-    }
-
     private func installScrollObservers() {
         removeScrollObservers()
         guard let clip = enclosingScrollView?.contentView else { return }
@@ -1011,7 +1177,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     @objc private func handleScrollChange(_ note: Notification) {
-        syncHoverFromMouseLocation()
+        hoverSync?.cancel()
+        let work = DispatchWorkItem {
+            TabDragCoordinator.shared.syncHoveredRowToCursor()
+        }
+        hoverSync = work
+        DispatchQueue.main.async(execute: work)
     }
 
     private func removeScrollObservers() {

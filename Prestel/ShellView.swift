@@ -370,7 +370,7 @@ private struct TerminalDetailSurface: View {
             TabDetailDropZone(windowID: model.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .accessibilityLabel("\(model.selectedTab?.title ?? "Local") terminal")
+        .accessibilityLabel("\(model.selectedTab?.displayTitle ?? "Local") terminal")
     }
 
     @ViewBuilder

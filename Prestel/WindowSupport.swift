@@ -194,7 +194,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         for tab in model.tabs { tab.start() }
         model.selectedTab?.start()
         let tab = model.selectedTab
-        window?.title = "\(tab?.title ?? "Terminal") — Prestel"
+        window?.title = "\(tab?.displayTitle ?? "Terminal") — Prestel"
         window?.invalidateRestorableState()
         AppDelegate.current?.commandRevision &+= 1
     }
@@ -503,7 +503,7 @@ struct TerminalToolbarHeader: View {
         HStack(spacing: 8) {
             SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal", size: 22)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.title)
+                Text(session.displayTitle)
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)

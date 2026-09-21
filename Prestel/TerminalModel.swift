@@ -8,6 +8,8 @@ struct TabDescriptor: Codable, Equatable, Identifiable {
     var kind: TabKind = .terminal
     var title = "Local"
     var directory: String = FileManager.default.homeDirectoryForCurrentUser.path
+    /// User-facing sidebar name. Nil keeps the shell title.
+    var customTitle: String? = nil
 }
 
 struct WindowDescriptor: Codable, Equatable {
@@ -20,6 +22,7 @@ struct WindowDescriptor: Codable, Equatable {
     var reviewVisible: Bool
     var reviewWidth: Double
     var splits: [SplitState]
+    var folders: [TabFolder]
 
     init(
         id: UUID,
@@ -30,7 +33,8 @@ struct WindowDescriptor: Codable, Equatable {
         reviewVisible: Bool = false,
         reviewWidth: Double = 420,
         splits: [SplitState] = [],
-        archivedTabs: [TabDescriptor] = []
+        archivedTabs: [TabDescriptor] = [],
+        folders: [TabFolder] = []
     ) {
         self.id = id
         self.tabs = tabs
@@ -49,6 +53,7 @@ struct WindowDescriptor: Codable, Equatable {
                 axis: $0.axis
             )
         }
+        self.folders = folders
     }
 
     /// Legacy single-split keys kept for decoding older saved windows.
@@ -97,6 +102,11 @@ struct WindowDescriptor: Codable, Equatable {
         } else {
             splits = []
         }
+        let knownIDs = Set(tabs.map(\.id)).union(archivedTabs.map(\.id))
+        folders = SidebarOutline.sanitized(
+            try container.decodeIfPresent([TabFolder].self, forKey: .folders) ?? [],
+            tabIDs: knownIDs
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -110,6 +120,7 @@ struct WindowDescriptor: Codable, Equatable {
         try container.encode(reviewVisible, forKey: .reviewVisible)
         try container.encode(reviewWidth, forKey: .reviewWidth)
         try container.encode(splits, forKey: .splits)
+        try container.encode(folders, forKey: .folders)
     }
 
     static func clampedReviewWidth(_ raw: Double) -> Double {
@@ -119,7 +130,7 @@ struct WindowDescriptor: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, tabs, archivedTabs, selectedID, sidebarVisible, sidebarWidth, reviewVisible, reviewWidth
-        case splits, splitLeadingID, splitTrailingID, splitFraction, splitAxis
+        case splits, splitLeadingID, splitTrailingID, splitFraction, splitAxis, folders
     }
 }
 
@@ -132,6 +143,7 @@ final class TerminalModel: ObservableObject {
     @Published var showingArchive = false
     @Published private(set) var selectedID: UUID?
     @Published private(set) var splits: [SplitState] = []
+    @Published private(set) var folders: [TabFolder] = []
     @Published var searchText = ""
     @Published var sidebarVisible = true
     @Published var sidebarWidth: Double = 172
@@ -159,6 +171,10 @@ final class TerminalModel: ObservableObject {
             select(restoration.selectedID ?? tabs[0].id)
             if selectedID == nil { select(tabs[0].id) }
             restoreSplit(from: restoration)
+            folders = SidebarOutline.sanitized(
+                restoration.folders,
+                tabIDs: Set(tabs.map(\.id)).union(archived.map(\.id))
+            )
         } else {
             append(TabDescriptor(directory: directory))
             select(tabs[0].id)
@@ -196,13 +212,31 @@ final class TerminalModel: ObservableObject {
     var sidebarItems: [SidebarTabItem] {
         SidebarTabLayout.items(from: filteredTabs, splits: splits)
     }
+    var sidebarSections: [SidebarSection] {
+        SidebarOutline.sections(
+            tabs: tabs,
+            splits: splits,
+            folders: folders,
+            selectedID: selectedID,
+            query: searchText
+        )
+    }
+    var sidebarVisualIDs: [UUID] {
+        SidebarOutline.visualIDs(in: sidebarSections)
+    }
     var canGoBack: Bool { historyIndex > 0 }
     var canGoForward: Bool { historyIndex + 1 < history.count }
 
     @discardableResult
     func newTab(directory: String? = nil) -> TerminalSession {
+        let joinedFolder = selectedID.flatMap { folderContaining($0)?.id }
+        let afterID = selectedID
         let descriptor = TabDescriptor(directory: directory ?? (selectedTab?.kind == .terminal ? selectedTab?.currentDirectory : nil) ?? ShellConfiguration.defaultDirectory)
         let tab = append(descriptor)
+        if let joinedFolder, let afterID, let index = tabs.firstIndex(where: { $0.id == afterID }) {
+            moveTab(tab.id, to: index + 1)
+            setFolderMembership(tab.id, folderID: joinedFolder)
+        }
         searchText = ""
         showingArchive = false
         select(tab.id)
@@ -231,7 +265,9 @@ final class TerminalModel: ObservableObject {
     private func filtered(_ sessions: [TerminalSession]) -> [TerminalSession] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return query.isEmpty ? sessions : sessions.filter {
-            $0.title.localizedCaseInsensitiveContains(query) || $0.directory.localizedCaseInsensitiveContains(query)
+            $0.displayTitle.localizedCaseInsensitiveContains(query)
+                || $0.title.localizedCaseInsensitiveContains(query)
+                || $0.directory.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -301,6 +337,7 @@ final class TerminalModel: ObservableObject {
                 axis: side.axis
             )
         )
+        keepSplitPairInOneFolder(current, tabID)
         select(tabID)
     }
 
@@ -320,7 +357,7 @@ final class TerminalModel: ObservableObject {
     }
 
     func cycle(_ offset: Int) {
-        let order = sidebarItems.flatMap(\.members)
+        let order = SidebarOutline.tabOrder(in: sidebarSections)
         guard !order.isEmpty else { return }
         let index = order.firstIndex { $0 == selectedID } ?? 0
         let next = ((index + offset) % order.count + order.count) % order.count
@@ -343,17 +380,20 @@ final class TerminalModel: ObservableObject {
     /// Reorder by stable tab identity. `insertionIndex` is a canonical index in
     /// `tabs` (0...count) measured *before* the moving tab is removed. Moving
     /// downward therefore has to account for the hole left by the removal.
-    func moveTab(_ id: UUID, to insertionIndex: Int) {
+    func moveTab(_ id: UUID, to insertionIndex: Int, folderID: UUID? = nil, assignsFolder: Bool = false) {
         if let pair = split(containing: id) {
             movePair(pair, to: insertionIndex)
-            return
+        } else if let from = tabs.firstIndex(where: { $0.id == id }) {
+            var destination = min(max(insertionIndex, 0), tabs.count)
+            if destination != from && destination != from + 1 {
+                let tab = tabs.remove(at: from)
+                if from < destination { destination -= 1 }
+                tabs.insert(tab, at: min(max(destination, 0), tabs.count))
+            }
         }
-        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return }
-        var destination = min(max(insertionIndex, 0), tabs.count)
-        if destination == from || destination == from + 1 { return }
-        let tab = tabs.remove(at: from)
-        if from < destination { destination -= 1 }
-        tabs.insert(tab, at: min(max(destination, 0), tabs.count))
+        if assignsFolder {
+            setFolderMembership(id, folderID: folderID)
+        }
     }
 
     private func movePair(_ pair: SplitState, to insertionIndex: Int) {
@@ -378,6 +418,7 @@ final class TerminalModel: ObservableObject {
     func detachTab(_ id: UUID) -> TerminalSession? {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
         let partner = split(containing: id)?.partner(of: id)
+        detachFromFolders(id)
         let tab = tabs.remove(at: index)
         subscriptions.removeValue(forKey: id)
         let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
@@ -438,6 +479,7 @@ final class TerminalModel: ObservableObject {
     func closeTab(_ id: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let partner = split(containing: id)?.partner(of: id)
+        detachFromFolders(id)
         recentlyClosed.append(tabs[index].descriptor)
         recentlyClosed = Array(recentlyClosed.suffix(20))
         tabs[index].close()
@@ -473,7 +515,8 @@ final class TerminalModel: ObservableObject {
             reviewVisible: reviewVisible,
             reviewWidth: reviewWidth,
             splits: splits,
-            archivedTabs: archived.map(\.descriptor)
+            archivedTabs: archived.map(\.descriptor),
+            folders: normalizedFolders()
         )
     }
 
@@ -529,6 +572,119 @@ final class TerminalModel: ObservableObject {
             select(tabs[min(index, tabs.count - 1)].id)
         }
     }
+
+    func folderContaining(_ tabID: UUID) -> TabFolder? {
+        folders.first { $0.tabIDs.contains(tabID) }
+    }
+
+    func dropTarget(visibleInsertion: Int, visibleIDs: [UUID]) -> SidebarDropTarget {
+        SidebarOutline.dropTarget(
+            visibleInsertion: visibleInsertion,
+            visibleIDs: visibleIDs,
+            tabIDs: tabs.map(\.id),
+            folders: folders
+        )
+    }
+
+    @discardableResult
+    func makeFolder(containing tabID: UUID) -> TabFolder? {
+        guard tabs.contains(where: { $0.id == tabID }) else { return nil }
+        var members = [tabID]
+        if let partner = split(containing: tabID)?.partner(of: tabID) {
+            members.append(partner)
+        }
+        let name = nextFolderName()
+        let anchor = tabs.firstIndex(where: { $0.id == tabID }) ?? tabs.count
+        detachFromFolders(members)
+        let folder = TabFolder(name: name, collapsed: false, tabIDs: members, anchor: anchor)
+        folders.append(folder)
+        return folder
+    }
+
+    func add(_ tabID: UUID, to folderID: UUID) {
+        guard folders.contains(where: { $0.id == folderID }) else { return }
+        setFolderMembership(tabID, folderID: folderID)
+    }
+
+    func removeFromFolder(_ tabID: UUID) {
+        setFolderMembership(tabID, folderID: nil)
+    }
+
+    func toggleFolder(_ id: UUID) {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        folders[index].collapsed.toggle()
+    }
+
+    func renameFolder(_ id: UUID, to proposed: String) {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        folders[index].name = String(trimmed.prefix(256))
+    }
+
+    func deleteFolder(_ id: UUID) {
+        folders.removeAll { $0.id == id }
+    }
+
+    func renameTab(_ id: UUID, to proposed: String) {
+        tab(id: id)?.setDisplayTitle(proposed)
+    }
+
+    func setFolderMembership(_ tabID: UUID, folderID: UUID?) {
+        var ids = [tabID]
+        if let partner = split(containing: tabID)?.partner(of: tabID) {
+            ids.append(partner)
+        }
+        detachFromFolders(ids)
+        guard let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
+        for id in ids where tabs.contains(where: { $0.id == id }) && !folders[index].tabIDs.contains(id) {
+            folders[index].tabIDs.append(id)
+        }
+    }
+
+    private func keepSplitPairInOneFolder(_ first: UUID, _ second: UUID) {
+        if let folder = folderContaining(first) ?? folderContaining(second) {
+            setFolderMembership(first, folderID: folder.id)
+        }
+    }
+
+    private func nextFolderName() -> String {
+        let existing = Set(folders.map(\.name))
+        if !existing.contains("Folder") { return "Folder" }
+        var number = 2
+        while existing.contains("Folder \(number)") { number += 1 }
+        return "Folder \(number)"
+    }
+
+    private func normalizedFolders() -> [TabFolder] {
+        let order = Dictionary(uniqueKeysWithValues: tabs.enumerated().map { ($1.id, $0) })
+        return folders.map { folder in
+            var copy = folder
+            copy.tabIDs.sort { (order[$0] ?? .max) < (order[$1] ?? .max) }
+            return copy
+        }
+    }
+
+    private func detachFromFolders(_ id: UUID) {
+        detachFromFolders([id])
+    }
+
+    private func detachFromFolders(_ ids: [UUID]) {
+        let removing = Set(ids)
+        guard !removing.isEmpty else { return }
+        for index in folders.indices {
+            let removed = folders[index].tabIDs.filter { removing.contains($0) }
+            guard !removed.isEmpty else { continue }
+            folders[index].tabIDs.removeAll { removing.contains($0) }
+            if folders[index].tabIDs.isEmpty {
+                let anchors = removed.compactMap { id in tabs.firstIndex(where: { $0.id == id }) }
+                if let anchor = anchors.min() {
+                    folders[index].anchor = anchor
+                }
+            }
+        }
+    }
+
     func resizeSidebar(to proposedWidth: CGFloat, availableWidth: CGFloat) {
         sidebarWidth = ShellLayout.clampSidebarPreference(
             proposedWidth,

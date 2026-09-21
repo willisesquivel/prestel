@@ -131,6 +131,276 @@ enum SidebarTabLayout {
     }
 }
 
+/// A sidebar folder. Members stay real tabs; the folder only groups them.
+struct TabFolder: Codable, Equatable, Identifiable {
+    var id: UUID
+    var name: String
+    var collapsed: Bool
+    var tabIDs: [UUID]
+    /// Where an empty folder sits in the tab list. Ignored while `tabIDs` is non-empty.
+    var anchor: Int
+
+    init(id: UUID = UUID(), name: String = "Folder", collapsed: Bool = false, tabIDs: [UUID] = [], anchor: Int = 0) {
+        self.id = id
+        self.name = name
+        self.collapsed = collapsed
+        self.tabIDs = tabIDs
+        self.anchor = anchor
+    }
+}
+
+struct SidebarFolderGroup: Equatable, Identifiable {
+    var folder: TabFolder
+    /// Collapsed folder that contains the selected tab. The row shows the selected fill.
+    var active: Bool
+    var children: [SidebarTabItem]
+    var showsChildren: Bool
+    var id: UUID { folder.id }
+}
+
+enum SidebarSection: Equatable, Identifiable {
+    case loose(SidebarTabItem)
+    case folder(SidebarFolderGroup)
+
+    var id: UUID {
+        switch self {
+        case .loose(let item): return item.id
+        case .folder(let group): return group.id
+        }
+    }
+}
+
+struct SidebarDropTarget: Equatable {
+    var index: Int
+    /// Non-nil when the drop lands inside a folder. Nil leaves the tab outside every folder.
+    var folderID: UUID?
+}
+
+enum SidebarOutline {
+    @MainActor
+    static func sections(
+        tabs: [TerminalSession],
+        splits: [SplitState],
+        folders: [TabFolder],
+        selectedID: UUID?,
+        query: String
+    ) -> [SidebarSection] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let searching = !trimmed.isEmpty
+        let folderByTab = folderIndex(folders)
+        let visibleTabs = tabs.filter { session in
+            guard searching else { return true }
+            if sessionMatches(session, query: trimmed) { return true }
+            if let folder = folderByTab[session.id], folder.name.localizedCaseInsensitiveContains(trimmed) {
+                return true
+            }
+            return false
+        }
+        let items = SidebarTabLayout.items(from: visibleTabs, splits: splits)
+        let indexByID = Dictionary(uniqueKeysWithValues: tabs.enumerated().map { ($1.id, $0) })
+        var claimed = Set<UUID>()
+        var sections: [SidebarSection] = []
+        var cursor = 0
+
+        func emitEmptyFolders(through index: Int) {
+            let pending = folders
+                .filter { $0.tabIDs.isEmpty && $0.anchor >= cursor && $0.anchor <= index }
+                .sorted { $0.anchor < $1.anchor }
+            for folder in pending {
+                if searching, !folder.name.localizedCaseInsensitiveContains(trimmed) { continue }
+                sections.append(.folder(SidebarFolderGroup(
+                    folder: folder,
+                    active: false,
+                    children: [],
+                    showsChildren: false
+                )))
+            }
+            cursor = index + 1
+        }
+
+        for item in items {
+            let start = item.members.compactMap { indexByID[$0] }.min() ?? cursor
+            let end = item.members.compactMap { indexByID[$0] }.max() ?? start
+            if claimed.contains(item.id) {
+                cursor = max(cursor, end + 1)
+                continue
+            }
+            emitEmptyFolders(through: start)
+            if let folder = folderForItem(item, folderByTab: folderByTab) {
+                let children = items.filter { folderForItem($0, folderByTab: folderByTab)?.id == folder.id }
+                for child in children { claimed.insert(child.id) }
+                let nameMatches = searching && folder.name.localizedCaseInsensitiveContains(trimmed)
+                let matchingChildren = children.filter { child in
+                    child.members.contains { id in
+                        tabs.first { $0.id == id }.map { sessionMatches($0, query: trimmed) } ?? false
+                    }
+                }
+                let shownChildren = nameMatches || !searching ? children : matchingChildren
+                if !searching || nameMatches || !shownChildren.isEmpty {
+                    let showsChildren = searching || !folder.collapsed
+                    let active = !showsChildren && folder.tabIDs.contains(selectedID ?? UUID())
+                    sections.append(.folder(SidebarFolderGroup(
+                        folder: folder,
+                        active: active,
+                        children: showsChildren ? shownChildren : children,
+                        showsChildren: showsChildren && !shownChildren.isEmpty
+                    )))
+                }
+                let last = children.flatMap(\.members).compactMap { indexByID[$0] }.max() ?? end
+                cursor = max(cursor, last + 1)
+            } else {
+                sections.append(.loose(item))
+                cursor = max(cursor, end + 1)
+            }
+        }
+        emitEmptyFolders(through: max(tabs.count, cursor))
+        return sections
+    }
+
+    static func visualIDs(in sections: [SidebarSection]) -> [UUID] {
+        sections.flatMap { section -> [UUID] in
+            switch section {
+            case .loose(let item):
+                return [item.id]
+            case .folder(let group):
+                return group.showsChildren ? [group.folder.id] + group.children.map(\.id) : [group.folder.id]
+            }
+        }
+    }
+
+    static func tabOrder(in sections: [SidebarSection]) -> [UUID] {
+        sections.flatMap { section -> [UUID] in
+            switch section {
+            case .loose(let item):
+                return item.members
+            case .folder(let group):
+                return group.children.flatMap(\.members)
+            }
+        }
+    }
+
+    /// Map a gap in the on-screen rows onto the canonical tab array.
+    /// Folder headers are rows. Dropping on a header stays outside the folder;
+    /// dropping on a child joins that folder.
+    static func dropTarget(
+        visibleInsertion: Int,
+        visibleIDs: [UUID],
+        tabIDs: [UUID],
+        folders: [TabFolder]
+    ) -> SidebarDropTarget {
+        if folders.isEmpty {
+            return SidebarDropTarget(
+                index: TabInsertionGeometry.canonicalInsertionIndex(
+                    visibleInsertion: visibleInsertion,
+                    visibleIDs: visibleIDs,
+                    canonicalIDs: tabIDs
+                ),
+                folderID: nil
+            )
+        }
+        let folderIDs = Set(folders.map(\.id))
+        if visibleInsertion >= visibleIDs.count {
+            if let last = visibleIDs.last,
+               let folder = folders.first(where: { $0.tabIDs.contains(last) }),
+               let memberIndex = tabIDs.firstIndex(of: last) {
+                return SidebarDropTarget(index: memberIndex + 1, folderID: folder.id)
+            }
+            if let last = visibleIDs.last(where: { !folderIDs.contains($0) }),
+               let index = tabIDs.firstIndex(of: last) {
+                return SidebarDropTarget(index: index + 1, folderID: nil)
+            }
+            return SidebarDropTarget(index: tabIDs.count, folderID: nil)
+        }
+        let target = visibleIDs[visibleInsertion]
+        if let folder = folders.first(where: { $0.id == target }) {
+            let memberIndexes = folder.tabIDs.compactMap { tabIDs.firstIndex(of: $0) }
+            if let first = memberIndexes.min() {
+                return SidebarDropTarget(index: first, folderID: nil)
+            }
+            return SidebarDropTarget(index: min(max(folder.anchor, 0), tabIDs.count), folderID: nil)
+        }
+        let index = tabIDs.firstIndex(of: target) ?? tabIDs.count
+        if let folder = folders.first(where: { $0.tabIDs.contains(target) }) {
+            return SidebarDropTarget(index: index, folderID: folder.id)
+        }
+        // The gap under the last child is the bottom of the folder. A tab sitting
+        // just below the group joins there; dragging past that tab leaves the group.
+        if visibleInsertion > 0 {
+            let previous = visibleIDs[visibleInsertion - 1]
+            if let folder = folders.first(where: { $0.tabIDs.contains(previous) }),
+               let memberIndex = tabIDs.firstIndex(of: previous) {
+                return SidebarDropTarget(index: memberIndex + 1, folderID: folder.id)
+            }
+        }
+        return SidebarDropTarget(index: index, folderID: nil)
+    }
+
+    /// Same visual slot and same folder. Joining or leaving a folder is a real drop
+    /// even when the tab stays next to the same neighbor.
+    static func isStationaryDrop(
+        movingVisualID: UUID,
+        movingTabID: UUID,
+        visibleInsertion: Int,
+        visibleIDs: [UUID],
+        tabIDs: [UUID],
+        folders: [TabFolder]
+    ) -> Bool {
+        let target = dropTarget(
+            visibleInsertion: visibleInsertion,
+            visibleIDs: visibleIDs,
+            tabIDs: tabIDs,
+            folders: folders
+        )
+        let current = folders.first { $0.tabIDs.contains(movingTabID) }?.id
+        if current != target.folderID { return false }
+        return TabInsertionGeometry.isNoOpInsertion(
+            movingID: movingVisualID,
+            visibleInsertion: visibleInsertion,
+            visibleIDs: visibleIDs
+        )
+    }
+
+    static func sanitized(_ folders: [TabFolder], tabIDs: Set<UUID>) -> [TabFolder] {
+        var seenFolders = Set<UUID>()
+        var seenTabs = Set<UUID>()
+        var result: [TabFolder] = []
+        for var folder in folders {
+            guard seenFolders.insert(folder.id).inserted else { continue }
+            folder.tabIDs = folder.tabIDs.filter { tabIDs.contains($0) && seenTabs.insert($0).inserted }
+            let trimmed = folder.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            folder.name = trimmed.isEmpty ? "Folder" : String(trimmed.prefix(256))
+            folder.anchor = max(folder.anchor, 0)
+            result.append(folder)
+        }
+        return result
+    }
+
+    private static func folderIndex(_ folders: [TabFolder]) -> [UUID: TabFolder] {
+        var map: [UUID: TabFolder] = [:]
+        for folder in folders {
+            for id in folder.tabIDs where map[id] == nil {
+                map[id] = folder
+            }
+        }
+        return map
+    }
+
+    private static func folderForItem(_ item: SidebarTabItem, folderByTab: [UUID: TabFolder]) -> TabFolder? {
+        let matches = item.members.compactMap { folderByTab[$0] }
+        guard let folder = matches.first,
+              matches.count == item.members.count,
+              matches.allSatisfy({ $0.id == folder.id }) else { return nil }
+        return folder
+    }
+
+    @MainActor
+    private static func sessionMatches(_ session: TerminalSession, query: String) -> Bool {
+        session.displayTitle.localizedCaseInsensitiveContains(query)
+            || session.title.localizedCaseInsensitiveContains(query)
+            || session.directory.localizedCaseInsensitiveContains(query)
+    }
+}
+
 enum TabDragDestination: Equatable {
     case list(TabDragPin)
     case split(TabSplitPreview)

@@ -422,7 +422,7 @@ struct TerminalPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityLabel("\(session.title) terminal")
+        .accessibilityLabel("\(session.displayTitle) terminal")
         .accessibilityAddTraits(isFocused ? .isSelected : [])
     }
 }

@@ -101,7 +101,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     enum State: Equatable { case ready, running, exited(Int32?), failed(String), closed }
     let id: UUID
     let kind: TabKind
+    /// Shell-reported title. OSC title sequences update this and nothing else.
     @Published private(set) var title: String
+    /// Sidebar label chosen by the user. Nil shows `title`.
+    @Published private(set) var customTitle: String?
     @Published private(set) var directory: String
     @Published private(set) var state: State = .ready
     private(set) var surface: PrestelView?
@@ -114,14 +117,31 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         id = descriptor.id
         kind = descriptor.kind
         title = descriptor.title.isEmpty ? "Local" : descriptor.title
+        let trimmedCustom = descriptor.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        customTitle = trimmedCustom.isEmpty ? nil : String(trimmedCustom.prefix(256))
         directory = ShellConfiguration.validDirectory(descriptor.directory)
         super.init()
+    }
+    /// Name shown in the sidebar. Empty input clears the override and restores `title`.
+    var displayTitle: String {
+        if let customTitle {
+            let trimmed = customTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return title
+    }
+    func setDisplayTitle(_ proposed: String) {
+        let trimmed = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        customTitle = trimmed.isEmpty ? nil : String(trimmed.prefix(256))
+        surface?.setAccessibilityLabel("\(displayTitle) terminal")
     }
     var currentDirectory: String {
         guard let process, process.running, let actual = ProcessInspection.directory(pid: process.shellPid) else { return directory }
         return actual
     }
-    var descriptor: TabDescriptor { TabDescriptor(id: id, kind: kind, title: title, directory: currentDirectory) }
+    var descriptor: TabDescriptor {
+        TabDescriptor(id: id, kind: kind, title: title, directory: currentDirectory, customTitle: customTitle)
+    }
     var hasActiveJobs: Bool {
         guard let process, process.running else { return false }
         let foreground = tcgetpgrp(process.childfd)
@@ -189,6 +209,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
         self.title = String(title.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(256))
         if self.title.isEmpty { self.title = "Local" }
+        surface?.setAccessibilityLabel("\(displayTitle) terminal")
         // Titles are usually sent alongside a prompt redraw, so the shell cwd
         // has likely just changed too. Opportunistically re-read it: shells
         // that don't emit OSC 7 (e.g. zsh with TERM_PROGRAM=Prestel, which
