@@ -176,6 +176,67 @@ struct SidebarDropTarget: Equatable {
     var folderID: UUID?
 }
 
+struct FolderDropRow: Equatable {
+    var id: UUID
+    var frame: CGRect
+}
+
+/// Pointer sample for the folder edge.
+struct FolderDropProbe: Equatable {
+    var pointerY: CGFloat
+    /// Visual rows, top of the list first. Screen space, AppKit origin.
+    var rows: [FolderDropRow]
+    /// AppKit screen Y decreases when the pointer moves down the list.
+    var draggingDown: Bool = true
+    /// Set once the pointer has rested on a collapsed folder for `FolderDrop.collapsedDwell`.
+    var collapsedJoinID: UUID? = nil
+}
+
+/// Drag direction with a deadzone, so a one-pixel reversal does not flip the folder edge.
+struct FolderDragDirection: Equatable {
+    var draggingDown: Bool
+    /// Extreme pointer Y of the current direction. AppKit origin.
+    var anchorY: CGFloat
+}
+
+/// Numbers from Firefox `browser.tabs.dragDrop` prefs in `firefox.js`.
+enum FolderDrop {
+    /// `browser.tabs.dragDrop.moveOverThresholdPercent`
+    static let moveOverThresholdPercent = 80
+    static let moveOverThreshold: CGFloat = CGFloat(moveOverThresholdPercent) / 100
+    /// Overlap below this drops after the group instead of into its last tab.
+    static let groupingThreshold: CGFloat = 1 - moveOverThreshold
+    /// With the dragged tab centered on the pointer, overlap stays at or above
+    /// `groupingThreshold` through this fraction of the next row.
+    static let joinReachFraction: CGFloat = 0.5 - groupingThreshold
+    /// `browser.tabs.dragDrop.createGroup.delayMS`. A collapsed group joins only after a still hover.
+    static let collapsedDwell = Duration.milliseconds(240)
+    /// Travel, in screen points, required before drag direction reverses.
+    static let directionDeadzone: CGFloat = 8
+
+    static func direction(after previous: FolderDragDirection?, pointerY: CGFloat) -> FolderDragDirection {
+        guard let previous else {
+            return FolderDragDirection(draggingDown: true, anchorY: pointerY)
+        }
+        if previous.draggingDown {
+            if pointerY - previous.anchorY >= directionDeadzone {
+                return FolderDragDirection(draggingDown: false, anchorY: pointerY)
+            }
+            if pointerY < previous.anchorY {
+                return FolderDragDirection(draggingDown: true, anchorY: pointerY)
+            }
+            return previous
+        }
+        if previous.anchorY - pointerY >= directionDeadzone {
+            return FolderDragDirection(draggingDown: true, anchorY: pointerY)
+        }
+        if pointerY > previous.anchorY {
+            return FolderDragDirection(draggingDown: false, anchorY: pointerY)
+        }
+        return previous
+    }
+}
+
 enum SidebarOutline {
     @MainActor
     static func sections(
@@ -280,13 +341,16 @@ enum SidebarOutline {
     }
 
     /// Map a gap in the on-screen rows onto the canonical tab array.
-    /// Folder headers are rows. Dropping on a header stays outside the folder;
-    /// dropping on a child joins that folder.
+    /// The upper half of a header stays outside the folder. A child row joins it.
+    /// The edge under the last child follows drag direction. Dragging down past that
+    /// tab's midpoint lands below the folder. Dragging up into the top of the next
+    /// row joins it. Direction itself ignores travel shorter than `directionDeadzone`.
     static func dropTarget(
         visibleInsertion: Int,
         visibleIDs: [UUID],
         tabIDs: [UUID],
-        folders: [TabFolder]
+        folders: [TabFolder],
+        probe: FolderDropProbe? = nil
     ) -> SidebarDropTarget {
         if folders.isEmpty {
             return SidebarDropTarget(
@@ -298,18 +362,12 @@ enum SidebarOutline {
                 folderID: nil
             )
         }
-        let folderIDs = Set(folders.map(\.id))
+        if let joinID = probe?.collapsedJoinID,
+           let folder = folders.first(where: { $0.id == joinID && $0.collapsed }) {
+            return SidebarDropTarget(index: indexAfter(folder, tabIDs: tabIDs), folderID: folder.id)
+        }
         if visibleInsertion >= visibleIDs.count {
-            if let last = visibleIDs.last,
-               let folder = folders.first(where: { $0.tabIDs.contains(last) }),
-               let memberIndex = tabIDs.firstIndex(of: last) {
-                return SidebarDropTarget(index: memberIndex + 1, folderID: folder.id)
-            }
-            if let last = visibleIDs.last(where: { !folderIDs.contains($0) }),
-               let index = tabIDs.firstIndex(of: last) {
-                return SidebarDropTarget(index: index + 1, folderID: nil)
-            }
-            return SidebarDropTarget(index: tabIDs.count, folderID: nil)
+            return dropPastEnd(visibleIDs: visibleIDs, tabIDs: tabIDs, folders: folders, probe: probe)
         }
         let target = visibleIDs[visibleInsertion]
         if let folder = folders.first(where: { $0.id == target }) {
@@ -317,22 +375,47 @@ enum SidebarOutline {
             if let first = memberIndexes.min() {
                 return SidebarDropTarget(index: first, folderID: nil)
             }
-            return SidebarDropTarget(index: min(max(folder.anchor, 0), tabIDs.count), folderID: nil)
+            return SidebarDropTarget(index: clampedAnchor(folder, count: tabIDs.count), folderID: nil)
         }
         let index = tabIDs.firstIndex(of: target) ?? tabIDs.count
         if let folder = folders.first(where: { $0.tabIDs.contains(target) }) {
             return SidebarDropTarget(index: index, folderID: folder.id)
         }
-        // The gap under the last child is the bottom of the folder. A tab sitting
-        // just below the group joins there; dragging past that tab leaves the group.
         if visibleInsertion > 0 {
             let previous = visibleIDs[visibleInsertion - 1]
-            if let folder = folders.first(where: { $0.tabIDs.contains(previous) }),
-               let memberIndex = tabIDs.firstIndex(of: previous) {
-                return SidebarDropTarget(index: memberIndex + 1, folderID: folder.id)
+            if let edge = bottomEdge(previous: previous, folders: folders) {
+                if joinsBottom(edge: edge, nextID: target, probe: probe) {
+                    return SidebarDropTarget(index: indexAfter(edge.folder, tabIDs: tabIDs), folderID: edge.folder.id)
+                }
+                return SidebarDropTarget(index: index, folderID: nil)
             }
         }
         return SidebarDropTarget(index: index, folderID: nil)
+    }
+
+    /// Collapsed folder whose label the pointer is resting on. Firefox arms the
+    /// join only while overlap with that label stays above the grouping threshold,
+    /// which reaches through the top of the following row, and only after the dwell.
+    static func collapsedDwellFolder(
+        pointerY: CGFloat,
+        rows: [FolderDropRow],
+        folders: [TabFolder]
+    ) -> UUID? {
+        let collapsed = folders.filter(\.collapsed)
+        guard !collapsed.isEmpty else { return nil }
+        if let hit = rows.first(where: { row in
+            verticalSpan(row.frame).contains(pointerY) && collapsed.contains(where: { $0.id == row.id })
+        }) {
+            return hit.id
+        }
+        for row in rows where collapsed.contains(where: { $0.id == row.id }) {
+            let reach = max(row.frame.height, 1) * FolderDrop.joinReachFraction
+            let floor = row.frame.minY - reach
+            if pointerY < row.frame.minY, pointerY >= floor {
+                return row.id
+            }
+        }
+        return nil
     }
 
     /// Same visual slot and same folder. Joining or leaving a folder is a real drop
@@ -343,13 +426,15 @@ enum SidebarOutline {
         visibleInsertion: Int,
         visibleIDs: [UUID],
         tabIDs: [UUID],
-        folders: [TabFolder]
+        folders: [TabFolder],
+        probe: FolderDropProbe? = nil
     ) -> Bool {
         let target = dropTarget(
             visibleInsertion: visibleInsertion,
             visibleIDs: visibleIDs,
             tabIDs: tabIDs,
-            folders: folders
+            folders: folders,
+            probe: probe
         )
         let current = folders.first { $0.tabIDs.contains(movingTabID) }?.id
         if current != target.folderID { return false }
@@ -358,6 +443,86 @@ enum SidebarOutline {
             visibleInsertion: visibleInsertion,
             visibleIDs: visibleIDs
         )
+    }
+
+    private struct BottomEdge {
+        var folder: TabFolder
+        var rowID: UUID
+    }
+
+    private static func dropPastEnd(
+        visibleIDs: [UUID],
+        tabIDs: [UUID],
+        folders: [TabFolder],
+        probe: FolderDropProbe?
+    ) -> SidebarDropTarget {
+        guard let last = visibleIDs.last else {
+            return SidebarDropTarget(index: tabIDs.count, folderID: nil)
+        }
+        if let folder = folders.first(where: { $0.tabIDs.contains(last) }) {
+            let index = indexAfter(folder, tabIDs: tabIDs)
+            let edge = BottomEdge(folder: folder, rowID: last)
+            if joinsBottom(edge: edge, nextID: nil, probe: probe) {
+                return SidebarDropTarget(index: index, folderID: folder.id)
+            }
+            return SidebarDropTarget(index: index, folderID: nil)
+        }
+        if let folder = folders.first(where: { $0.id == last }) {
+            let index = indexAfter(folder, tabIDs: tabIDs)
+            if folder.tabIDs.isEmpty, !folder.collapsed,
+               joinsBottom(edge: BottomEdge(folder: folder, rowID: folder.id), nextID: nil, probe: probe) {
+                return SidebarDropTarget(index: index, folderID: folder.id)
+            }
+            return SidebarDropTarget(index: index, folderID: nil)
+        }
+        let folderIDs = Set(folders.map(\.id))
+        if let lastTab = visibleIDs.last(where: { !folderIDs.contains($0) }),
+           let index = tabIDs.firstIndex(of: lastTab) {
+            return SidebarDropTarget(index: index + 1, folderID: nil)
+        }
+        return SidebarDropTarget(index: tabIDs.count, folderID: nil)
+    }
+
+    /// Expanded folder bottom. `previous` is either the last visible child or an empty header.
+    private static func bottomEdge(previous: UUID, folders: [TabFolder]) -> BottomEdge? {
+        if let folder = folders.first(where: { $0.tabIDs.contains(previous) }) {
+            return BottomEdge(folder: folder, rowID: previous)
+        }
+        if let folder = folders.first(where: { $0.id == previous }), folder.tabIDs.isEmpty, !folder.collapsed {
+            return BottomEdge(folder: folder, rowID: folder.id)
+        }
+        return nil
+    }
+
+    /// Firefox drops after the last tab of a group once overlap falls below
+    /// `groupingThreshold`. Dragging down, that line is the last child's midpoint.
+    /// Dragging up, the top of the next row still joins.
+    private static func joinsBottom(edge: BottomEdge, nextID: UUID?, probe: FolderDropProbe?) -> Bool {
+        guard let probe, let lastChild = probe.rows.first(where: { $0.id == edge.rowID })?.frame else { return false }
+        let nextRow = nextID.flatMap { id in probe.rows.first(where: { $0.id == id })?.frame }
+        let height = max(lastChild.height, 1)
+        let reach = height * FolderDrop.joinReachFraction
+        if let nextRow {
+            if probe.draggingDown {
+                return probe.pointerY >= lastChild.midY
+            }
+            return probe.pointerY >= nextRow.maxY - reach
+        }
+        return probe.pointerY >= lastChild.minY - reach
+    }
+
+    private static func indexAfter(_ folder: TabFolder, tabIDs: [UUID]) -> Int {
+        let indexes = folder.tabIDs.compactMap { tabIDs.firstIndex(of: $0) }
+        if let last = indexes.max() { return last + 1 }
+        return clampedAnchor(folder, count: tabIDs.count)
+    }
+
+    private static func clampedAnchor(_ folder: TabFolder, count: Int) -> Int {
+        min(max(folder.anchor, 0), count)
+    }
+
+    private static func verticalSpan(_ frame: CGRect) -> ClosedRange<CGFloat> {
+        frame.minY...frame.maxY
     }
 
     static func sanitized(_ folders: [TabFolder], tabIDs: Set<UUID>) -> [TabFolder] {

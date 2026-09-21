@@ -50,8 +50,11 @@ struct SidebarView: View {
             .frame(maxWidth: .infinity)
             .overlay(alignment: .topLeading) {
                 if !model.showingArchive, let pin = dragCoordinator.pin, pin.windowID == model.id {
-                    TabInsertionPin(width: rowWidth)
-                        .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
+                    TabInsertionPin(
+                        width: rowWidth,
+                        leadingIndent: pin.folderID == nil ? 0 : ShellMetrics.sidebarGroupSpacing
+                    )
+                    .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
                 }
             }
             .background {

@@ -1469,50 +1469,192 @@ struct PrestelTests {
         #expect(inside.folderID == folder.id)
     }
 
-    @Test func droppingUnderTheLastFolderTabJoinsAtTheBottom() {
+    @Test func folderEdgeMatchesFirefoxVerticalTabOverlap() {
         let model = TerminalModel()
-        let first = model.selectedID!
-        let bottom = model.newTab().id
-        let after = model.newTab().id
-        let folder = model.makeFolder(containing: bottom)!
+        let above = model.selectedID!
+        let inside = model.newTab().id
+        let below = model.newTab().id
+        let folder = model.makeFolder(containing: inside)!
         let visible = model.sidebarVisualIDs
         let tabIDs = model.tabs.map(\.id)
-        #expect(visible == [first, folder.id, bottom, after])
-        let boundary = 3
-        let target = model.dropTarget(visibleInsertion: boundary, visibleIDs: visible)
-        #expect(target.folderID == folder.id)
-        #expect(target.index == tabIDs.firstIndex(of: bottom)! + 1)
-        #expect(!SidebarOutline.isStationaryDrop(
-            movingVisualID: after,
-            movingTabID: after,
-            visibleInsertion: boundary,
-            visibleIDs: visible,
-            tabIDs: tabIDs,
-            folders: model.folders
-        ))
-        #expect(SidebarOutline.isStationaryDrop(
-            movingVisualID: bottom,
-            movingTabID: bottom,
-            visibleInsertion: boundary,
-            visibleIDs: visible,
-            tabIDs: tabIDs,
-            folders: model.folders
-        ))
-        model.moveTab(after, to: target.index, folderID: target.folderID, assignsFolder: true)
-        #expect(model.folderContaining(after)?.id == folder.id)
-        #expect(model.folders[0].tabIDs == [bottom, after])
+        #expect(visible == [above, folder.id, inside, below])
+        let frames = folderStripFrames(count: visible.count)
+        let rows = zip(visible, frames).map { FolderDropRow(id: $0.0, frame: $0.1) }
+        let insideFrame = frames[2]
+        let belowFrame = frames[3]
 
-        let tail = TerminalModel()
-        let head = tail.selectedID!
-        let last = tail.newTab().id
-        _ = tail.makeFolder(containing: last)
-        let tailIDs = tail.sidebarVisualIDs
-        #expect(tailIDs == [head, tail.folders[0].id, last])
-        let belowList = tail.dropTarget(visibleInsertion: tailIDs.count, visibleIDs: tailIDs)
-        #expect(belowList.folderID == tail.folders[0].id)
-        #expect(belowList.index == tail.tabs.firstIndex(where: { $0.id == last })! + 1)
-        tail.moveTab(head, to: belowList.index, folderID: belowList.folderID, assignsFolder: true)
-        #expect(tail.folderContaining(head)?.id == tail.folders[0].id)
+        // Dragging down past the last folder tab's midpoint lands below the folder.
+        let downY = insideFrame.midY - 1
+        let downIndex = TabInsertionGeometry.insertionIndex(at: downY, rows: frames)
+        let down = model.dropTarget(
+            visibleInsertion: downIndex,
+            visibleIDs: visible,
+            probe: FolderDropProbe(pointerY: downY, rows: rows, draggingDown: true)
+        )
+        #expect(down.folderID == nil)
+        #expect(down.index == tabIDs.firstIndex(of: below))
+        #expect(!SidebarOutline.isStationaryDrop(
+            movingVisualID: inside,
+            movingTabID: inside,
+            visibleInsertion: downIndex,
+            visibleIDs: visible,
+            tabIDs: tabIDs,
+            folders: model.folders,
+            probe: FolderDropProbe(pointerY: downY, rows: rows, draggingDown: true)
+        ))
+        model.moveTab(above, to: down.index, folderID: down.folderID, assignsFolder: true)
+        #expect(model.folderContaining(above) == nil)
+        #expect(model.folderContaining(inside)?.id == folder.id)
+        #expect(model.sidebarVisualIDs == [folder.id, inside, above, below])
+
+        let rejoining = TerminalModel()
+        let loose = rejoining.selectedID!
+        let member = rejoining.newTab().id
+        let parked = rejoining.newTab().id
+        let targetFolder = rejoining.makeFolder(containing: member)!
+        let parkedVisible = rejoining.sidebarVisualIDs
+        let parkedFrames = folderStripFrames(count: parkedVisible.count)
+        let parkedRows = zip(parkedVisible, parkedFrames).map { FolderDropRow(id: $0.0, frame: $0.1) }
+        let parkedBelow = parkedFrames[3]
+        let reach = parkedBelow.height * FolderDrop.joinReachFraction
+        let upY = parkedBelow.maxY - reach + 1
+        let upIndex = TabInsertionGeometry.insertionIndex(at: upY, rows: parkedFrames)
+        let up = rejoining.dropTarget(
+            visibleInsertion: upIndex,
+            visibleIDs: parkedVisible,
+            probe: FolderDropProbe(pointerY: upY, rows: parkedRows, draggingDown: false)
+        )
+        #expect(up.folderID == targetFolder.id)
+        rejoining.moveTab(parked, to: up.index, folderID: up.folderID, assignsFolder: true)
+        #expect(rejoining.folderContaining(parked)?.id == targetFolder.id)
+        #expect(rejoining.folders[0].tabIDs == [member, parked])
+        #expect(rejoining.folderContaining(loose) == nil)
+
+        // Stopping short of that overlap, still on the tab below the folder, stays outside.
+        let shortY = belowFrame.midY + 1
+        let shortIndex = TabInsertionGeometry.insertionIndex(at: shortY, rows: frames)
+        let shortProbe = FolderDropProbe(pointerY: shortY, rows: rows, draggingDown: false)
+        let short = SidebarOutline.dropTarget(
+            visibleInsertion: shortIndex,
+            visibleIDs: visible,
+            tabIDs: tabIDs,
+            folders: [folder],
+            probe: shortProbe
+        )
+        #expect(short.folderID == nil)
+        #expect(SidebarOutline.isStationaryDrop(
+            movingVisualID: below,
+            movingTabID: below,
+            visibleInsertion: shortIndex,
+            visibleIDs: visible,
+            tabIDs: tabIDs,
+            folders: [folder],
+            probe: shortProbe
+        ))
+    }
+
+    @Test func folderEdgeDoesNotFlipOnAOnePixelReversal() {
+        let model = TerminalModel()
+        let member = model.newTab().id
+        let below = model.newTab().id
+        let folder = model.makeFolder(containing: member)!
+        let visible = model.sidebarVisualIDs
+        let frames = folderStripFrames(count: visible.count)
+        let rows = zip(visible, frames).map { FolderDropRow(id: $0.0, frame: $0.1) }
+        let upper = frames[2].midY
+        let lower = frames[3].maxY - frames[3].height * FolderDrop.joinReachFraction
+        let gap = (upper + lower) / 2
+        var direction: FolderDragDirection?
+        func sample(_ y: CGFloat) -> UUID? {
+            direction = FolderDrop.direction(after: direction, pointerY: y)
+            let index = TabInsertionGeometry.insertionIndex(at: y, rows: frames)
+            return model.dropTarget(
+                visibleInsertion: index,
+                visibleIDs: visible,
+                probe: FolderDropProbe(pointerY: y, rows: rows, draggingDown: direction?.draggingDown ?? true)
+            ).folderID
+        }
+
+        #expect(sample(upper + 8) == folder.id)
+        #expect(sample(gap) == nil)
+        #expect(sample(gap + 1) == nil)
+        let backUp = gap + FolderDrop.directionDeadzone + 1
+        #expect(backUp < upper)
+        #expect(sample(backUp) == folder.id)
+        #expect(visible.contains(below))
+    }
+
+    @Test func droppingPastTheLastFolderStaysOutsideUntilTheOverlapReach() {
+        let model = TerminalModel()
+        let head = model.selectedID!
+        let last = model.newTab().id
+        let folder = model.makeFolder(containing: last)!
+        let visible = model.sidebarVisualIDs
+        #expect(visible == [head, folder.id, last])
+        let frames = folderStripFrames(count: visible.count)
+        let rows = zip(visible, frames).map { FolderDropRow(id: $0.0, frame: $0.1) }
+        let lastFrame = frames[2]
+        let reach = lastFrame.height * FolderDrop.joinReachFraction
+
+        let outsideY = lastFrame.minY - reach - 1
+        let outside = model.dropTarget(
+            visibleInsertion: TabInsertionGeometry.insertionIndex(at: outsideY, rows: frames),
+            visibleIDs: visible,
+            probe: FolderDropProbe(pointerY: outsideY, rows: rows, draggingDown: true)
+        )
+        #expect(outside.folderID == nil)
+        #expect(outside.index == model.tabs.count)
+
+        let insideY = lastFrame.minY - reach + 1
+        let rejoined = model.dropTarget(
+            visibleInsertion: TabInsertionGeometry.insertionIndex(at: insideY, rows: frames),
+            visibleIDs: visible,
+            probe: FolderDropProbe(pointerY: insideY, rows: rows, draggingDown: false)
+        )
+        #expect(rejoined.folderID == folder.id)
+        #expect(rejoined.index == model.tabs.firstIndex(where: { $0.id == last })! + 1)
+
+        model.moveTab(head, to: outside.index, folderID: outside.folderID, assignsFolder: true)
+        #expect(model.folderContaining(head) == nil)
+        #expect(model.sidebarVisualIDs == [folder.id, last, head])
+    }
+
+    @Test func collapsedFolderJoinsOnlyAfterTheDwell() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let grouped = model.newTab().id
+        let folder = model.makeFolder(containing: grouped)!
+        model.toggleFolder(folder.id)
+        let visible = model.sidebarVisualIDs
+        #expect(visible == [first, folder.id])
+        let frames = folderStripFrames(count: visible.count)
+        let rows = zip(visible, frames).map { FolderDropRow(id: $0.0, frame: $0.1) }
+        let belowY = frames[1].minY - 4
+        let insertion = TabInsertionGeometry.insertionIndex(at: belowY, rows: frames)
+        let quick = model.dropTarget(
+            visibleInsertion: insertion,
+            visibleIDs: visible,
+            probe: FolderDropProbe(pointerY: belowY, rows: rows)
+        )
+        #expect(quick.folderID == nil)
+        #expect(quick.index == model.tabs.count)
+        #expect(SidebarOutline.collapsedDwellFolder(pointerY: frames[1].midY, rows: rows, folders: model.folders) == folder.id)
+        let held = model.dropTarget(
+            visibleInsertion: insertion,
+            visibleIDs: visible,
+            probe: FolderDropProbe(pointerY: belowY, rows: rows, collapsedJoinID: folder.id)
+        )
+        #expect(held.folderID == folder.id)
+        model.moveTab(first, to: held.index, folderID: held.folderID, assignsFolder: true)
+        #expect(model.folderContaining(first)?.id == folder.id)
+        #expect(model.folders[0].tabIDs == [grouped, first])
+    }
+
+    private func folderStripFrames(count: Int, height: CGFloat = 28, gap: CGFloat = 1) -> [CGRect] {
+        (0..<count).map { index in
+            let y = CGFloat(count - 1 - index) * (height + gap)
+            return CGRect(x: 0, y: y, width: 180, height: height)
+        }
     }
 
     @Test func folderMenuRenamesTheFolderRow() {

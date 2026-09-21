@@ -16,6 +16,10 @@ struct TabDragPayload: Codable, Equatable {
 struct TabDragPin: Equatable {
     let windowID: UUID
     let insertionIndex: Int
+    /// Canonical index in the destination window's tab array, measured before removal.
+    let canonicalIndex: Int
+    /// Non-nil when this drop joins a folder.
+    let folderID: UUID?
 }
 
 /// Pure geometry for vertical tab insertion. Screen space uses AppKit's bottom-left origin.
@@ -117,6 +121,10 @@ final class TabDragCoordinator: ObservableObject {
     private var cancelled = false
     private var finishing = false
     private var lastScreenPoint = CGPoint.zero
+    private var lastPointerY: CGFloat?
+    private var dragDirection: FolderDragDirection?
+    private var collapsedJoinID: UUID?
+    private var dwellGeneration = 0
     private var autoScrollTimer: Timer?
     private weak var autoScrollView: NSScrollView?
     private var autoScrollDeltaPerSecond: CGFloat = 0
@@ -206,6 +214,9 @@ final class TabDragCoordinator: ObservableObject {
         cancelled = false
         finishing = false
         lastScreenPoint = screenPoint
+        lastPointerY = nil
+        dragDirection = nil
+        cancelCollapsedDwell()
         installEscapeMonitor()
         updatePointer(screenPoint)
         refreshReturnAnimation()
@@ -239,13 +250,25 @@ final class TabDragCoordinator: ObservableObject {
         destination = nil
         pin = nil
         splitPreview = nil
+        cancelCollapsedDwell()
         stopAutoScroll()
         refreshReturnAnimation()
     }
 
     func updatePointer(_ screenPoint: CGPoint) {
+        let moved: Bool
+        if let lastPointerY {
+            moved = lastPointerY != screenPoint.y
+        } else {
+            moved = true
+        }
+        dragDirection = FolderDrop.direction(after: dragDirection, pointerY: screenPoint.y)
+        lastPointerY = screenPoint.y
         lastScreenPoint = screenPoint
         guard payload != nil, !cancelled else { return }
+        if moved {
+            scheduleCollapsedDwell(at: screenPoint)
+        }
         let next = resolveDestination(at: screenPoint)
         destination = next
         applyVisuals(next)
@@ -279,6 +302,7 @@ final class TabDragCoordinator: ObservableObject {
         autoScrollTimer?.invalidate()
         autoScrollTimer = nil
         removeEscapeMonitor()
+        cancelCollapsedDwell()
         payload = nil
         destination = nil
         pin = nil
@@ -286,6 +310,8 @@ final class TabDragCoordinator: ObservableObject {
         cancelled = false
         finishing = false
         draggingSession = nil
+        lastPointerY = nil
+        dragDirection = nil
         zones.removeAll()
         details.removeAll()
         rows.removeAll()
@@ -362,7 +388,70 @@ final class TabDragCoordinator: ObservableObject {
     private func pin(in windowID: UUID, at screenPoint: CGPoint) -> TabDragPin {
         let rows = visibleRowFrames(in: windowID)
         let index = TabInsertionGeometry.insertionIndex(at: screenPoint.y, rows: rows.map(\.frame))
-        return TabDragPin(windowID: windowID, insertionIndex: index)
+        let visibleIDs = rows.map(\.id)
+        let probe = FolderDropProbe(
+            pointerY: screenPoint.y,
+            rows: rows.map { FolderDropRow(id: $0.id, frame: $0.frame) },
+            draggingDown: dragDirection?.draggingDown ?? true,
+            collapsedJoinID: collapsedJoinID
+        )
+        let target = AppDelegate.current?.controllers[windowID]?.model.dropTarget(
+            visibleInsertion: index,
+            visibleIDs: visibleIDs,
+            probe: probe
+        ) ?? SidebarDropTarget(index: index, folderID: nil)
+        return TabDragPin(
+            windowID: windowID,
+            insertionIndex: index,
+            canonicalIndex: target.index,
+            folderID: target.folderID
+        )
+    }
+
+    /// Firefox restarts the collapsed-group timer on every pointer move and commits
+    /// the join only after the pointer has been still for `createGroup.delayMS`.
+    private func scheduleCollapsedDwell(at screenPoint: CGPoint) {
+        collapsedJoinID = nil
+        dwellGeneration += 1
+        let generation = dwellGeneration
+        guard let windowID = sidebarWindowID(at: screenPoint),
+              let model = AppDelegate.current?.controllers[windowID]?.model else { return }
+        let rows = visibleRowFrames(in: windowID).map { FolderDropRow(id: $0.id, frame: $0.frame) }
+        guard let folderID = SidebarOutline.collapsedDwellFolder(
+            pointerY: screenPoint.y,
+            rows: rows,
+            folders: model.folders
+        ) else { return }
+        Task { @MainActor in
+            do {
+                try await Task.sleep(for: FolderDrop.collapsedDwell)
+            } catch {
+                return
+            }
+            guard dwellGeneration == generation, payload != nil, !cancelled else { return }
+            collapsedJoinID = folderID
+            updatePointer(lastScreenPoint)
+        }
+    }
+
+    private func cancelCollapsedDwell() {
+        dwellGeneration += 1
+        collapsedJoinID = nil
+    }
+
+    private func sidebarWindowID(at screenPoint: CGPoint) -> UUID? {
+        let topNumber = NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: 0)
+        if let topWindow = NSApp.windows.first(where: { $0.windowNumber == topNumber }),
+           let controller = topWindow.windowController as? TerminalWindowController,
+           controller.model.sidebarVisible,
+           clipFrame(for: controller.model.id).contains(screenPoint) {
+            return controller.model.id
+        }
+        if let current = destination, case .list(let pin) = current,
+           clipFrame(for: pin.windowID).contains(screenPoint) {
+            return pin.windowID
+        }
+        return nil
     }
 
     private func clipFrame(for windowID: UUID) -> CGRect {
@@ -419,13 +508,11 @@ final class TabDragCoordinator: ObservableObject {
                 visibleIDs: visibleIDs
             )
         }
-        return SidebarOutline.isStationaryDrop(
-            movingVisualID: movingVisualID,
-            movingTabID: payload.tabID,
+        if model.folderContaining(payload.tabID)?.id != pin.folderID { return false }
+        return TabInsertionGeometry.isNoOpInsertion(
+            movingID: movingVisualID,
             visibleInsertion: pin.insertionIndex,
-            visibleIDs: visibleIDs,
-            tabIDs: model.tabs.map(\.id),
-            folders: model.folders
+            visibleIDs: visibleIDs
         )
     }
 
@@ -565,15 +652,13 @@ final class TabDragCoordinator: ObservableObject {
 
         switch destination {
         case .list(let pin) where pin.windowID == payload.sourceWindowID:
-            let target = dropTarget(for: pin, in: source.model)
-            source.model.moveTab(payload.tabID, to: target.index, folderID: target.folderID, assignsFolder: true)
+            source.model.moveTab(payload.tabID, to: pin.canonicalIndex, folderID: pin.folderID, assignsFolder: true)
             return
         case .list(let pin):
             guard let dest = app.controllers[pin.windowID] else { return }
-            let target = dropTarget(for: pin, in: dest.model)
             guard let tab = source.model.detachTab(payload.tabID) else { return }
-            dest.model.adopt(tab, at: target.index, selecting: true)
-            if let folderID = target.folderID {
+            dest.model.adopt(tab, at: pin.canonicalIndex, selecting: true)
+            if let folderID = pin.folderID {
                 dest.model.setFolderMembership(tab.id, folderID: folderID)
             }
             dest.refresh()
@@ -618,14 +703,6 @@ final class TabDragCoordinator: ObservableObject {
         DispatchQueue.main.async { dest.focusTerminal() }
     }
 
-    private func dropTarget(for destination: TabDragPin, in model: TerminalModel) -> SidebarDropTarget {
-        let visibleIDs = visibleRowFrames(in: model.id).map(\.id)
-        return model.dropTarget(
-            visibleInsertion: destination.insertionIndex,
-            visibleIDs: visibleIDs.isEmpty ? model.sidebarVisualIDs : visibleIDs
-        )
-    }
-
     private func closeIfEmpty(_ controller: TerminalWindowController) {
         guard controller.model.tabs.isEmpty else {
             controller.refresh()
@@ -637,12 +714,15 @@ final class TabDragCoordinator: ObservableObject {
     private func cleanupDragState() {
         stopAutoScroll()
         removeEscapeMonitor()
+        cancelCollapsedDwell()
         payload = nil
         destination = nil
         pin = nil
         splitPreview = nil
         cancelled = false
         draggingSession = nil
+        lastPointerY = nil
+        dragDirection = nil
     }
 
     private func refreshReturnAnimation() {
@@ -770,6 +850,9 @@ enum TabDragPreview {
 
 struct TabInsertionPin: View {
     var width: CGFloat
+    /// Shifts the needle in from the leading edge. The trailing edge stays put,
+    /// so a drop inside a folder draws a shorter pin, same as Lume's track reorder indicator.
+    var leadingIndent: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -783,8 +866,8 @@ struct TabInsertionPin: View {
                 .frame(width: 8, height: 8)
                 .offset(x: -4)
         }
-        .frame(width: max(20, width - 20), height: TabInsertionGeometry.pinHeight)
-        .padding(.leading, 10)
+        .frame(width: max(20, width - 20 - leadingIndent), height: TabInsertionGeometry.pinHeight)
+        .padding(.leading, 10 + leadingIndent)
         .padding(.trailing, 10)
         .frame(width: width, alignment: .leading)
         .allowsHitTesting(false)

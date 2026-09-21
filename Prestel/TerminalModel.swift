@@ -577,12 +577,13 @@ final class TerminalModel: ObservableObject {
         folders.first { $0.tabIDs.contains(tabID) }
     }
 
-    func dropTarget(visibleInsertion: Int, visibleIDs: [UUID]) -> SidebarDropTarget {
+    func dropTarget(visibleInsertion: Int, visibleIDs: [UUID], probe: FolderDropProbe? = nil) -> SidebarDropTarget {
         SidebarOutline.dropTarget(
             visibleInsertion: visibleInsertion,
             visibleIDs: visibleIDs,
             tabIDs: tabs.map(\.id),
-            folders: folders
+            folders: folders,
+            probe: probe
         )
     }
 
