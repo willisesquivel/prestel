@@ -142,6 +142,9 @@ final class TerminalModel: ObservableObject {
     @Published private(set) var archived: [TerminalSession] = []
     @Published var showingArchive = false
     @Published private(set) var selectedID: UUID?
+    /// Tabs participating in sidebar selection. `selectedID` remains the tab
+    /// whose terminal is on screen; this set owns multi-tab reorder intent.
+    @Published private(set) var selectedTabIDs: Set<UUID> = []
     @Published private(set) var splits: [SplitState] = []
     @Published private(set) var folders: [TabFolder] = []
     @Published var searchText = ""
@@ -152,6 +155,7 @@ final class TerminalModel: ObservableObject {
     @Published private(set) var recentlyClosed: [TabDescriptor] = []
     private var history: [UUID] = []
     private var historyIndex = -1
+    private var selectionAnchorID: UUID?
     private var subscriptions: [UUID: AnyCancellable] = [:]
 
     init(directory: String = ShellConfiguration.defaultDirectory, restoration: WindowDescriptor? = nil) {
@@ -183,11 +187,29 @@ final class TerminalModel: ObservableObject {
 
     /// Owns an existing live session. Does not spawn a replacement shell.
     init(adopting tab: TerminalSession) {
-        id = UUID()
+        self.id = UUID()
         tabs = [tab]
         subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         selectedID = tab.id
+        selectedTabIDs = [tab.id]
+        selectionAnchorID = tab.id
         history = [tab.id]
+        historyIndex = 0
+    }
+
+    /// Owns existing live sessions without replacing their PTYs.
+    init(adopting adoptedTabs: [TerminalSession], selectedID preferredID: UUID?) {
+        id = UUID()
+        tabs = adoptedTabs
+        for tab in adoptedTabs {
+            subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        }
+        let activeID = preferredID.flatMap { id in adoptedTabs.contains(where: { $0.id == id }) ? id : nil }
+            ?? adoptedTabs.first?.id
+        selectedID = activeID
+        selectedTabIDs = Set(adoptedTabs.map(\.id))
+        selectionAnchorID = activeID
+        history = activeID.map { [$0] } ?? []
         historyIndex = 0
     }
 
@@ -272,11 +294,39 @@ final class TerminalModel: ObservableObject {
     }
 
     func select(_ id: UUID) {
+        select(id, shift: false, command: false)
+    }
+
+    /// Lume-style ordered selection: plain click replaces, Shift selects the
+    /// inclusive range from the last plain-click anchor, and Command toggles.
+    func select(_ id: UUID, shift: Bool, command: Bool) {
         let open = tabs.first { $0.id == id }
         let archivedSession = archived.first { $0.id == id }
         guard let session = open ?? archivedSession else { return }
-        showingArchive = archivedSession != nil
-        if open != nil {
+        if command {
+            if selectedTabIDs.contains(id) {
+                selectedTabIDs.remove(id)
+            } else {
+                selectedTabIDs.insert(id)
+            }
+            selectionAnchorID = id
+        } else if shift,
+                  open != nil,
+                  let selectionAnchorID,
+                  let anchorIndex = tabs.firstIndex(where: { $0.id == selectionAnchorID }),
+                  let clickedIndex = tabs.firstIndex(where: { $0.id == id }) {
+            let range = min(anchorIndex, clickedIndex)...max(anchorIndex, clickedIndex)
+            selectedTabIDs = Set(range.map { tabs[$0].id })
+        } else {
+            selectedTabIDs = [id]
+            selectionAnchorID = id
+        }
+        activate(id, session: session, isArchived: archivedSession != nil)
+    }
+
+    private func activate(_ id: UUID, session: TerminalSession, isArchived: Bool) {
+        showingArchive = isArchived
+        if !isArchived {
             reconcileSplit(selecting: id)
         }
         guard id != selectedID else { return }
@@ -288,6 +338,26 @@ final class TerminalModel: ObservableObject {
         // Show fresh cwd immediately when switching tabs instead of waiting
         // for the next poll or output.
         session.refreshDirectoryFromProcess()
+    }
+
+    /// Dragging an already-selected tab keeps the full set. Crossing the drag
+    /// threshold on an unselected tab collapses the selection to that tab.
+    func prepareSelectionForDrag(_ id: UUID) {
+        guard tabs.contains(where: { $0.id == id }), !selectedTabIDs.contains(id) else { return }
+        select(id)
+    }
+
+    /// Canonical tab order carried by a drag. Split partners expand together,
+    /// matching the existing single-tab reorder rule.
+    func orderedDraggedTabIDs(grabbed id: UUID) -> [UUID] {
+        guard tabs.contains(where: { $0.id == id }) else { return [] }
+        var moving = selectedTabIDs.contains(id) ? selectedTabIDs : Set([id])
+        for selectedID in Array(moving) {
+            if let partner = split(containing: selectedID)?.partner(of: selectedID) {
+                moving.insert(partner)
+            }
+        }
+        return tabs.map(\.id).filter(moving.contains)
     }
 
     func split(with tabID: UUID, on side: SplitSide) {
@@ -374,6 +444,8 @@ final class TerminalModel: ObservableObject {
             reconcileSplit(selecting: id)
         }
         selectedID = id
+        selectedTabIDs = [id]
+        selectionAnchorID = id
         selectedTab?.refreshDirectoryFromProcess()
     }
 
@@ -381,36 +453,48 @@ final class TerminalModel: ObservableObject {
     /// `tabs` (0...count) measured *before* the moving tab is removed. Moving
     /// downward therefore has to account for the hole left by the removal.
     func moveTab(_ id: UUID, to insertionIndex: Int, folderID: UUID? = nil, assignsFolder: Bool = false) {
-        if let pair = split(containing: id) {
-            movePair(pair, to: insertionIndex)
-        } else if let from = tabs.firstIndex(where: { $0.id == id }) {
-            var destination = min(max(insertionIndex, 0), tabs.count)
-            if destination != from && destination != from + 1 {
-                let tab = tabs.remove(at: from)
-                if from < destination { destination -= 1 }
-                tabs.insert(tab, at: min(max(destination, 0), tabs.count))
-            }
-        }
+        moveTabs([id], to: insertionIndex, folderID: folderID, assignsFolder: assignsFolder)
+    }
+
+    /// Moves every supplied tab as one rigid block while preserving canonical
+    /// order. `insertionIndex` is measured before the block is removed.
+    func moveTabs(_ ids: [UUID], to insertionIndex: Int, folderID: UUID? = nil, assignsFolder: Bool = false) {
+        let movingIDs = expandedMoveIDs(ids)
+        guard !movingIDs.isEmpty else { return }
+        let movingTabs = tabs.filter { movingIDs.contains($0.id) }
+        let removedBeforeDestination = tabs.prefix(min(max(insertionIndex, 0), tabs.count))
+            .filter { movingIDs.contains($0.id) }.count
+        var destination = min(max(insertionIndex, 0), tabs.count)
+        destination -= removedBeforeDestination
+        tabs.removeAll { movingIDs.contains($0.id) }
+        destination = min(max(destination, 0), tabs.count)
+        tabs.insert(contentsOf: movingTabs, at: destination)
         if assignsFolder {
-            setFolderMembership(id, folderID: folderID)
+            setFolderMembership(Array(movingIDs), folderID: folderID)
         }
     }
 
-    private func movePair(_ pair: SplitState, to insertionIndex: Int) {
-        guard let firstIndex = tabs.firstIndex(where: { $0.id == pair.leadingID }),
-              let secondIndex = tabs.firstIndex(where: { $0.id == pair.trailingID }) else { return }
-        let lower = min(firstIndex, secondIndex)
-        let upper = max(firstIndex, secondIndex)
-        var destination = min(max(insertionIndex, 0), tabs.count)
-        if destination >= lower && destination <= upper + 1 { return }
+    func tabMoveWouldChange(_ ids: [UUID], to insertionIndex: Int, folderID: UUID?) -> Bool {
+        let movingIDs = expandedMoveIDs(ids)
+        guard !movingIDs.isEmpty else { return false }
+        let currentOrder = tabs.map(\.id)
+        let movingOrder = currentOrder.filter(movingIDs.contains)
+        let clamped = min(max(insertionIndex, 0), currentOrder.count)
+        let removedBefore = currentOrder.prefix(clamped).filter(movingIDs.contains).count
+        var rest = currentOrder.filter { !movingIDs.contains($0) }
+        rest.insert(contentsOf: movingOrder, at: min(max(clamped - removedBefore, 0), rest.count))
+        if rest != currentOrder { return true }
+        return movingIDs.contains { folderContaining($0)?.id != folderID }
+    }
 
-        let first = tabs[lower]
-        let second = tabs[upper]
-        tabs.remove(at: upper)
-        tabs.remove(at: lower)
-        if lower < destination { destination -= 2 }
-        tabs.insert(first, at: destination)
-        tabs.insert(second, at: destination + 1)
+    private func expandedMoveIDs(_ ids: [UUID]) -> Set<UUID> {
+        var result = Set(ids.filter { id in tabs.contains(where: { $0.id == id }) })
+        for id in Array(result) {
+            if let partner = split(containing: id)?.partner(of: id) {
+                result.insert(partner)
+            }
+        }
+        return result
     }
 
     /// Remove a tab from this window without terminating its process or recording recently-closed.
@@ -420,6 +504,8 @@ final class TerminalModel: ObservableObject {
         let partner = split(containing: id)?.partner(of: id)
         detachFromFolders(id)
         let tab = tabs.remove(at: index)
+        selectedTabIDs.remove(id)
+        if selectionAnchorID == id { selectionAnchorID = nil }
         subscriptions.removeValue(forKey: id)
         let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
         history.removeAll { $0 == id }
@@ -428,18 +514,67 @@ final class TerminalModel: ObservableObject {
         if selectedID == id {
             selectedID = nil
             selectNeighbor(at: index, preferred: partner)
+        } else if selectedTabIDs.isEmpty, let selectedID {
+            selectedTabIDs = [selectedID]
+            selectionAnchorID = selectedID
         }
         return tab
     }
 
+    /// Batch counterpart used by cross-window and detached-window drags.
+    /// Sessions remain live and are returned in their original tab order.
+    func detachTabs(_ ids: [UUID]) -> [TerminalSession] {
+        let movingIDs = expandedMoveIDs(ids)
+        guard !movingIDs.isEmpty else { return [] }
+        let originalTabs = tabs
+        let moving = originalTabs.filter { movingIDs.contains($0.id) }
+        let firstRemovedIndex = originalTabs.firstIndex { movingIDs.contains($0.id) } ?? 0
+        detachFromFolders(Array(movingIDs))
+        tabs.removeAll { movingIDs.contains($0.id) }
+        for id in movingIDs { subscriptions.removeValue(forKey: id) }
+        let removedThroughCursor = history.prefix(historyIndex + 1).filter(movingIDs.contains).count
+        history.removeAll { movingIDs.contains($0) }
+        historyIndex -= removedThroughCursor
+        splits.removeAll { movingIDs.contains($0.leadingID) || movingIDs.contains($0.trailingID) }
+        selectedTabIDs.subtract(movingIDs)
+        if let selectionAnchorID, movingIDs.contains(selectionAnchorID) {
+            self.selectionAnchorID = nil
+        }
+        if let selectedID, movingIDs.contains(selectedID) {
+            self.selectedID = nil
+            if !tabs.isEmpty {
+                let neighbor = tabs[min(firstRemovedIndex, tabs.count - 1)]
+                select(neighbor.id)
+            }
+        } else if selectedTabIDs.isEmpty, let selectedID {
+            selectedTabIDs = [selectedID]
+            selectionAnchorID = selectedID
+        }
+        return moving
+    }
+
     /// Take ownership of a live session already detached from another window.
     func adopt(_ tab: TerminalSession, at insertionIndex: Int, selecting: Bool) {
-        guard !tabs.contains(where: { $0.id == tab.id }) else { return }
+        adopt([tab], at: insertionIndex, selecting: selecting ? tab.id : nil)
+    }
+
+    /// Batch adoption preserves the source block's order and selection.
+    func adopt(_ adoptedTabs: [TerminalSession], at insertionIndex: Int, selecting activeID: UUID?) {
+        let adoptedTabs = adoptedTabs.filter { incoming in
+            !tabs.contains(where: { $0.id == incoming.id })
+        }
+        guard !adoptedTabs.isEmpty else { return }
         let index = min(max(insertionIndex, 0), tabs.count)
-        tabs.insert(tab, at: index)
-        observe(tab)
+        tabs.insert(contentsOf: adoptedTabs, at: index)
+        adoptedTabs.forEach(observe)
         searchText = ""
-        if selecting { select(tab.id) }
+        if let activeID, adoptedTabs.contains(where: { $0.id == activeID }) {
+            selectedTabIDs = Set(adoptedTabs.map(\.id))
+            selectionAnchorID = activeID
+            if let active = tab(id: activeID) {
+                activate(activeID, session: active, isArchived: false)
+            }
+        }
     }
 
     /// Hide a live session from the sidebar without terminating its process.
@@ -466,9 +601,11 @@ final class TerminalModel: ObservableObject {
         archived[index].close()
         archived.remove(at: index)
         subscriptions.removeValue(forKey: id)
+        selectedTabIDs.remove(id)
+        if selectionAnchorID == id { selectionAnchorID = nil }
         if selectedID == id {
             if archived.isEmpty {
-                selectedID = tabs.first?.id
+                if let first = tabs.first { select(first.id) }
             } else {
                 select(archived[min(index, archived.count - 1)].id)
             }
@@ -484,6 +621,8 @@ final class TerminalModel: ObservableObject {
         recentlyClosed = Array(recentlyClosed.suffix(20))
         tabs[index].close()
         tabs.remove(at: index)
+        selectedTabIDs.remove(id)
+        if selectionAnchorID == id { selectionAnchorID = nil }
         subscriptions.removeValue(forKey: id)
         // Preserve the cursor's position when entries before it disappear.
         let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
@@ -493,6 +632,9 @@ final class TerminalModel: ObservableObject {
         if selectedID == id {
             selectedID = nil
             selectNeighbor(at: index, preferred: partner)
+        } else if selectedTabIDs.isEmpty, let selectedID {
+            selectedTabIDs = [selectedID]
+            selectionAnchorID = selectedID
         }
     }
 
@@ -632,14 +774,15 @@ final class TerminalModel: ObservableObject {
     }
 
     func setFolderMembership(_ tabID: UUID, folderID: UUID?) {
-        var ids = [tabID]
-        if let partner = split(containing: tabID)?.partner(of: tabID) {
-            ids.append(partner)
-        }
-        detachFromFolders(ids)
+        setFolderMembership([tabID], folderID: folderID)
+    }
+
+    func setFolderMembership(_ tabIDs: [UUID], folderID: UUID?) {
+        let ids = expandedMoveIDs(tabIDs)
+        detachFromFolders(Array(ids))
         guard let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
-        for id in ids where tabs.contains(where: { $0.id == id }) && !folders[index].tabIDs.contains(id) {
-            folders[index].tabIDs.append(id)
+        for tab in tabs where ids.contains(tab.id) && !folders[index].tabIDs.contains(tab.id) {
+            folders[index].tabIDs.append(tab.id)
         }
     }
 

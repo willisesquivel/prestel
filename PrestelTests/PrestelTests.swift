@@ -565,6 +565,100 @@ struct PrestelTests {
         #expect(model.tabs.map(\.id) == [a, c, b, d])
     }
 
+    @Test func shiftTabSelectionUsesAnInclusiveStableRange() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+
+        model.select(b)
+        model.select(d, shift: true, command: false)
+        #expect(model.selectedTabIDs == Set([b, c, d]))
+        #expect(model.selectedID == d)
+
+        // Shift keeps the original plain-click anchor, matching Lume.
+        model.select(a, shift: true, command: false)
+        #expect(model.selectedTabIDs == Set([a, b]))
+        #expect(model.selectedID == a)
+
+        model.select(c)
+        #expect(model.selectedTabIDs == [c])
+    }
+
+    @Test func selectedTabsReorderAsOneRigidBlock() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        let e = model.newTab().id
+
+        model.select(b)
+        model.select(d, shift: true, command: false)
+        let moving = model.orderedDraggedTabIDs(grabbed: c)
+        #expect(moving == [b, c, d])
+        #expect(!model.tabMoveWouldChange(moving, to: 1, folderID: nil))
+        #expect(!model.tabMoveWouldChange(moving, to: 4, folderID: nil))
+
+        model.moveTabs(moving, to: 5)
+        #expect(model.tabs.map(\.id) == [a, e, b, c, d])
+        #expect(model.selectedTabIDs == Set([b, c, d]))
+
+        model.moveTabs(moving, to: 1)
+        #expect(model.tabs.map(\.id) == [a, b, c, d, e])
+    }
+
+    @Test func draggingAnUnselectedTabCollapsesTheSelection() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(first)
+        model.select(second, shift: true, command: false)
+        #expect(model.selectedTabIDs == Set([first, second]))
+
+        model.prepareSelectionForDrag(third)
+        #expect(model.selectedTabIDs == [third])
+        #expect(model.orderedDraggedTabIDs(grabbed: third) == [third])
+    }
+
+    @Test func batchTabTransferPreservesOrderSessionsAndSelection() {
+        let source = TerminalModel()
+        let destination = TerminalModel()
+        let a = source.selectedID!
+        let b = source.newTab()
+        let c = source.newTab()
+        let d = source.newTab().id
+        let destinationFirst = destination.selectedID!
+        let destinationLast = destination.newTab().id
+
+        source.select(b.id)
+        source.select(c.id, shift: true, command: false)
+        let extracted = source.detachTabs(source.orderedDraggedTabIDs(grabbed: b.id))
+        #expect(extracted.count == 2)
+        #expect(extracted[0] === b)
+        #expect(extracted[1] === c)
+        #expect(source.tabs.map(\.id) == [a, d])
+
+        destination.adopt(extracted, at: 1, selecting: c.id)
+        #expect(destination.tabs.map(\.id) == [destinationFirst, b.id, c.id, destinationLast])
+        #expect(destination.tabs[1] === b)
+        #expect(destination.tabs[2] === c)
+        #expect(destination.selectedID == c.id)
+        #expect(destination.selectedTabIDs == Set([b.id, c.id]))
+    }
+
+    @Test func draggingOneSplitMemberCarriesTheWholePair() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+
+        #expect(model.orderedDraggedTabIDs(grabbed: second) == [first, second])
+    }
+
     @Test func tabTransferMovesTheSameSessionWithoutClosingIt() {
         let source = TerminalModel()
         let destination = TerminalModel()

@@ -47,7 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     @discardableResult
     func createWindow(adopting tab: TerminalSession, near screenPoint: NSPoint) -> TerminalWindowController {
-        let controller = TerminalWindowController(model: TerminalModel(adopting: tab))
+        createWindow(adopting: [tab], selectedID: tab.id, near: screenPoint)
+    }
+
+    @discardableResult
+    func createWindow(adopting tabs: [TerminalSession], selectedID: UUID?, near screenPoint: NSPoint) -> TerminalWindowController {
+        let controller = TerminalWindowController(model: TerminalModel(adopting: tabs, selectedID: selectedID))
         controllers[controller.model.id] = controller
         controller.onClose = { [weak self] id in self?.controllers.removeValue(forKey: id) }
         if let window = controller.window {

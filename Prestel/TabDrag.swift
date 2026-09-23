@@ -10,7 +10,15 @@ extension NSPasteboard.PasteboardType {
 struct TabDragPayload: Codable, Equatable {
     let dragID: UUID
     let tabID: UUID
+    let tabIDs: [UUID]
     let sourceWindowID: UUID
+
+    init(dragID: UUID, tabID: UUID, sourceWindowID: UUID, tabIDs: [UUID]? = nil) {
+        self.dragID = dragID
+        self.tabID = tabID
+        self.tabIDs = tabIDs.flatMap { $0.isEmpty ? nil : $0 } ?? [tabID]
+        self.sourceWindowID = sourceWindowID
+    }
 }
 
 struct TabDragPin: Equatable {
@@ -233,6 +241,7 @@ final class TabDragCoordinator: ObservableObject {
             guard pin.windowID == payload.sourceWindowID else { return false }
             return insertionIsStationary(pin, payload: payload)
         case .split(let preview):
+            guard payload.tabIDs.count == 1 else { return true }
             guard let model = AppDelegate.current?.controllers[preview.windowID]?.model else { return false }
             return TabSplitGeometry.isNoOp(
                 movingID: payload.tabID,
@@ -341,7 +350,9 @@ final class TabDragCoordinator: ObservableObject {
             }
         }
 
-        if let topController, let split = splitDestination(in: topController, at: screenPoint) {
+        if payload?.tabIDs.count == 1,
+           let topController,
+           let split = splitDestination(in: topController, at: screenPoint) {
             return .split(split)
         }
 
@@ -499,6 +510,14 @@ final class TabDragCoordinator: ObservableObject {
     }
 
     private func insertionIsStationary(_ pin: TabDragPin, payload: TabDragPayload) -> Bool {
+        if let model = AppDelegate.current?.controllers[pin.windowID]?.model,
+           pin.windowID == payload.sourceWindowID {
+            return !model.tabMoveWouldChange(
+                payload.tabIDs,
+                to: pin.canonicalIndex,
+                folderID: pin.folderID
+            )
+        }
         let visibleIDs = visibleRowFrames(in: pin.windowID).map(\.id)
         let movingVisualID = occupyingVisualID(tabID: payload.tabID, windowID: pin.windowID, visualIDs: visibleIDs)
         guard let model = AppDelegate.current?.controllers[pin.windowID]?.model else {
@@ -652,15 +671,19 @@ final class TabDragCoordinator: ObservableObject {
 
         switch destination {
         case .list(let pin) where pin.windowID == payload.sourceWindowID:
-            source.model.moveTab(payload.tabID, to: pin.canonicalIndex, folderID: pin.folderID, assignsFolder: true)
+            source.model.moveTabs(
+                payload.tabIDs,
+                to: pin.canonicalIndex,
+                folderID: pin.folderID,
+                assignsFolder: true
+            )
             return
         case .list(let pin):
             guard let dest = app.controllers[pin.windowID] else { return }
-            guard let tab = source.model.detachTab(payload.tabID) else { return }
-            dest.model.adopt(tab, at: pin.canonicalIndex, selecting: true)
-            if let folderID = pin.folderID {
-                dest.model.setFolderMembership(tab.id, folderID: folderID)
-            }
+            let tabs = source.model.detachTabs(payload.tabIDs)
+            guard !tabs.isEmpty else { return }
+            dest.model.adopt(tabs, at: pin.canonicalIndex, selecting: payload.tabID)
+            dest.model.setFolderMembership(tabs.map(\.id), folderID: pin.folderID)
             dest.refresh()
             closeIfEmpty(source)
             dest.window?.makeKeyAndOrderFront(nil)
@@ -675,8 +698,9 @@ final class TabDragCoordinator: ObservableObject {
             break
         }
 
-        guard let tab = source.model.detachTab(payload.tabID) else { return }
-        let created = app.createWindow(adopting: tab, near: screenPoint)
+        let tabs = source.model.detachTabs(payload.tabIDs)
+        guard !tabs.isEmpty else { return }
+        let created = app.createWindow(adopting: tabs, selectedID: payload.tabID, near: screenPoint)
         closeIfEmpty(source)
         DispatchQueue.main.async { created.focusTerminal() }
     }
@@ -687,6 +711,7 @@ final class TabDragCoordinator: ObservableObject {
         source: TerminalWindowController,
         app: AppDelegate
     ) {
+        guard payload.tabIDs.count == 1 else { return }
         if preview.windowID == payload.sourceWindowID {
             source.model.split(with: payload.tabID, on: preview.side)
             source.refresh()
@@ -765,6 +790,11 @@ private struct WeakRow {
 // MARK: - Drag preview (tab icon + title on an accent plate)
 
 enum TabDragPreview {
+    struct Item {
+        let title: String
+        let symbol: String
+    }
+
     static let iconSide: CGFloat = 20
     static let iconGap: CGFloat = 8
     static let iconLeading: CGFloat = 8
@@ -772,6 +802,8 @@ enum TabDragPreview {
     static let plateCornerRadius: CGFloat = 6
     static let height: CGFloat = 28
     static let maxTitleWidth: CGFloat = 180
+    static let canvasPadding: CGFloat = 10
+    private static let stackOffset: CGFloat = 5
 
     static func size(for title: String) -> CGSize {
         CGSize(width: iconSide + iconGap + titleWidth(for: title) + plateHorizontalPadding, height: height)
@@ -784,13 +816,72 @@ enum TabDragPreview {
     }
 
     static func image(title: String, symbol: String, appearance: NSAppearance) -> NSImage {
-        let size = size(for: title)
-        return NSImage(size: size, flipped: false) { rect in
+        image(items: [Item(title: title, symbol: symbol)], totalCount: 1, appearance: appearance)
+    }
+
+    /// Lume-style stacked reorder art. The grabbed tab stays in front, up to
+    /// two selected companions peek from behind, and a badge shows block size.
+    static func image(items: [Item], totalCount: Int, appearance: NSAppearance) -> NSImage {
+        let visible = Array(items.prefix(3))
+        let fallback = visible.isEmpty ? [Item(title: "Tab", symbol: "terminal")] : visible
+        let largest = fallback.map { size(for: $0.title) }.reduce(CGSize.zero) { current, next in
+            CGSize(width: max(current.width, next.width), height: max(current.height, next.height))
+        }
+        let stack = CGFloat(max(0, fallback.count - 1)) * stackOffset
+        let canvasSize = CGSize(
+            width: largest.width + canvasPadding * 2 + stack,
+            height: largest.height + canvasPadding * 2 + stack
+        )
+        return NSImage(size: canvasSize, flipped: false) { _ in
             appearance.performAsCurrentDrawingAppearance {
-                draw(title: title, symbol: symbol, in: rect)
+                for (index, item) in fallback.enumerated().reversed() {
+                    let offset = CGFloat(index) * stackOffset
+                    drawStackItem(
+                        item,
+                        at: CGPoint(x: canvasPadding + offset, y: canvasPadding + offset),
+                        index: index
+                    )
+                }
+                if totalCount > 1 {
+                    drawCountBadge(totalCount, canvasSize: canvasSize)
+                }
             }
             return true
         }
+    }
+
+    private static func drawStackItem(_ item: Item, at origin: CGPoint, index: Int) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let itemSize = size(for: item.title)
+        context.saveGState()
+        context.translateBy(x: origin.x + itemSize.width / 2, y: origin.y + itemSize.height / 2)
+        let angle: CGFloat = index == 0 ? 0 : (index.isMultiple(of: 2) ? -1.8 : 1.8) * .pi / 180
+        context.rotate(by: angle)
+        let scale = 1 - CGFloat(index) * 0.025
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -itemSize.width / 2, y: -itemSize.height / 2)
+        context.setAlpha(1 - CGFloat(index) * 0.12)
+        draw(title: item.title, symbol: item.symbol, in: CGRect(origin: .zero, size: itemSize))
+        context.restoreGState()
+    }
+
+    private static func drawCountBadge(_ count: Int, canvasSize: CGSize) {
+        let width: CGFloat = count > 99 ? 30 : 22
+        let badge = CGRect(x: 1, y: canvasSize.height - 23, width: width, height: 22)
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(ovalIn: badge).fill()
+        NSColor.white.withAlphaComponent(0.72).setStroke()
+        NSBezierPath(ovalIn: badge).stroke()
+        let text = String(count) as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13.5, weight: .bold),
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = text.size(withAttributes: attributes)
+        text.draw(
+            at: CGPoint(x: badge.midX - textSize.width / 2, y: badge.midY - textSize.height / 2),
+            withAttributes: attributes
+        )
     }
 
     private static func draw(title: String, symbol: String, in rect: CGRect) {
@@ -884,6 +975,8 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     let title: String
     let symbol: String
     let onSelect: () -> Void
+    var onModifiedSelect: ((Bool, Bool) -> Void)?
+    var onPrepareDrag: (() -> Void)?
     let onClose: () -> Void
     let onHover: (Bool) -> Void
     var splitWithActiveEnabled = false
@@ -909,6 +1002,8 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.titleText = title
         nsView.symbol = symbol
         nsView.onSelect = onSelect
+        nsView.onModifiedSelect = onModifiedSelect
+        nsView.onPrepareDrag = onPrepareDrag
         nsView.onClose = onClose
         nsView.onHover = onHover
         nsView.splitWithActiveEnabled = splitWithActiveEnabled
@@ -939,6 +1034,8 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var titleText = ""
     var symbol = "terminal"
     var onSelect: (() -> Void)?
+    var onModifiedSelect: ((Bool, Bool) -> Void)?
+    var onPrepareDrag: (() -> Void)?
     var onClose: (() -> Void)?
     var onHover: ((Bool) -> Void)?
     var splitWithActiveEnabled = false
@@ -958,6 +1055,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     private var hovering = false
     private var registered = false
     private var hoverSync: DispatchWorkItem?
+    private var activePayload: TabDragPayload?
 
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1044,6 +1142,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         defer {
             mouseDownEvent = nil
             didStartDrag = false
+            activePayload = nil
         }
         if didStartDrag { return }
         if event.clickCount >= 2, clickIsOnTitle(event) {
@@ -1051,7 +1150,13 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             return
         }
         if event.clickCount >= 2 { return }
-        onSelect?()
+        let shift = event.modifierFlags.contains(.shift)
+        let command = event.modifierFlags.contains(.command)
+        if let onModifiedSelect {
+            onModifiedSelect(shift, command)
+        } else {
+            onSelect?()
+        }
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -1181,18 +1286,31 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     private func beginTabDrag(current: NSEvent) {
         guard let tabID else { return }
+        onPrepareDrag?()
         didStartDrag = true
-        let payload = TabDragPayload(dragID: UUID(), tabID: tabID, sourceWindowID: windowID)
+        let ids = AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
+        let payload = TabDragPayload(
+            dragID: UUID(),
+            tabID: tabID,
+            sourceWindowID: windowID,
+            tabIDs: ids?.isEmpty == false ? ids : [tabID]
+        )
+        activePayload = payload
         let pasteboardItem = NSPasteboardItem()
         if let data = try? JSONEncoder().encode(payload) {
             pasteboardItem.setData(data, forType: .prestelTab)
         }
         let item = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        let preview = TabDragPreview.image(title: titleText, symbol: symbol, appearance: effectiveAppearance)
+        let previewItems = dragPreviewItems(for: payload)
+        let preview = TabDragPreview.image(
+            items: previewItems,
+            totalCount: payload.tabIDs.count,
+            appearance: effectiveAppearance
+        )
         let size = preview.size
         let rest = CGRect(
-            x: TabDragPreview.iconLeading,
-            y: (bounds.height - size.height) / 2,
+            x: TabDragPreview.iconLeading - TabDragPreview.canvasPadding,
+            y: (bounds.height - TabDragPreview.height) / 2 - TabDragPreview.canvasPadding,
             width: size.width,
             height: size.height
         )
@@ -1200,6 +1318,20 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         let session = beginDraggingSession(with: [item], event: current, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = true
         session.draggingFormation = .default
+    }
+
+    private func dragPreviewItems(for payload: TabDragPayload) -> [TabDragPreview.Item] {
+        guard let model = AppDelegate.current?.controllers[windowID]?.model else {
+            return [.init(title: titleText, symbol: symbol)]
+        }
+        let ordered = [payload.tabID] + payload.tabIDs.filter { $0 != payload.tabID }
+        return ordered.compactMap { id in
+            guard let tab = model.tab(id: id) else { return nil }
+            return TabDragPreview.Item(
+                title: tab.displayTitle,
+                symbol: tab.kind == .settings ? "gearshape.fill" : "terminal"
+            )
+        }
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -1211,7 +1343,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
         didStartDrag = true
         guard let tabID else { return }
-        let payload = TabDragPayload(dragID: UUID(), tabID: tabID, sourceWindowID: windowID)
+        let payload = activePayload ?? TabDragPayload(
+            dragID: UUID(),
+            tabID: tabID,
+            sourceWindowID: windowID,
+            tabIDs: AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
+        )
         TabDragCoordinator.shared.begin(payload: payload, at: screenPoint, session: session)
     }
 
@@ -1225,6 +1362,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
         didStartDrag = false
         mouseDownEvent = nil
+        activePayload = nil
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

@@ -17,12 +17,15 @@ struct SidebarView: View {
                 if model.showingArchive {
                     archivedList
                 } else {
-                    ForEach(model.sidebarSections) { section in
+                    let sections = model.sidebarSections
+                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                         switch section {
                         case .loose(let item):
                             SidebarItemRow(
                                 model: model,
                                 item: item,
+                                previousItem: looseItem(at: index - 1, in: sections),
+                                nextItem: looseItem(at: index + 1, in: sections),
                                 width: rowWidth,
                                 renaming: renaming,
                                 closeTab: closeTab,
@@ -92,6 +95,11 @@ struct SidebarView: View {
         .scrollClipDisabled()
         .scrollEdgeEffectStyle(.hard, for: .vertical)
         .frame(width: width)
+    }
+
+    private func looseItem(at index: Int, in sections: [SidebarSection]) -> SidebarTabItem? {
+        guard sections.indices.contains(index), case .loose(let item) = sections[index] else { return nil }
+        return item
     }
 
     @ViewBuilder
@@ -212,10 +220,12 @@ private struct FolderSection: View {
                 onDelete: { model.deleteFolder(group.folder.id) }
             )
             VStack(alignment: .trailing, spacing: ShellMetrics.sidebarRowSpacing) {
-                ForEach(group.children) { item in
+                ForEach(Array(group.children.enumerated()), id: \.element.id) { index, item in
                     SidebarItemRow(
                         model: model,
                         item: item,
+                        previousItem: index > 0 ? group.children[index - 1] : nil,
+                        nextItem: index + 1 < group.children.count ? group.children[index + 1] : nil,
                         width: width - 12,
                         acceptsPointer: group.showsChildren,
                         renaming: renaming,
@@ -249,6 +259,8 @@ private struct FolderSection: View {
 private struct SidebarItemRow: View {
     @ObservedObject var model: TerminalModel
     let item: SidebarTabItem
+    var previousItem: SidebarTabItem?
+    var nextItem: SidebarTabItem?
     let width: CGFloat
     var acceptsPointer = true
     let renaming: SidebarRenameTarget?
@@ -258,6 +270,20 @@ private struct SidebarItemRow: View {
     let cancelRename: () -> Void
 
     var body: some View {
+        row
+            .background {
+                SidebarSelectionChrome(
+                    item: item,
+                    previousItem: previousItem,
+                    nextItem: nextItem,
+                    selectedTabIDs: model.selectedTabIDs
+                )
+            }
+            .animation(.easeInOut(duration: 0.16), value: model.selectedTabIDs)
+    }
+
+    @ViewBuilder
+    private var row: some View {
         if item.isPair,
            let leading = model.tab(id: item.members[0]),
            let trailing = model.tab(id: item.members[1]) {
@@ -266,11 +292,15 @@ private struct SidebarItemRow: View {
                 listRowID: item.id,
                 leading: leading,
                 trailing: trailing,
-                selectedID: model.selectedID,
+                selectedTabIDs: model.selectedTabIDs,
                 width: width,
                 acceptsPointer: acceptsPointer,
                 renaming: renaming,
                 onSelect: { model.select($0) },
+                onModifiedSelect: { id, shift, command in
+                    model.select(id, shift: shift, command: command)
+                },
+                onPrepareDrag: { model.prepareSelectionForDrag($0) },
                 onClose: closeTab,
                 onSplitWithActive: { model.split(with: $0, on: .trailing) },
                 onUnsplit: { model.unsplit(tabID: leading.id) },
@@ -288,12 +318,16 @@ private struct SidebarItemRow: View {
                 tabID: session.id,
                 title: session.displayTitle,
                 symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
-                isSelected: model.selectedID == session.id,
+                isSelected: model.selectedTabIDs.contains(session.id),
                 width: width,
                 acceptsPointer: acceptsPointer,
                 help: "\(session.displayTitle) — \(session.directory)",
                 isRenaming: renaming == .tab(session.id),
                 onSelect: { model.select(session.id) },
+                onModifiedSelect: { shift, command in
+                    model.select(session.id, shift: shift, command: command)
+                },
+                onPrepareDrag: { model.prepareSelectionForDrag(session.id) },
                 onClose: { closeTab(session.id) },
                 splitWithActiveEnabled: model.selectedID != session.id,
                 onSplitWithActive: { model.split(with: session.id, on: .trailing) },
@@ -318,6 +352,81 @@ private struct SidebarItemRow: View {
     }
 }
 
+/// One continuous Lume-style selection band. Each half records whether a
+/// split-tab segment occupies it, then bridges the list's 1pt row spacing.
+private struct SidebarSelectionChrome: View {
+    let item: SidebarTabItem
+    let previousItem: SidebarTabItem?
+    let nextItem: SidebarTabItem?
+    let selectedTabIDs: Set<UUID>
+
+    private let cornerRadius: CGFloat = 7
+    private var current: Occupancy { occupancy(of: item) }
+    private var previous: Occupancy { occupancy(of: previousItem) }
+    private var next: Occupancy { occupancy(of: nextItem) }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let halfWidth = geometry.size.width / 2
+            ZStack(alignment: .topLeading) {
+                if current.leading {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: previous.leading ? 0 : cornerRadius,
+                        bottomLeadingRadius: next.leading ? 0 : cornerRadius,
+                        bottomTrailingRadius: next.leading || current.trailing ? 0 : cornerRadius,
+                        topTrailingRadius: previous.leading || current.trailing ? 0 : cornerRadius,
+                        style: .continuous
+                    )
+                    .fill(selectionColor)
+                    .frame(
+                        width: halfWidth,
+                        height: geometry.size.height + (next.leading ? ShellMetrics.sidebarRowSpacing : 0)
+                    )
+                }
+
+                if current.trailing {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: previous.trailing || current.leading ? 0 : cornerRadius,
+                        bottomLeadingRadius: next.trailing || current.leading ? 0 : cornerRadius,
+                        bottomTrailingRadius: next.trailing ? 0 : cornerRadius,
+                        topTrailingRadius: previous.trailing ? 0 : cornerRadius,
+                        style: .continuous
+                    )
+                    .fill(selectionColor)
+                    .frame(
+                        width: halfWidth,
+                        height: geometry.size.height + (next.trailing ? ShellMetrics.sidebarRowSpacing : 0)
+                    )
+                    .offset(x: halfWidth)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private var selectionColor: Color {
+        Color.primary.opacity(0.16)
+    }
+
+    private func occupancy(of item: SidebarTabItem?) -> Occupancy {
+        guard let item, let first = item.members.first else { return Occupancy() }
+        if item.members.count == 1 {
+            let selected = selectedTabIDs.contains(first)
+            return Occupancy(leading: selected, trailing: selected)
+        }
+        return Occupancy(
+            leading: selectedTabIDs.contains(first),
+            trailing: item.members.dropFirst().first.map(selectedTabIDs.contains) ?? false
+        )
+    }
+
+    private struct Occupancy {
+        var leading = false
+        var trailing = false
+    }
+}
+
 // MARK: - Sidebar row (28pt, 20px rounded-square tile)
 
 private struct SidebarRow: View {
@@ -331,6 +440,8 @@ private struct SidebarRow: View {
     let help: String
     var isRenaming = false
     let onSelect: () -> Void
+    var onModifiedSelect: ((Bool, Bool) -> Void)?
+    var onPrepareDrag: (() -> Void)?
     let onClose: () -> Void
     var splitWithActiveEnabled = false
     var onSplitWithActive: (() -> Void)?
@@ -361,6 +472,8 @@ private struct SidebarRow: View {
                         title: title,
                         symbol: symbol,
                         onSelect: onSelect,
+                        onModifiedSelect: onModifiedSelect,
+                        onPrepareDrag: onPrepareDrag,
                         onClose: onClose,
                         onHover: { _ in },
                         splitWithActiveEnabled: splitWithActiveEnabled,
@@ -418,7 +531,7 @@ private struct SidebarRow: View {
 
     private var backgroundColor: Color {
         if isSelected {
-            return Color.primary.opacity(0.16)
+            return .clear
         }
         if isHovered {
             return Color.primary.opacity(0.075)
@@ -432,11 +545,13 @@ private struct CombinedSidebarRow: View {
     let listRowID: UUID
     let leading: TerminalSession
     let trailing: TerminalSession
-    let selectedID: UUID?
+    let selectedTabIDs: Set<UUID>
     let width: CGFloat
     var acceptsPointer = true
     let renaming: SidebarRenameTarget?
     let onSelect: (UUID) -> Void
+    let onModifiedSelect: (UUID, Bool, Bool) -> Void
+    let onPrepareDrag: (UUID) -> Void
     let onClose: (UUID) -> Void
     let onSplitWithActive: (UUID) -> Void
     let onUnsplit: () -> Void
@@ -455,14 +570,14 @@ private struct CombinedSidebarRow: View {
 
     private var showsDivider: Bool {
         !hoveringLeading && !hoveringTrailing
-            && selectedID != leading.id && selectedID != trailing.id
+            && !selectedTabIDs.contains(leading.id) && !selectedTabIDs.contains(trailing.id)
     }
 
     var body: some View {
         HStack(spacing: 0) {
             segment(
                 session: leading,
-                isFocused: selectedID == leading.id,
+                isSelected: selectedTabIDs.contains(leading.id),
                 isHovered: hoveringLeading
             )
             ZStack {
@@ -475,13 +590,13 @@ private struct CombinedSidebarRow: View {
             .frame(width: ShellMetrics.sidebarRowSpacing)
             segment(
                 session: trailing,
-                isFocused: selectedID == trailing.id,
+                isSelected: selectedTabIDs.contains(trailing.id),
                 isHovered: hoveringTrailing
             )
         }
         .frame(height: ShellMetrics.sidebarRowHeight)
         .animation(.easeInOut(duration: 0.14), value: hover.hoveredRowKey)
-        .animation(.easeInOut(duration: 0.16), value: selectedID)
+        .animation(.easeInOut(duration: 0.16), value: selectedTabIDs)
         .frame(width: width)
         .help("\(leading.displayTitle) / \(trailing.displayTitle)")
     }
@@ -489,17 +604,17 @@ private struct CombinedSidebarRow: View {
     @ViewBuilder
     private func segment(
         session: TerminalSession,
-        isFocused: Bool,
+        isSelected: Bool,
         isHovered: Bool
     ) -> some View {
         let renamingThis = renaming == .tab(session.id)
         if renamingThis {
-            segmentLabel(session: session, isFocused: isFocused, isHovered: isHovered)
+            segmentLabel(session: session, isSelected: isSelected, isHovered: isHovered)
         } else {
             Button {
                 onSelect(session.id)
             } label: {
-                segmentLabel(session: session, isFocused: isFocused, isHovered: isHovered)
+                segmentLabel(session: session, isSelected: isSelected, isHovered: isHovered)
             }
             .buttonStyle(.plain)
             .overlay {
@@ -511,6 +626,10 @@ private struct CombinedSidebarRow: View {
                     title: session.displayTitle,
                     symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
                     onSelect: { onSelect(session.id) },
+                    onModifiedSelect: { shift, command in
+                        onModifiedSelect(session.id, shift, command)
+                    },
+                    onPrepareDrag: { onPrepareDrag(session.id) },
                     onClose: { onClose(session.id) },
                     onHover: { _ in },
                     splitWithActiveEnabled: false,
@@ -524,21 +643,21 @@ private struct CombinedSidebarRow: View {
                 )
                 }
             }
-            .accessibilityAddTraits(isFocused ? .isSelected : [])
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityLabel(session.displayTitle)
         }
     }
 
     private func segmentLabel(
         session: TerminalSession,
-        isFocused: Bool,
+        isSelected: Bool,
         isHovered: Bool
     ) -> some View {
         HStack(spacing: 8) {
             SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal")
             SidebarTitleLabel(
                 title: session.displayTitle,
-                isSelected: isFocused,
+                isSelected: isSelected,
                 isRenaming: renaming == .tab(session.id),
                 onCommit: { onCommitRename(session.id, $0) },
                 onCancel: onCancelRename
@@ -550,14 +669,14 @@ private struct CombinedSidebarRow: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(segmentBackground(isFocused: isFocused, isHovered: isHovered))
+                .fill(segmentBackground(isSelected: isSelected, isHovered: isHovered))
         }
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func segmentBackground(isFocused: Bool, isHovered: Bool) -> Color {
-        if isFocused {
-            return Color.primary.opacity(0.16)
+    private func segmentBackground(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected {
+            return .clear
         }
         if isHovered {
             return Color.primary.opacity(0.075)
