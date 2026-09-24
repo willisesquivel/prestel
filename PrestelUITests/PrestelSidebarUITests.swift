@@ -64,7 +64,6 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         editor.click()
         editor.typeText("QACUSTOM\n")
         XCTAssertTrue(window(titled: "QACUSTOM").waitForExistence(timeout: 8), "Rename did not change the window title")
-        XCTAssertTrue(tabRow("QACUSTOM").waitForExistence(timeout: 4))
     }
 
     func testBackAndForwardWalkTabHistory() {

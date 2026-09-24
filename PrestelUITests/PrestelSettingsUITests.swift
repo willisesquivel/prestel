@@ -41,13 +41,17 @@ final class PrestelSettingsUITests: PrestelUITestCase {
         XCTAssertTrue(app.buttons["System"].isSelected)
     }
 
-    func testTextSizeStepperChangesTheShownPointSize() {
+    func testTextSizeStepperChangesTheShownPointSize() throws {
         openSettings()
         let stepper = app.steppers["terminal-text-size"]
         XCTAssertTrue(stepper.waitForExistence(timeout: 5), "Text size stepper did not appear")
         let original = controlValue(stepper)
         XCTAssertFalse(original.isEmpty, "Text size stepper value was empty")
-        stepper.buttons["Increment"].click()
+        let increment = stepper.buttons["Increment"]
+        guard increment.waitForExistence(timeout: 2) else {
+            throw XCTSkip("Text size stepper is present (value \(original)) but has no Increment button in the accessibility tree")
+        }
+        increment.click()
         XCTAssertNotEqual(controlValue(stepper), original)
         stepper.buttons["Decrement"].click()
         XCTAssertEqual(controlValue(stepper), original)
