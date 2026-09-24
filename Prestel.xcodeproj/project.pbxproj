@@ -37,12 +37,20 @@
 		A10000000000000000000031 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */; };
 		A10000000000000000000032 /* AppColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000032 /* AppColors.swift */; };
 		A10000000000000000000033 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000033 /* Assets.xcassets */; };
+		A10000000000000000000040 /* PrestelLiveUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000040 /* PrestelLiveUITests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		A30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A70000000000000000000001;
+			remoteInfo = Prestel;
+		};
+		A30000000000000000000003 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A90000000000000000000001 /* Project object */;
 			proxyType = 1;
@@ -85,6 +93,8 @@
 		A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000032 /* AppColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppColors.swift; sourceTree = "<group>"; };
 		A20000000000000000000033 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A20000000000000000000040 /* PrestelLiveUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelLiveUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000041 /* PrestelUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PrestelUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -104,6 +114,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A40000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -112,6 +129,7 @@
 			children = (
 				A50000000000000000000002 /* Prestel */,
 				A50000000000000000000003 /* PrestelTests */,
+				A50000000000000000000006 /* PrestelUITests */,
 				A2000000000000000000000D /* README.md */,
 				A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */,
 				A2000000000000000000000E /* Icon/Prestel.icon */,
@@ -157,6 +175,7 @@
 			children = (
 				A2000000000000000000000B /* Prestel.app */,
 				A2000000000000000000000C /* PrestelTests.xctest */,
+				A20000000000000000000041 /* PrestelUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -176,6 +195,14 @@
 				A2000000000000000000002B /* ReviewSyntaxHighlighter.swift */,
 			);
 			path = Review;
+			sourceTree = "<group>";
+		};
+		A50000000000000000000006 /* PrestelUITests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000040 /* PrestelLiveUITests.swift */,
+			);
+			path = PrestelUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -219,6 +246,23 @@
 			productReference = A2000000000000000000000C /* PrestelTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		A70000000000000000000003 /* PrestelUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A80000000000000000000004 /* Build configuration list for PBXNativeTarget "PrestelUITests" */;
+			buildPhases = (
+				A60000000000000000000004 /* Sources */,
+				A40000000000000000000003 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A30000000000000000000004 /* PBXTargetDependency */,
+			);
+			name = PrestelUITests;
+			productName = PrestelUITests;
+			productReference = A20000000000000000000041 /* PrestelUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -233,6 +277,10 @@
 						CreatedOnToolsVersion = 26.5;
 					};
 					A70000000000000000000002 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = A70000000000000000000001;
+					};
+					A70000000000000000000003 = {
 						CreatedOnToolsVersion = 26.5;
 						TestTargetID = A70000000000000000000001;
 					};
@@ -257,6 +305,7 @@
 			targets = (
 				A70000000000000000000001 /* Prestel */,
 				A70000000000000000000002 /* PrestelTests */,
+				A70000000000000000000003 /* PrestelUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -316,6 +365,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A60000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000040 /* PrestelLiveUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -323,6 +380,11 @@
 			isa = PBXTargetDependency;
 			target = A70000000000000000000001 /* Prestel */;
 			targetProxy = A30000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		A30000000000000000000004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A70000000000000000000001 /* Prestel */;
+			targetProxy = A30000000000000000000003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -486,6 +548,36 @@
 			};
 			name = Release;
 		};
+		B10000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.PrestelUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Prestel;
+			};
+			name = Debug;
+		};
+		B10000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEAD_CODE_STRIPPING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.PrestelUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Prestel;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -512,6 +604,15 @@
 			buildConfigurations = (
 				B10000000000000000000005 /* Debug */,
 				B10000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A80000000000000000000004 /* Build configuration list for PBXNativeTarget "PrestelUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B10000000000000000000007 /* Debug */,
+				B10000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

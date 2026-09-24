@@ -1,0 +1,114 @@
+# Builds Prestel on a GitHub-hosted Mac, runs the existing unit tests, then
+# runs XCUITests that launch Prestel.app and drive windows, tabs, and a live PTY.
+#
+# Triggers: pull_request, push to main, and Actions → Prestel QA → Run workflow.
+# UI tests call XCUIApplication.launch(), which starts the built .app in the
+# runner's GUI session. The session is not a physical display; automation mode
+# is enabled below so Xcode can drive it without a person at the keyboard.
+name: Prestel QA
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: prestel-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Build, unit tests, launch UI tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          elif [ -d /Applications/Xcode.app ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcodebuild -version
+          sw_vers
+
+      - name: Enable UI automation without a login prompt
+        run: |
+          set -euo pipefail
+          # Hosted images usually already allow this. Re-assert it so a fresh
+          # image does not stall on "Timed out while enabling automation mode."
+          sudo automationmodetool enable-automationmode-without-authentication || true
+          automationmodetool || true
+
+      - name: Resolve Swift packages
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project Prestel.xcodeproj \
+            -scheme Prestel \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/.build/SourcePackages"
+
+      - name: Build for testing
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcodebuild build-for-testing \
+            -project Prestel.xcodeproj \
+            -scheme Prestel \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/.build/SourcePackages" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM= \
+            | tee build/build.log
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building \
+            -project Prestel.xcodeproj \
+            -scheme Prestel \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            -only-testing:PrestelTests \
+            -resultBundlePath "$GITHUB_WORKSPACE/build/unit.xcresult" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM=
+
+      - name: UI tests that launch Prestel.app
+        run: |
+          set -euo pipefail
+          # PrestelUITests is an XCUITest bundle. xcodebuild starts
+          # PrestelUITests-Runner, which launches Prestel.app as a separate
+          # process and drives menus, windows, tabs, and shell input.
+          xcodebuild test-without-building \
+            -project Prestel.xcodeproj \
+            -scheme Prestel \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
+            -only-testing:PrestelUITests \
+            -resultBundlePath "$GITHUB_WORKSPACE/build/ui.xcresult" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM=
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prestel-qa-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            build/build.log
+            build/unit.xcresult
+            build/ui.xcresult
