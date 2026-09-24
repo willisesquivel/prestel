@@ -447,6 +447,8 @@ final class TerminalModel: ObservableObject {
     func unsplit(tabID: UUID? = nil) {
         guard let id = tabID ?? selectedID else { return }
         splits.removeAll { $0.contains(id) }
+        AppDelegate.current?.commandRevision &+= 1
+        SplitMenuState.sync()
     }
 
     func resizeSplit(to proposedFraction: Double, along extent: CGFloat) {

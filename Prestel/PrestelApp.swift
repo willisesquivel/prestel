@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         ) { _ in
             MainActor.assumeIsolated {
                 TerminalFontSize.syncZoomMenuItems()
+                SplitMenuState.sync()
             }
         }
         guard !Self.isTesting else { return }

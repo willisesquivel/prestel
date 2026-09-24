@@ -56,6 +56,16 @@ struct PrestelCommands: Commands {
     }
 }
 
+/// View-menu enabled state is a SwiftUI snapshot. Unsplit has to follow the
+/// live pair, the same way Actual Size follows the live font size.
+@MainActor
+enum SplitMenuState {
+    static func sync() {
+        guard let item = NSApp.mainMenu?.item(withTitle: "View")?.submenu?.item(withTitle: "Unsplit Tabs") else { return }
+        item.isEnabled = AppDelegate.current?.keyController?.model.visibleSplit != nil
+    }
+}
+
 @MainActor
 enum CloseConfirmation {
     static func confirm(tabs: [TerminalSession], action: String) -> Bool {
