@@ -513,6 +513,7 @@ struct TerminalToolbarHeader: View {
                     .truncationMode(.middle)
                     .accessibilityIdentifier("terminal-directory")
                     .accessibilityLabel(subtitle)
+                    .accessibilityValue(session.directory)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

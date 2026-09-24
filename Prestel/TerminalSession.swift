@@ -63,8 +63,6 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
     var onExit: (@MainActor @Sendable (Int32?) -> Void)?
     var onFailure: (@MainActor @Sendable (String) -> Void)?
     var onActivity: (@MainActor @Sendable () -> Void)?
-    private let activityLock = NSLock()
-    private var lastActivityForward = Date.distantPast
     func updateSize(columns: Int, rows: Int) -> winsize {
         lock.lock()
         defer { lock.unlock() }
@@ -75,15 +73,10 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
     func getWindowSize() -> winsize { lock.lock(); defer { lock.unlock() }; return size }
     func dataReceived(slice: ArraySlice<UInt8>) {
         surface?.feed(byteArray: slice)
-        // Throttled leading edge (at most one hop per 200ms): the session
-        // debounces these into a trailing cwd refresh, so `cd` shows up in
-        // ~150ms instead of waiting for the backup poll.
-        activityLock.lock()
-        let now = Date()
-        let shouldForward = now.timeIntervalSince(lastActivityForward) >= 0.2
-        if shouldForward { lastActivityForward = now }
-        activityLock.unlock()
-        if shouldForward, let callback = onActivity { Task { @MainActor in callback() } }
+        // Every burst restarts the session's trailing cwd read. A leading-edge
+        // drop missed `cd` when the prompt arrived inside the throttle window.
+        guard let callback = onActivity else { return }
+        Task { @MainActor in callback() }
     }
     func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
         let callback = onExit
@@ -230,22 +223,26 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         // Lightweight backup: one proc_pidinfo per tick per tab. The primary
         // path is activity-driven (see onActivity/scheduleCwdRefresh), so this
         // only matters for cwd changes with zero pty output.
-        cwdPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshDirectoryFromProcess() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        cwdPollTimer = timer
     }
     /// Coalesced trailing refresh after pty output. `cd` changes the cwd
     /// before the redrawn prompt arrives, so waiting ~150ms after activity
     /// reads the new directory — without it the echo of the command itself
     /// would trigger a refresh of the still-old cwd.
     func scheduleCwdRefresh() {
-        guard state == .running, cwdDebounceTask == nil else { return }
+        guard state == .running else { return }
+        cwdDebounceTask?.cancel()
         cwdDebounceTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(150))
             } catch { return }
-            self?.cwdDebounceTask = nil
-            self?.refreshDirectoryFromProcess()
+            guard let self, !Task.isCancelled else { return }
+            self.cwdDebounceTask = nil
+            self.refreshDirectoryFromProcess()
         }
     }
     func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {

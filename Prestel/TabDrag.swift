@@ -217,6 +217,18 @@ final class TabDragCoordinator: ObservableObject {
         }
     }
 
+    /// The pane showing before a press can select the grabbed row. `begin` runs
+    /// after that press, so a background drop would otherwise split with itself.
+    func noteVisibleTabBeforePress(windowID: UUID) {
+        guard visibleTabID == nil, payload == nil else { return }
+        visibleTabID = AppDelegate.current?.controllers[windowID]?.model.selectedID
+    }
+
+    func clearVisibleTabIfPressDidNotDrag() {
+        guard payload == nil else { return }
+        visibleTabID = nil
+    }
+
     func begin(payload: TabDragPayload, at screenPoint: CGPoint, session: NSDraggingSession?) {
         self.payload = payload
         draggingSession = session
@@ -226,7 +238,9 @@ final class TabDragCoordinator: ObservableObject {
         lastScreenPoint = screenPoint
         lastPointerY = nil
         dragDirection = nil
-        visibleTabID = AppDelegate.current?.controllers[payload.sourceWindowID]?.model.selectedID
+        if visibleTabID == nil {
+            visibleTabID = AppDelegate.current?.controllers[payload.sourceWindowID]?.model.selectedID
+        }
         cancelCollapsedDwell()
         installEscapeMonitor()
         updatePointer(screenPoint)
@@ -1146,6 +1160,9 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
         didStartDrag = false
+        if let controller = window?.windowController as? TerminalWindowController {
+            TabDragCoordinator.shared.noteVisibleTabBeforePress(windowID: controller.model.id)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1163,6 +1180,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             activePayload = nil
         }
         if didStartDrag { return }
+        TabDragCoordinator.shared.clearVisibleTabIfPressDidNotDrag()
         if event.clickCount >= 2, clickIsOnTitle(event) {
             onRename?()
             return

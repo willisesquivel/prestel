@@ -372,7 +372,7 @@ private struct TerminalDetailSurface: View {
             TabDetailDropZone(windowID: model.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .accessibilityLabel("\(model.selectedTab?.displayTitle ?? "Local") terminal")
+        .modifier(ShellDetailAccessibility(title: model.selectedTab?.displayTitle ?? "Local", split: model.visibleSplit != nil))
     }
 
     @ViewBuilder
@@ -445,6 +445,32 @@ private struct TerminalDetailSurface: View {
         }
         .frame(width: max(0, frame.width), height: max(0, frame.height))
         .offset(x: frame.minX, y: frame.minY)
+    }
+}
+
+/// One pane keeps a single terminal label. A split must expose each pane:
+/// a label on the container hides the other tab, so a drop looks like the
+/// visible session disappeared.
+private struct ShellDetailAccessibility: ViewModifier {
+    let title: String
+    let split: Bool
+
+    func body(content: Content) -> some View {
+        content.modifier(ShellDetailAccessibilityBody(title: title, split: split))
+    }
+}
+
+private struct ShellDetailAccessibilityBody: ViewModifier {
+    let title: String
+    let split: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if split {
+            content.accessibilityElement(children: .contain)
+        } else {
+            content.accessibilityLabel("\(title) terminal")
+        }
     }
 }
 

@@ -24,6 +24,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSApp.setActivationPolicy(.regular)
         PrestelAppearance.apply(UserDefaults.standard.string(forKey: "appearanceMode") ?? "system")
         NSWindow.allowsAutomaticWindowTabbing = false
+        NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                TerminalFontSize.syncZoomMenuItems()
+            }
+        }
         guard !Self.isTesting else { return }
         if controllers.isEmpty { createWindow() }
     }

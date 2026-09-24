@@ -46,13 +46,26 @@ enum TerminalFontSize {
 
     @discardableResult
     static func set(_ value: CGFloat) -> CGFloat {
-        withoutAnimations {
+        let next = withoutAnimations { () -> CGFloat in
             let next = clamp(value)
             let previous = current
             UserDefaults.standard.set(Double(next), forKey: defaultsKey)
             if next != previous { applyToOpenTerminals() }
             return next
         }
+        syncZoomMenuItems()
+        AppDelegate.current?.commandRevision &+= 1
+        return next
+    }
+
+    /// SwiftUI `.disabled` on the View menu is a snapshot. AppKit reads
+    /// `isEnabled` when the menu opens, so Actual Size must track the font
+    /// the way `validateMenuItem` would.
+    static func syncZoomMenuItems() {
+        guard let viewMenu = NSApp.mainMenu?.item(withTitle: "View")?.submenu else { return }
+        viewMenu.item(withTitle: "Zoom In")?.isEnabled = canIncrease
+        viewMenu.item(withTitle: "Zoom Out")?.isEnabled = canDecrease
+        viewMenu.item(withTitle: "Actual Size")?.isEnabled = !isDefault
     }
 
     static func applyToOpenTerminals() {
@@ -423,6 +436,7 @@ struct TerminalPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel("\(session.displayTitle) terminal")
+        .accessibilityIdentifier("\(session.displayTitle) terminal")
         .accessibilityAddTraits(isFocused ? .isSelected : [])
     }
 }

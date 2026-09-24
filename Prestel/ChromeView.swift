@@ -63,6 +63,7 @@ enum CloseConfirmation {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "\(action)?"
+        alert.window.title = "\(action)?"
         let names = tabs.prefix(4).map(\.displayTitle).joined(separator: ", ")
         alert.informativeText = "Running processes in \(names) will be terminated. Unsaved work in these sessions may be lost."
         alert.addButton(withTitle: "Cancel")
