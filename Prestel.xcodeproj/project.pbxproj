@@ -45,6 +45,7 @@
 		A10000000000000000000046 /* PrestelReviewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000046 /* PrestelReviewUITests.swift */; };
 		A10000000000000000000047 /* PrestelWindowChromeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000047 /* PrestelWindowChromeUITests.swift */; };
 		A10000000000000000000048 /* PrestelEdgeCaseUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000048 /* PrestelEdgeCaseUITests.swift */; };
+		A10000000000000000000049 /* PrestelExploratoryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000049 /* PrestelExploratoryUITests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
 /* End PBXBuildFile section */
@@ -108,6 +109,7 @@
 		A20000000000000000000046 /* PrestelReviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelReviewUITests.swift; sourceTree = "<group>"; };
 		A20000000000000000000047 /* PrestelWindowChromeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelWindowChromeUITests.swift; sourceTree = "<group>"; };
 		A20000000000000000000048 /* PrestelEdgeCaseUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelEdgeCaseUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000049 /* PrestelExploratoryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelExploratoryUITests.swift; sourceTree = "<group>"; };
 		A20000000000000000000041 /* PrestelUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PrestelUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -222,6 +224,7 @@
 				A20000000000000000000046 /* PrestelReviewUITests.swift */,
 				A20000000000000000000047 /* PrestelWindowChromeUITests.swift */,
 				A20000000000000000000048 /* PrestelEdgeCaseUITests.swift */,
+				A20000000000000000000049 /* PrestelExploratoryUITests.swift */,
 			);
 			path = PrestelUITests;
 			sourceTree = "<group>";
@@ -398,6 +401,7 @@
 				A10000000000000000000046 /* PrestelReviewUITests.swift in Sources */,
 				A10000000000000000000047 /* PrestelWindowChromeUITests.swift in Sources */,
 				A10000000000000000000048 /* PrestelEdgeCaseUITests.swift in Sources */,
+				A10000000000000000000049 /* PrestelExploratoryUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
