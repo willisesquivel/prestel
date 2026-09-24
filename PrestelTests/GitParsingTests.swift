@@ -151,42 +151,58 @@ enum GitFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("prestel-review-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        func git(_ arguments: [String]) throws {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: gitExecutable())
-            process.currentDirectoryURL = root
-            process.arguments = arguments
-            process.environment = [
-                "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_CONFIG_SYSTEM": "/dev/null",
-                "GIT_AUTHOR_NAME": "Prestel",
-                "GIT_AUTHOR_EMAIL": "prestel@example.com",
-                "GIT_COMMITTER_NAME": "Prestel",
-                "GIT_COMMITTER_EMAIL": "prestel@example.com",
-                "HOME": root.path
-            ]
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw GitRunnerError.failed(status: process.terminationStatus, stderr: arguments.joined(separator: " "))
-            }
-        }
-        try git(["init", "-b", "main"])
+        let rootPath = root.path
+        try run(["init", "-b", "main"], in: rootPath)
+        try run(["config", "user.name", "Prestel"], in: rootPath)
+        try run(["config", "user.email", "prestel@example.com"], in: rootPath)
+        try run(["config", "commit.gpgsign", "false"], in: rootPath)
         try "base\n".write(toFile: root.appendingPathComponent("staged.txt").path, atomically: true, encoding: .utf8)
         try "base\n".write(toFile: root.appendingPathComponent("unstaged.txt").path, atomically: true, encoding: .utf8)
         try "base\n".write(toFile: root.appendingPathComponent("both.txt").path, atomically: true, encoding: .utf8)
-        try git(["add", "."])
-        try git(["commit", "-m", "base"])
+        try run(["add", "."], in: rootPath)
+        try run(["commit", "-m", "base"], in: rootPath)
         try "staged\n".write(toFile: root.appendingPathComponent("staged.txt").path, atomically: true, encoding: .utf8)
-        try git(["add", "staged.txt"])
+        try run(["add", "staged.txt"], in: rootPath)
         try "unstaged\n".write(toFile: root.appendingPathComponent("unstaged.txt").path, atomically: true, encoding: .utf8)
         try "staged-both\n".write(toFile: root.appendingPathComponent("both.txt").path, atomically: true, encoding: .utf8)
-        try git(["add", "both.txt"])
+        try run(["add", "both.txt"], in: rootPath)
         try "unstaged-both\n".write(toFile: root.appendingPathComponent("both.txt").path, atomically: true, encoding: .utf8)
         try "new\n".write(toFile: root.appendingPathComponent("untracked.txt").path, atomically: true, encoding: .utf8)
         try "ignored\n".write(toFile: root.appendingPathComponent("skip.log").path, atomically: true, encoding: .utf8)
         try "*.log\n".write(toFile: root.appendingPathComponent(".gitignore").path, atomically: true, encoding: .utf8)
-        return root.path
+        return rootPath
+    }
+
+    static func run(_ arguments: [String], in root: String) throws {
+        _ = try output(arguments, in: root)
+    }
+
+    static func output(_ arguments: [String], in root: String) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: gitExecutable())
+        process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        process.arguments = arguments
+        process.environment = [
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_AUTHOR_NAME": "Prestel",
+            "GIT_AUTHOR_EMAIL": "prestel@example.com",
+            "GIT_COMMITTER_NAME": "Prestel",
+            "GIT_COMMITTER_EMAIL": "prestel@example.com",
+            "HOME": root
+        ]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+        let text = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            let error = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            throw GitRunnerError.failed(status: process.terminationStatus, stderr: error.isEmpty ? arguments.joined(separator: " ") : error)
+        }
+        return text
     }
 
     private static func gitExecutable() -> String {

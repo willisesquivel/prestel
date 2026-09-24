@@ -52,6 +52,8 @@ final class CodeReviewModel: ObservableObject {
     }
 
     var showWhitespace = false
+    @Published var commitDraft: CommitDraft?
+    private var commitGeneration = 0
 
     func bind(visible: Bool, windowID: UUID, session: TerminalSession?) {
         guard visible else {
@@ -62,6 +64,10 @@ final class CodeReviewModel: ObservableObject {
             clearWork()
             loadState = .noTerminal
             snapshot = nil
+            if commitDraft?.isCommitting != true {
+                commitGeneration += 1
+                commitDraft = nil
+            }
             return
         }
         let directory = URL(fileURLWithPath: session.directory).standardizedFileURL.path
@@ -94,6 +100,10 @@ final class CodeReviewModel: ObservableObject {
             diagnostic = nil
             watcher.stopAll()
             activeKey = nil
+            if commitDraft?.isCommitting != true {
+                commitGeneration += 1
+                commitDraft = nil
+            }
         }
         publishWithoutAnimation { loadState = .resolving }
         watchTask?.cancel()
@@ -198,6 +208,161 @@ final class CodeReviewModel: ObservableObject {
         NSPasteboard.general.setString(patches.joined(separator: "\n"), forType: .string)
     }
 
+    func openCommitComposer() {
+        guard commitDraft == nil else { return }
+        guard case .ready = loadState, let snapshot, !snapshot.isClean, !snapshot.waitingOnIndexLock else { return }
+        commitDraft = CommitDraft(modelNote: CommitMessageGenerator.unavailableReason())
+    }
+
+    func closeCommitComposer() {
+        guard commitDraft?.isCommitting != true else { return }
+        commitGeneration += 1
+        commitDraft = nil
+    }
+
+    func updateCommitMessage(_ text: String) {
+        commitDraft?.message = text
+        commitDraft?.notice = nil
+    }
+
+    func updateCommitAction(_ action: CommitAction) {
+        commitDraft?.action = action
+        commitDraft?.notice = nil
+    }
+
+    var canSubmitCommit: Bool {
+        guard let draft = commitDraft, let snapshot, !draft.isCommitting, !draft.isGenerating else { return false }
+        return CommitPlanner.canSubmit(
+            files: snapshot.files,
+            message: draft.message,
+            push: draft.push,
+            detached: snapshot.revision.isDetached,
+            indexLocked: snapshot.waitingOnIndexLock,
+            catalogComplete: snapshot.isComplete
+        )
+    }
+
+    func draftCommitName() {
+        guard var draft = commitDraft, !draft.isGenerating, !draft.isCommitting else { return }
+        guard let snapshot else { return }
+        if let reason = CommitMessageGenerator.unavailableReason() {
+            draft.modelNote = reason
+            commitDraft = draft
+            return
+        }
+        let selection = CommitPlanner.selection(from: snapshot.files)
+        guard !selection.paths.isEmpty else {
+            draft.notice = CommitPlanner.refusal(
+                files: snapshot.files,
+                push: draft.push,
+                detached: snapshot.revision.isDetached,
+                indexLocked: snapshot.waitingOnIndexLock,
+                catalogComplete: snapshot.isComplete
+            ) ?? "There is nothing to commit."
+            commitDraft = draft
+            return
+        }
+        commitGeneration += 1
+        let token = commitGeneration
+        let draftID = draft.id
+        draft.isGenerating = true
+        draft.notice = nil
+        commitDraft = draft
+        let key = snapshot.revision.key
+        let files = snapshot.files.filter { selection.paths.contains($0.identityPath.display) }
+        let repository = key.basename
+        let branch = snapshot.revision.isDetached ? "detached" : (snapshot.revision.branchName ?? "unknown")
+        let paths = selection.paths
+        let untracked = selection.untrackedPaths
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let material = try await self.service.commitMaterial(for: key, paths: paths, untrackedPaths: untracked)
+                let name = try await CommitMessageGenerator.subject(
+                    repository: repository,
+                    branch: branch,
+                    files: files,
+                    diff: material.diff,
+                    recentSubjects: material.recentSubjects
+                )
+                guard self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
+                self.commitDraft?.message = name
+                self.commitDraft?.isGenerating = false
+            } catch {
+                guard self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
+                self.commitDraft?.isGenerating = false
+                self.commitDraft?.notice = Self.commitNotice(error)
+            }
+        }
+    }
+
+    func commitFromComposer() {
+        guard var draft = commitDraft, !draft.isCommitting, !draft.isGenerating, let snapshot else { return }
+        let selection = CommitPlanner.selection(from: snapshot.files)
+        let message = CommitMessage.prepared(draft.message)
+        guard CommitPlanner.canSubmit(
+            files: snapshot.files,
+            message: message,
+            push: draft.push,
+            detached: snapshot.revision.isDetached,
+            indexLocked: snapshot.waitingOnIndexLock,
+            catalogComplete: snapshot.isComplete
+        ) else {
+            draft.notice = CommitPlanner.refusal(
+                files: snapshot.files,
+                push: draft.push,
+                detached: snapshot.revision.isDetached,
+                indexLocked: snapshot.waitingOnIndexLock,
+                catalogComplete: snapshot.isComplete
+            )
+            commitDraft = draft
+            return
+        }
+        commitGeneration += 1
+        let draftID = draft.id
+        let push = draft.push
+        let action = draft.action
+        let key = snapshot.revision.key
+        draft.isCommitting = true
+        draft.notice = nil
+        draft.message = message
+        commitDraft = draft
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let outcome = try await self.service.commit(in: key, paths: selection.paths, message: message, push: push)
+                if self.activeKey == key {
+                    self.refresh(userInitiated: false)
+                }
+                var pullRequest: URL?
+                if action == .pullRequest, outcome == .committed {
+                    pullRequest = await self.service.pullRequestURL(for: key)
+                    if let pullRequest {
+                        NSWorkspace.shared.open(pullRequest)
+                    }
+                }
+                guard self.commitDraft?.id == draftID else { return }
+                switch outcome {
+                case .committed where action == .pullRequest && pullRequest == nil:
+                    self.commitDraft?.isCommitting = false
+                    self.commitDraft?.notice = "Committed and pushed. The remote has no known pull request page."
+                case .committed:
+                    self.commitDraft = nil
+                case .committedPushFailed(let detail):
+                    self.commitDraft?.isCommitting = false
+                    self.commitDraft?.notice = detail
+                }
+            } catch {
+                if self.activeKey == key {
+                    self.refresh(userInitiated: false)
+                }
+                guard self.commitDraft?.id == draftID else { return }
+                self.commitDraft?.isCommitting = false
+                self.commitDraft?.notice = Self.commitNotice(error)
+            }
+        }
+    }
+
     func visibleFiles(in snapshot: ReviewSnapshot) -> [ChangedFile] {
         snapshot.files.filter { $0.matches(presentation.filter) }
     }
@@ -236,6 +401,10 @@ final class CodeReviewModel: ObservableObject {
         }
         publishWithoutAnimation { loadState = .hidden }
         isRefreshing = false
+        if commitDraft?.isCommitting != true {
+            commitGeneration += 1
+            commitDraft = nil
+        }
     }
 
     private func clearWork() {
@@ -250,6 +419,10 @@ final class CodeReviewModel: ObservableObject {
         diffs = [:]
         highlights = [:]
         isRefreshing = false
+        if commitDraft?.isCommitting != true {
+            commitGeneration += 1
+            commitDraft = nil
+        }
     }
 
     private func resolve(_ context: ReviewContext) async {
@@ -259,6 +432,10 @@ final class CodeReviewModel: ObservableObject {
             guard self.context?.generation == context.generation else { return }
             guard let key else {
                 snapshot = nil
+                if commitDraft?.isCommitting != true {
+                    commitGeneration += 1
+                    commitDraft = nil
+                }
                 publishWithoutAnimation { loadState = .noRepository }
                 isRefreshing = false
                 return
@@ -272,6 +449,8 @@ final class CodeReviewModel: ObservableObject {
                 activeKey = key
                 diffs = [:]
                 highlights = [:]
+                commitGeneration += 1
+                commitDraft = nil
             }
             publishWithoutAnimation { loadState = snapshot == nil ? .loading : loadState }
             snapshotGeneration += 1
@@ -299,11 +478,19 @@ final class CodeReviewModel: ObservableObject {
         } catch GitReviewServiceError.bareRepository {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
+            if commitDraft?.isCommitting != true {
+                commitGeneration += 1
+                commitDraft = nil
+            }
             publishWithoutAnimation { loadState = .noWorkingTree }
             isRefreshing = false
         } catch GitRunnerError.gitUnavailable(let message) {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
+            if commitDraft?.isCommitting != true {
+                commitGeneration += 1
+                commitDraft = nil
+            }
             publishWithoutAnimation { loadState = .unavailable(message) }
             isRefreshing = false
         } catch GitRunnerError.cancelled {
@@ -473,6 +660,25 @@ final class CodeReviewModel: ObservableObject {
 
     private func shouldKeepCollapsed(_ file: ChangedFile) -> Bool {
         file.hasBinaryComparison || file.kind == .submodule || file.additions + file.deletions > ReviewBudgets.automaticChangedLines
+    }
+
+    private static func commitNotice(_ error: Error) -> String {
+        switch error {
+        case GitReviewServiceError.commitRejected(let message):
+            return message
+        case CommitNameError.unavailable(let message):
+            return message
+        case CommitNameError.empty:
+            return "The model did not return a commit name."
+        case CommitNameError.vague:
+            return "The draft was too vague. Edit the name, or try again."
+        case GitRunnerError.timeout:
+            return "Git took too long."
+        case GitRunnerError.failed(_, let stderr):
+            return CommitDigest.failureLine(stderr, fallback: "Git could not finish.")
+        default:
+            return error.localizedDescription
+        }
     }
 
     private func trimPresentationCache() {

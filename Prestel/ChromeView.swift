@@ -77,7 +77,6 @@ enum CloseConfirmation {
 
 struct NavigationCapsule: View {
     @ObservedObject var model: TerminalModel
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 0) {
@@ -103,20 +102,7 @@ struct NavigationCapsule: View {
             }
         }
         .frame(width: ShellMetrics.navigationWidth, height: ShellMetrics.navigationHeight)
-        .background {
-            Capsule().fill(
-                colorScheme == .dark
-                    ? Color.black.opacity(0.26)
-                    : Color.white.opacity(0.30)
-            )
-        }
-        .glassEffect(.regular, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(
-                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.48),
-                lineWidth: 0.5
-            )
-        }
+        .chromeGlass()
         .accessibilityElement(children: .contain)
     }
 }
@@ -145,7 +131,6 @@ private struct ChromeButton: View {
 
 struct CodeReviewToggle: View {
     @ObservedObject var model: TerminalModel
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button {
@@ -158,20 +143,7 @@ struct CodeReviewToggle: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .background {
-            Capsule().fill(
-                colorScheme == .dark
-                    ? Color.black.opacity(0.26)
-                    : Color.white.opacity(0.30)
-            )
-        }
-        .glassEffect(.regular, in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(
-                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.48),
-                lineWidth: 0.5
-            )
-        }
+        .chromeGlass()
         .focusable(false)
         .help(model.reviewVisible ? "Hide Code Review" : "Show Code Review")
         .accessibilityLabel("Code Review")
@@ -180,10 +152,39 @@ struct CodeReviewToggle: View {
     }
 }
 
-private struct ChromeDivider: View {
+struct ChromeDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.16))
             .frame(width: 1, height: 16)
+    }
+}
+
+/// The floating chrome’s material: a tinted capsule of regular glass with a hairline edge.
+private struct ChromeGlass: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                Capsule().fill(
+                    colorScheme == .dark
+                        ? Color.black.opacity(0.26)
+                        : Color.white.opacity(0.30)
+                )
+            }
+            .glassEffect(.regular, in: Capsule())
+            .overlay {
+                Capsule().strokeBorder(
+                    Color.white.opacity(colorScheme == .dark ? 0.10 : 0.48),
+                    lineWidth: 0.5
+                )
+            }
+    }
+}
+
+extension View {
+    func chromeGlass() -> some View {
+        modifier(ChromeGlass())
     }
 }

@@ -6,9 +6,11 @@ Every sidebar row is a **terminal tab** backed by its own real PTY running
 the account login shell. Window controls use the native macOS titlebar; tab/sidebar commands are also
 available in the menu bar.
 
-A read-only **Code Review** panel can open on the right of the detail surface.
-It follows the selected terminal’s local working directory, shows staged and
-unstaged Git changes, and never stages, discards, commits, or pushes.
+A **Code Review** panel can open on the right of the detail surface.
+It follows the selected terminal’s local working directory and shows staged and
+unstaged Git changes. From the panel you can commit those files, or commit and
+push. A commit message can be drafted on this Mac with the on-device model.
+The panel does not discard changes.
 
 ## Status: real PTY via SwiftTerm (integration branch)
 
@@ -40,7 +42,8 @@ Xcode resolves SwiftTerm on first build (network required once).
   shell-quoted paths; only http(s)/mailto/file links open.
 - Code Review uses that same local cwd. It does not infer directories from
   prompt text or follow remote/tmux panes. Files start collapsed. Opening
-  the panel outside a Git repository explains that state.
+  the panel outside a Git repository explains that state. Commit writes the
+  files listed in the commit sheet and leaves ignored files alone.
 - Quitting or closing with live jobs asks for confirmation; PIDs are reaped,
   never persisted. State restoration keeps lightweight descriptors only,
   including per-window review visibility and width.
@@ -55,7 +58,7 @@ Xcode resolves SwiftTerm on first build (network required once).
   search, history, recently-closed, descriptors.
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
-- `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, and highlighting.
+- `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, highlighting, and commit.
 - `THIRD_PARTY_NOTICES.md`: bundled Highlighter/Highlight.js notices.
 
 ## TUI transparency (glass background)

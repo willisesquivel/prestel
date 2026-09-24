@@ -399,6 +399,225 @@ actor GitRepositoryService: GitReviewServicing {
         return text
     }
 
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial {
+        let subjects = await recentSubjects(root: key.worktreeRoot)
+        guard !paths.isEmpty else {
+            return CommitMaterial(diff: "", recentSubjects: subjects)
+        }
+        var diff = (try? await workingDiff(root: key.worktreeRoot, paths: paths)) ?? ""
+        let untracked = untrackedPreview(root: key.worktreeRoot, paths: untrackedPaths)
+        if !untracked.isEmpty {
+            if !diff.isEmpty { diff += "\n" }
+            diff += untracked
+        }
+        return CommitMaterial(diff: CommitDigest.clip(diff), recentSubjects: subjects)
+    }
+
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
+        let message = CommitMessage.prepared(message)
+        guard !CommitMessage.subjectLine(message).isEmpty else {
+            throw GitReviewServiceError.commitRejected("Write a commit message first.")
+        }
+        guard !paths.isEmpty else {
+            throw GitReviewServiceError.commitRejected("There is nothing to commit.")
+        }
+        let lock = (key.gitDirectory as NSString).appendingPathComponent("index.lock")
+        if FileManager.default.fileExists(atPath: lock) {
+            throw GitReviewServiceError.commitRejected("Wait for the Git operation to finish.")
+        }
+        do {
+            try await stage(root: key.worktreeRoot, paths: paths)
+            _ = try await git(
+                directory: key.worktreeRoot,
+                arguments: ["-C", key.worktreeRoot, "commit", "-m", message],
+                timeout: ReviewBudgets.commitTimeout,
+                limit: 256 * 1024
+            )
+        } catch let error as GitReviewServiceError {
+            throw error
+        } catch GitRunnerError.failed(_, let stderr) {
+            throw GitReviewServiceError.commitRejected(CommitDigest.failureLine(stderr, fallback: "Git could not commit."))
+        }
+        guard push else { return .committed }
+        return await pushHead(root: key.worktreeRoot)
+    }
+
+    func pullRequestURL(for key: RepositoryKey) async -> URL? {
+        let root = key.worktreeRoot
+        guard let branch = try? await pathOutput(directory: root, arguments: ["rev-parse", "--abbrev-ref", "HEAD"]),
+              let remote = try? await pathOutput(directory: root, arguments: ["remote", "get-url", "origin"]) else {
+            return nil
+        }
+        return CommitPlanner.pullRequestURL(remote: remote, branch: branch)
+    }
+
+    private func stage(root: String, paths: [String]) async throws {
+        var start = 0
+        while start < paths.count {
+            let end = min(start + 100, paths.count)
+            var arguments = ["-C", root, "add", "--"]
+            arguments.append(contentsOf: paths[start..<end])
+            _ = try await git(
+                directory: root,
+                arguments: arguments,
+                timeout: ReviewBudgets.commitTimeout,
+                limit: 256 * 1024
+            )
+            start = end
+        }
+    }
+
+    private func pushHead(root: String) async -> CommitOutcome {
+        let branch: String
+        do {
+            branch = try await pathOutput(directory: root, arguments: ["rev-parse", "--abbrev-ref", "HEAD"])
+        } catch {
+            return .committedPushFailed("Committed. The branch name could not be read, so nothing was pushed.")
+        }
+        if branch == "HEAD" {
+            return .committedPushFailed("Committed. This checkout is detached, so nothing was pushed.")
+        }
+        let remotes: String
+        do {
+            let result = try await git(
+                directory: root,
+                arguments: ["remote"],
+                timeout: ReviewBudgets.discoveryTimeout,
+                limit: 64 * 1024
+            )
+            remotes = text(result.stdout)
+        } catch {
+            return .committedPushFailed("Committed. The remotes could not be read, so nothing was pushed.")
+        }
+        let names = remotes.split(whereSeparator: \.isNewline).map(String.init)
+        guard names.contains("origin") else {
+            return .committedPushFailed("Committed. There is no remote to push to.")
+        }
+        var hasUpstream = false
+        do {
+            _ = try await git(
+                directory: root,
+                arguments: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+                timeout: ReviewBudgets.discoveryTimeout,
+                limit: 4_096
+            )
+            hasUpstream = true
+        } catch {
+            hasUpstream = false
+        }
+        let arguments = hasUpstream
+            ? ["-C", root, "push"]
+            : ["-C", root, "push", "-u", "origin", "HEAD"]
+        do {
+            _ = try await git(
+                directory: root,
+                arguments: arguments,
+                timeout: ReviewBudgets.pushTimeout,
+                limit: 256 * 1024
+            )
+            return .committed
+        } catch GitRunnerError.failed(_, let stderr) {
+            let line = CommitDigest.failureLine(stderr, fallback: "the remote rejected the push")
+            return .committedPushFailed("Committed. Push failed: \(line)")
+        } catch {
+            return .committedPushFailed("Committed. Push failed.")
+        }
+    }
+
+    private func recentSubjects(root: String) async -> [String] {
+        do {
+            let result = try await git(
+                directory: root,
+                arguments: ["log", "-12", "--format=%s"],
+                timeout: ReviewBudgets.discoveryTimeout,
+                limit: 16 * 1024
+            )
+            let newest = text(result.stdout)
+                .split(whereSeparator: \.isNewline)
+                .map { String($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .prefix(12)
+                .map { String($0.prefix(120)) }
+            return Array(newest.reversed())
+        } catch {
+            return []
+        }
+    }
+
+    private func workingDiff(root: String, paths: [String]) async throws -> String {
+        do {
+            return try await diffText(root: root, extra: ["HEAD"], paths: paths)
+        } catch {
+            let staged = (try? await diffText(root: root, extra: ["--cached"], paths: paths)) ?? ""
+            let unstaged = (try? await diffText(root: root, extra: [], paths: paths)) ?? ""
+            return [staged, unstaged].filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+    }
+
+    private func diffText(root: String, extra: [String], paths: [String]) async throws -> String {
+        var combined = ""
+        var start = 0
+        while start < paths.count {
+            let end = min(start + 40, paths.count)
+            var arguments = [
+                "--no-optional-locks", "-C", root,
+                "-c", "color.ui=never",
+                "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+                "-U1", "--find-renames"
+            ]
+            arguments.append(contentsOf: extra)
+            arguments.append("--")
+            arguments.append(contentsOf: paths[start..<end])
+            let result = try await git(
+                directory: root,
+                arguments: arguments,
+                timeout: ReviewBudgets.operationTimeout,
+                limit: ReviewBudgets.commitDiffBytes,
+                treatDiffExitAsSuccess: true
+            )
+            let chunk = text(result.stdout)
+            if !chunk.isEmpty {
+                if !combined.isEmpty { combined += "\n" }
+                combined += chunk
+            }
+            if combined.count > CommitDigest.budget { break }
+            start = end
+        }
+        return combined
+    }
+
+    private func untrackedPreview(root: String, paths: [String]) -> String {
+        let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+        var parts: [String] = []
+        var used = 0
+        for relative in paths {
+            if used > CommitDigest.budget { break }
+            let preview = previewFile(root: rootURL, relative: relative)
+            let block = "new file \(relative)\n\(preview)"
+            parts.append(block)
+            used += block.count
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private func previewFile(root: URL, relative: String) -> String {
+        let fileURL = URL(fileURLWithPath: relative, relativeTo: root).standardizedFileURL
+        let rootPath = root.path
+        guard fileURL.path == rootPath || fileURL.path.hasPrefix(rootPath + "/") else {
+            return "[path omitted]\n"
+        }
+        var info = stat()
+        guard lstat(fileURL.path, &info) == 0 else { return "[unreadable]\n" }
+        if (info.st_mode & S_IFMT) == S_IFLNK { return "[symlink]\n" }
+        if (info.st_mode & S_IFMT) != S_IFREG { return "[not a file]\n" }
+        if info.st_size > 200_000 { return "[file omitted, too large]\n" }
+        guard let data = try? Data(contentsOf: fileURL) else { return "[unreadable]\n" }
+        if data.prefix(8_000).contains(0) { return "[binary file]\n" }
+        let text = String(data: data.prefix(1_500), encoding: .utf8) ?? ""
+        if text.isEmpty { return "[empty]\n" }
+        return text.hasSuffix("\n") ? text : text + "\n"
+    }
+
     private func text(_ data: Data) -> String {
         String(data: data, encoding: .utf8) ?? ""
     }
@@ -631,6 +850,7 @@ enum GitReviewServiceError: Error, Equatable {
     case bareRepository
     case sourceMismatch
     case unreadable(String)
+    case commitRejected(String)
 }
 
 private struct ReviewContentCache {

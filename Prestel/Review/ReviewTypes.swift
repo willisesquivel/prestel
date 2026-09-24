@@ -26,6 +26,9 @@ enum ReviewBudgets {
     static let safetyRefreshNanoseconds: UInt64 = 30_000_000_000
     static let watcherFallbackNanoseconds: UInt64 = 5_000_000_000
     static let contextLines = 3
+    static let commitTimeout: Duration = .seconds(60)
+    static let pushTimeout: Duration = .seconds(120)
+    static let commitDiffBytes = 64 * 1024
     static let revealMoreLines = 20
     static let intralinePairLimit = 20
     static let intralineCharacterLimit = 2_000
@@ -355,6 +358,55 @@ protocol GitCommandExecuting: Sendable {
     func run(_ request: GitCommandRequest) async throws -> GitCommandResult
 }
 
+struct CommitMaterial: Sendable, Equatable {
+    var diff: String
+    var recentSubjects: [String]
+}
+
+enum CommitOutcome: Sendable, Equatable {
+    case committed
+    case committedPushFailed(String)
+}
+
+enum CommitAction: String, CaseIterable, Identifiable, Sendable {
+    case commit
+    case push
+    case pullRequest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .commit: "Commit"
+        case .push: "Commit & Push"
+        case .pullRequest: "Commit & PR"
+        }
+    }
+
+    var buttonTitle: String {
+        switch self {
+        case .commit: "Commit"
+        case .push: "Commit and Push"
+        case .pullRequest: "Commit and Create Pull Request"
+        }
+    }
+
+    var pushes: Bool { self != .commit }
+}
+
+struct CommitDraft: Equatable {
+    var id = UUID()
+    var message = ""
+    var action: CommitAction = .commit
+    var isGenerating = false
+    var isCommitting = false
+    var notice: String?
+    /// Why the on-device model cannot draft a name. Nil when it can.
+    var modelNote: String?
+
+    var push: Bool { action.pushes }
+}
+
 protocol GitReviewServicing: Sendable {
     func resolveRepository(directory: String) async throws -> RepositoryKey?
     func loadCatalog(for key: RepositoryKey, generation: UInt64) async throws -> ReviewSnapshot
@@ -365,6 +417,22 @@ protocol GitReviewServicing: Sendable {
         generation: UInt64,
         loadLarge: Bool
     ) async throws -> FileDiff
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome
+    /// The remote’s page for opening a pull request from the current branch.
+    func pullRequestURL(for key: RepositoryKey) async -> URL?
+}
+
+extension GitReviewServicing {
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial {
+        CommitMaterial(diff: "", recentSubjects: [])
+    }
+
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
+        throw GitReviewServiceError.commitRejected("Commit is not available.")
+    }
+
+    func pullRequestURL(for key: RepositoryKey) async -> URL? { nil }
 }
 
 protocol RepositoryWatching: Sendable {

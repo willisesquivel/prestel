@@ -231,52 +231,82 @@ struct CodeReviewPanel: View {
         HStack(spacing: 8) {
             Text("Uncommitted changes")
                 .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
             Spacer(minLength: 0)
-            Menu {
-                ForEach(ReviewFilter.allCases) { filter in
-                    Button(filter.title) { model.setFilter(filter) }
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal.decrease")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 24, height: 24)
-            }
-            .menuStyle(.borderlessButton)
-            .help("Filter")
             Button {
-                model.refresh()
+                model.openCommitComposer()
             } label: {
-                Group {
-                    if model.isRefreshing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                }
-                .frame(width: 24, height: 24)
+                Label("Commit", systemImage: "checkmark.circle")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(snapshot.waitingOnIndexLock ? 0.25 : 0.78))
+                    .padding(.horizontal, 12)
+                    .frame(height: ShellMetrics.navigationHeight)
+                    .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .help("Refresh")
-            Menu {
-                Button("Expand All") { model.expandAll() }
-                Button("Collapse All") { model.collapseAll() }
-                Button(model.showWhitespace ? "Hide Whitespace" : "Show Whitespace") {
-                    model.showWhitespace.toggle()
+            .chromeGlass()
+            .disabled(snapshot.waitingOnIndexLock)
+            .help(snapshot.waitingOnIndexLock ? "Wait for the Git operation to finish." : "Commit these changes")
+            .accessibilityLabel("Commit changes")
+
+            HStack(spacing: 0) {
+                Menu {
+                    ForEach(ReviewFilter.allCases) { filter in
+                        Button(filter.title) { model.setFilter(filter) }
+                    }
+                } label: {
+                    ReviewChromeSymbol(symbol: "line.3.horizontal.decrease")
                 }
-                Button(model.expandFilesByDefault ? "Collapse Files by Default" : "Expand Files by Default") {
-                    model.expandFilesByDefault.toggle()
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .help("Filter")
+                .accessibilityLabel("Filter")
+
+                ChromeDivider()
+
+                Button {
+                    model.refresh()
+                } label: {
+                    if model.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ReviewChromeSymbol(symbol: "arrow.clockwise")
+                    }
                 }
-                Divider()
-                Button("Copy Repository Path") { model.copyRepositoryPath() }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 24, height: 24)
+                .buttonStyle(.plain)
+                .help("Refresh")
+                .accessibilityLabel("Refresh")
+
+                ChromeDivider()
+
+                Menu {
+                    Button("Expand All") { model.expandAll() }
+                    Button("Collapse All") { model.collapseAll() }
+                    Button(model.showWhitespace ? "Hide Whitespace" : "Show Whitespace") {
+                        model.showWhitespace.toggle()
+                    }
+                    Button(model.expandFilesByDefault ? "Collapse Files by Default" : "Expand Files by Default") {
+                        model.expandFilesByDefault.toggle()
+                    }
+                    Divider()
+                    Button("Copy Repository Path") { model.copyRepositoryPath() }
+                } label: {
+                    ReviewChromeSymbol(symbol: "ellipsis")
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .help("More")
+                .accessibilityLabel("More")
             }
-            .menuStyle(.borderlessButton)
-            .help("More")
+            .frame(width: 118, height: ShellMetrics.navigationHeight)
+            .chromeGlass()
+            .accessibilityElement(children: .contain)
         }
+        .focusable(false)
         .padding(.horizontal, ShellMetrics.sidebarInset)
         .padding(.bottom, 6)
         .accessibilityElement(children: .contain)
@@ -298,6 +328,19 @@ struct CodeReviewPanel: View {
             return "Counts sum staged and unstaged comparisons, not a net HEAD-to-working-tree measurement."
         }
         return "Additions and deletions for the active filter."
+    }
+}
+
+/// A symbol sized like the navigation capsule’s buttons, filling its segment.
+private struct ReviewChromeSymbol: View {
+    var symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color.primary.opacity(0.72))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
     }
 }
 

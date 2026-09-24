@@ -114,6 +114,8 @@ struct ShellView: View {
                 }
 
                 ManualTrafficLights(sidebarVisible: model.sidebarVisible)
+
+                CommitDialogHost(model: review)
             }
             .animation(animation, value: model.sidebarVisible)
             .animation(animation, value: model.reviewVisible)
