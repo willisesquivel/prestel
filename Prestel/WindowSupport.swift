@@ -235,8 +235,30 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             TerminalFontSize.perform(shortcut)
             return nil
         }
-        guard let surface = model.selectedTab?.surface,
-              window.firstResponder === surface else { return event }
+        guard let surface = model.selectedTab?.surface else { return event }
+        if window.firstResponder !== surface {
+            // A drag or unsplit leaves focus on chrome. The click that follows
+            // often hits that chrome, so the next line never reaches the shell.
+            if window.firstResponder is NSText || ReviewFocus.isProtected(window.firstResponder) {
+                return event
+            }
+            let flags = event.modifierFlags
+            if flags.contains(.command) || flags.contains(.control) { return event }
+            let text: String
+            if event.keyCode == 36 {
+                text = "\r"
+            } else if let characters = event.characters, !characters.isEmpty {
+                text = characters
+            } else {
+                return event
+            }
+            let bytes = Array(text.utf8)
+            model.selectedTab?.process?.send(data: bytes[...])
+            if surface.window === window {
+                window.makeFirstResponder(surface)
+            }
+            return nil
+        }
         let flags = event.modifierFlags
         let hasControl = flags.contains(.control)
         let hasOption = flags.contains(.option)
