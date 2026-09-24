@@ -85,9 +85,13 @@ final class PrestelExploratoryUITests: PrestelUITestCase {
         focusWindow(notTitled: first)
         retitleFrontWindow("QAW2")
         expectMarker("WIN2", named: "window-two")
+        // Close the front window while it is key. A click aimed at the window
+        // behind it is delivered to this window, and that point can be Close.
+        let second = window(titled: "QAW2")
+        XCTAssertTrue(second.waitForExistence(timeout: 4))
+        second.buttons["Close"].firstMatch.click()
         focusWindow(notTitled: "QAW2")
         expectMarker("WIN1", named: "window-one")
-        window(titled: "QAW2").buttons["Close"].firstMatch.click()
         XCTAssertTrue(window(titled: "QAW1").waitForExistence(timeout: 6))
         XCTAssertFalse(window(titled: "QAW2").exists)
         expectMarker("WIN1_STILL", named: "window-one-after")

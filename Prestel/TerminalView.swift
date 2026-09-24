@@ -481,6 +481,14 @@ private final class TerminalHostContainer: NSView {
         attachIfNeeded()
     }
 
+    override func mouseDown(with event: NSEvent) {
+        if let surface = pending {
+            onFocus?()
+            window?.makeFirstResponder(surface)
+        }
+        super.mouseDown(with: event)
+    }
+
     func pin(_ surface: PrestelView) {
         pending = surface
         surface.onFocus = onFocus

@@ -113,7 +113,7 @@ struct ShellView: View {
                     .offset(x: layout.restingReviewOriginX - 5)
                 }
 
-                ManualTrafficLights(sidebarVisible: model.sidebarVisible)
+                ManualTrafficLights(sidebarVisible: model.sidebarVisible, windowID: model.id)
             }
             .animation(animation, value: model.sidebarVisible)
             .animation(animation, value: model.reviewVisible)
@@ -197,7 +197,16 @@ private struct SlidingSidePanel<Content: View>: View {
 /// Prestel's original traffic lights and their original sidebar transition.
 private struct ManualTrafficLights: View {
     let sidebarVisible: Bool
+    let windowID: UUID
     @State private var isHoveringGroup = false
+
+    private var owningWindow: NSWindow? {
+        AppDelegate.current?.controllers[windowID]?.window
+    }
+
+    private func closeOwningWindow() {
+        owningWindow?.performClose(nil)
+    }
 
     private var left: CGFloat {
         sidebarVisible
@@ -219,7 +228,7 @@ private struct ManualTrafficLights: View {
                 label: "Close",
                 showsSymbol: isHoveringGroup
             ) {
-                NSApp.keyWindow?.performClose(nil)
+                closeOwningWindow()
             }
 
             TrafficLightButton(
@@ -228,7 +237,7 @@ private struct ManualTrafficLights: View {
                 label: "Minimize",
                 showsSymbol: isHoveringGroup
             ) {
-                NSApp.keyWindow?.miniaturize(nil)
+                owningWindow?.miniaturize(nil)
             }
 
             TrafficLightButton(
@@ -237,7 +246,7 @@ private struct ManualTrafficLights: View {
                 label: "Zoom",
                 showsSymbol: isHoveringGroup
             ) {
-                NSApp.keyWindow?.zoom(nil)
+                owningWindow?.zoom(nil)
             }
         }
         .onHover { isHoveringGroup = $0 }

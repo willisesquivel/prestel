@@ -1393,12 +1393,18 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        let sourceID = windowID
         if didStartDrag {
             TabDragCoordinator.shared.finish(at: screenPoint)
         }
         didStartDrag = false
         mouseDownEvent = nil
         activePayload = nil
+        // A drop back onto the row is a no-op, but the drag still took first
+        // responder. Put the shell back before the next keystroke.
+        DispatchQueue.main.async {
+            AppDelegate.current?.controllers[sourceID]?.focusTerminal()
+        }
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

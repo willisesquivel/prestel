@@ -449,6 +449,10 @@ final class TerminalModel: ObservableObject {
         splits.removeAll { $0.contains(id) }
         AppDelegate.current?.commandRevision &+= 1
         SplitMenuState.sync()
+        let ownerID = self.id
+        DispatchQueue.main.async {
+            AppDelegate.current?.controllers[ownerID]?.focusTerminal()
+        }
     }
 
     func resizeSplit(to proposedFraction: Double, along extent: CGFloat) {
