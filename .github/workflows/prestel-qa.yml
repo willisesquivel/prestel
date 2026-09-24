@@ -51,6 +51,7 @@ jobs:
           xcodebuild -resolvePackageDependencies \
             -project Prestel.xcodeproj \
             -scheme Prestel \
+            -skipPackagePluginValidation \
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/.build/SourcePackages"
 
       - name: Build for testing
@@ -60,7 +61,8 @@ jobs:
           xcodebuild build-for-testing \
             -project Prestel.xcodeproj \
             -scheme Prestel \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
+            -skipPackagePluginValidation \
             -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             -clonedSourcePackagesDirPath "$GITHUB_WORKSPACE/.build/SourcePackages" \
             CODE_SIGN_STYLE=Manual \
@@ -75,7 +77,8 @@ jobs:
           xcodebuild test-without-building \
             -project Prestel.xcodeproj \
             -scheme Prestel \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
+            -skipPackagePluginValidation \
             -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             -only-testing:PrestelTests \
             -resultBundlePath "$GITHUB_WORKSPACE/build/unit.xcresult" \
@@ -93,7 +96,8 @@ jobs:
           xcodebuild test-without-building \
             -project Prestel.xcodeproj \
             -scheme Prestel \
-            -destination 'platform=macOS' \
+            -destination 'platform=macOS,arch=arm64' \
+            -skipPackagePluginValidation \
             -derivedDataPath "$GITHUB_WORKSPACE/build/DerivedData" \
             -only-testing:PrestelUITests \
             -resultBundlePath "$GITHUB_WORKSPACE/build/ui.xcresult" \
