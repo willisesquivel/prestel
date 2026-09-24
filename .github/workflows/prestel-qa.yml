@@ -78,6 +78,8 @@ jobs:
             | tee build/build.log
 
       - name: Unit tests
+        id: unit
+        continue-on-error: true
         run: |
           set -euo pipefail
           xcodebuild test-without-building \
@@ -94,6 +96,8 @@ jobs:
             DEVELOPMENT_TEAM=
 
       - name: UI tests that launch Prestel.app
+        id: ui
+        if: always()
         run: |
           set -euo pipefail
           # PrestelUITests is an XCUITest bundle. xcodebuild starts
@@ -111,6 +115,14 @@ jobs:
             CODE_SIGN_IDENTITY=- \
             CODE_SIGNING_ALLOWED=YES \
             DEVELOPMENT_TEAM=
+
+      - name: Fail the job if either suite failed
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "unit=${{ steps.unit.outcome }} ui=${{ steps.ui.outcome }}"
+          test "${{ steps.unit.outcome }}" = "success"
+          test "${{ steps.ui.outcome }}" = "success"
 
       - name: Upload test results
         if: always()
