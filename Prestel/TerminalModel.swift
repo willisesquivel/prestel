@@ -137,6 +137,11 @@ struct WindowDescriptor: Codable, Equatable {
 /// A window owns its tabs. Filtering and view attachment never own process lifetime.
 @MainActor
 final class TerminalModel: ObservableObject {
+    private static var opensSidebarInNewWindows: Bool {
+        UserDefaults.standard.object(forKey: "openSidebarInNewWindows") == nil
+            || UserDefaults.standard.bool(forKey: "openSidebarInNewWindows")
+    }
+
     let id: UUID
     @Published private(set) var tabs: [TerminalSession] = []
     @Published private(set) var archived: [TerminalSession] = []
@@ -160,6 +165,7 @@ final class TerminalModel: ObservableObject {
 
     init(directory: String = ShellConfiguration.defaultDirectory, restoration: WindowDescriptor? = nil) {
         id = restoration?.id ?? UUID()
+        if restoration == nil { sidebarVisible = Self.opensSidebarInNewWindows }
         if let restoration, !restoration.tabs.isEmpty {
             sidebarVisible = restoration.sidebarVisible
             sidebarWidth = min(300, max(150, restoration.sidebarWidth))
@@ -188,6 +194,7 @@ final class TerminalModel: ObservableObject {
     /// Owns an existing live session. Does not spawn a replacement shell.
     init(adopting tab: TerminalSession) {
         self.id = UUID()
+        sidebarVisible = Self.opensSidebarInNewWindows
         tabs = [tab]
         subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         selectedID = tab.id
@@ -200,6 +207,7 @@ final class TerminalModel: ObservableObject {
     /// Owns existing live sessions without replacing their PTYs.
     init(adopting adoptedTabs: [TerminalSession], selectedID preferredID: UUID?) {
         id = UUID()
+        sidebarVisible = Self.opensSidebarInNewWindows
         tabs = adoptedTabs
         for tab in adoptedTabs {
             subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
@@ -344,7 +352,8 @@ final class TerminalModel: ObservableObject {
     /// threshold on an unselected tab collapses the selection to that tab.
     func prepareSelectionForDrag(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }), !selectedTabIDs.contains(id) else { return }
-        select(id)
+        selectedTabIDs = [id]
+        selectionAnchorID = id
     }
 
     /// Canonical tab order carried by a drag. Split partners expand together,

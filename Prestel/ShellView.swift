@@ -350,7 +350,9 @@ private struct TerminalDetailSurface: View {
             } else {
                 DetailCard {
                     if model.selectedTab?.kind == .settings {
-                        PrestelSettingsView().safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
+                        PrestelSettingsView()
+                            .safeAreaBar(edge: .top, spacing: 0) { TerminalToolbar(model: model) }
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         VStack(spacing: 0) {
                             TerminalToolbar(model: model)

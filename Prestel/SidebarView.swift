@@ -367,7 +367,8 @@ private struct SidebarSelectionChrome: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let halfWidth = geometry.size.width / 2
+            let dividerWidth = item.members.count > 1 ? ShellMetrics.sidebarRowSpacing : 0
+            let halfWidth = (geometry.size.width - dividerWidth) / 2
             ZStack(alignment: .topLeading) {
                 if current.leading {
                     UnevenRoundedRectangle(
@@ -397,7 +398,7 @@ private struct SidebarSelectionChrome: View {
                         width: halfWidth,
                         height: geometry.size.height + (next.trailing ? ShellMetrics.sidebarRowSpacing : 0)
                     )
-                    .offset(x: halfWidth)
+                    .offset(x: halfWidth + dividerWidth)
                 }
             }
         }
