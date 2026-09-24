@@ -5,8 +5,9 @@ import XCTest
 /// is a separate process from the test runner. Do not set
 /// `XCTestConfigurationFilePath` on that process: Prestel treats it as a
 /// unit-test host and does not open a window.
+@MainActor
 class PrestelUITestCase: XCTestCase {
-    var app = XCUIApplication()
+    var app: XCUIApplication!
 
     override func setUpWithError() throws {
         try super.setUpWithError()
