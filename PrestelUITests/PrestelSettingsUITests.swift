@@ -43,26 +43,21 @@ final class PrestelSettingsUITests: PrestelUITestCase {
 
     func testTextSizeStepperChangesTheShownPointSize() {
         openSettings()
-        let before = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' pt'")).firstMatch
-        XCTAssertTrue(before.waitForExistence(timeout: 5), "Text size stepper label did not appear")
-        let original = before.label
         let stepper = app.steppers.firstMatch
-        XCTAssertTrue(stepper.waitForExistence(timeout: 3))
+        XCTAssertTrue(stepper.waitForExistence(timeout: 5), "Text size stepper did not appear")
+        let original = stepper.label
+        XCTAssertTrue(original.contains("pt"), "Text size stepper label was \(original)")
         stepper.buttons["Increment"].click()
-        let after = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' pt'")).firstMatch
-        XCTAssertNotEqual(after.label, original)
+        XCTAssertNotEqual(stepper.label, original)
         stepper.buttons["Decrement"].click()
-        XCTAssertEqual(
-            app.staticTexts.matching(NSPredicate(format: "label ENDSWITH ' pt'")).firstMatch.label,
-            original
-        )
+        XCTAssertEqual(stepper.label, original)
     }
 
     func testOptionAsMetaAndWindowTogglesFlip() {
         openSettings()
-        let meta = app.switches["Use Option as Meta"]
-        let sidebar = app.switches["Open sidebar in new windows"]
-        let expand = app.switches["Expand files by default"]
+        let meta = labeledControl("Use Option as Meta")
+        let sidebar = labeledControl("Open sidebar in new windows")
+        let expand = labeledControl("Expand files by default")
         XCTAssertTrue(meta.waitForExistence(timeout: 5))
         XCTAssertTrue(sidebar.exists)
         XCTAssertTrue(expand.exists)
@@ -85,7 +80,9 @@ final class PrestelSettingsUITests: PrestelUITestCase {
 
     func testChooseStartingFolderCancelLeavesThePath() {
         openSettings()
-        let path = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Starting folder:'")).firstMatch
+        let path = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label BEGINSWITH 'Starting folder:'")
+        ).firstMatch
         XCTAssertTrue(path.waitForExistence(timeout: 5))
         let before = path.label
         app.buttons["Choose Folder…"].click()
@@ -100,8 +97,17 @@ final class PrestelSettingsUITests: PrestelUITestCase {
         let title = retitleFrontWindow("QATERM")
         openSettings()
         XCTAssertTrue(window(titled: "Settings").waitForExistence(timeout: 5))
-        app.buttons[title].firstMatch.click()
+        tabRow(title).click()
         XCTAssertTrue(window(titled: title).waitForExistence(timeout: 8), "Selecting the terminal row did not leave Settings")
+    }
+
+    private func labeledControl(_ name: String) -> XCUIElement {
+        let named = NSPredicate(format: "label == %@ OR identifier == %@", name, name)
+        let toggle = app.switches.matching(named).firstMatch
+        if toggle.waitForExistence(timeout: 2) { return toggle }
+        let checkbox = app.checkBoxes.matching(named).firstMatch
+        if checkbox.exists { return checkbox }
+        return toggle
     }
 
     private func openSettings() {

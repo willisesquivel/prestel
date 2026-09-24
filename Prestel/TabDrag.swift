@@ -1017,6 +1017,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.folderDestinations = folderDestinations
         nsView.allowsDrag = allowsDrag
         nsView.isFolder = isFolder
+        nsView.publishAccessibility()
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: TabRowHitNSView, context: Context) -> CGSize? {
@@ -1062,16 +1063,26 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        setAccessibilityElement(false)
-        setAccessibilityHidden(true)
+        configureAccessibility()
         postsFrameChangedNotifications = true
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        setAccessibilityElement(false)
-        setAccessibilityHidden(true)
+        configureAccessibility()
         postsFrameChangedNotifications = true
+    }
+
+    private func configureAccessibility() {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityHidden(false)
+    }
+
+    func publishAccessibility() {
+        let name = titleText.isEmpty ? "Tab" : titleText
+        setAccessibilityLabel(name)
+        setAccessibilityIdentifier(name)
     }
 
     override func updateTrackingAreas() {

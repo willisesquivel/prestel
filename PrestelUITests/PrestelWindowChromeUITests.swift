@@ -35,21 +35,22 @@ final class PrestelWindowChromeUITests: PrestelUITestCase {
 
     func testSelectAllInSearchSelectsTheQuery() {
         retitleFrontWindow("QAPASTESEARCH")
-        let search = app.textViews["Search terminal tabs"]
+        let search = searchField()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.click()
         search.typeText("QAPASTE")
         clickMenu("Edit", "Select All")
         app.typeText("Q")
-        XCTAssertTrue(app.buttons["QAPASTESEARCH"].firstMatch.waitForExistence(timeout: 3))
+        XCTAssertTrue(tabRow("QAPASTESEARCH").waitForExistence(timeout: 3))
     }
 
     func testResizeChangesTheWindowFrame() {
         let window = prestelWindows.firstMatch
         let before = window.frame
-        let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.98))
-        let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.72, dy: 0.72))
-        start.press(forDuration: 0.2, thenDragTo: end)
+        let corner = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 1))
+            .withOffset(CGVector(dx: -3, dy: -3))
+        let end = corner.withOffset(CGVector(dx: -180, dy: -140))
+        corner.press(forDuration: 0.3, thenDragTo: end)
         let after = window.frame
         XCTAssertNotEqual(after.size.width, before.size.width)
         XCTAssertNotEqual(after.size.height, before.size.height)
@@ -85,14 +86,13 @@ final class PrestelWindowChromeUITests: PrestelUITestCase {
     func testMinimizeTrafficLightAndWindowMenuRestoresTheWindow() {
         retitleFrontWindow("QAMINI")
         window(titled: "QAMINI").buttons["Minimize"].firstMatch.click()
-        let window = window(titled: "QAMINI")
-        XCTAssertTrue(window.waitForExistence(timeout: 4))
         let windowMenu = app.menuBars.menuBarItems["Window"]
         windowMenu.click()
         let item = windowMenu.menuItems.matching(NSPredicate(format: "title CONTAINS %@", "QAMINI")).firstMatch
-        if item.waitForExistence(timeout: 3) {
-            item.click()
-        }
-        XCTAssertTrue(window.isHittable || window.exists)
+        XCTAssertTrue(item.waitForExistence(timeout: 4), "Minimized window is missing from the Window menu")
+        item.click()
+        let window = window(titled: "QAMINI")
+        XCTAssertTrue(window.waitForExistence(timeout: 6), "Window menu did not restore the minimized window")
+        XCTAssertTrue(window.isHittable)
     }
 }

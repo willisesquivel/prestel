@@ -9,10 +9,10 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         let search = searchField()
         search.click()
         search.typeText("QAFIND")
-        XCTAssertTrue(app.buttons["QAFIND"].firstMatch.waitForExistence(timeout: 4))
-        XCTAssertFalse(app.buttons["QAHIDE"].firstMatch.exists)
+        XCTAssertTrue(tabRow("QAFIND").waitForExistence(timeout: 4))
+        XCTAssertFalse(tabRow("QAHIDE").exists)
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(app.buttons["QAHIDE"].firstMatch.waitForExistence(timeout: 4), "Escape did not clear sidebar search")
+        XCTAssertTrue(tabRow("QAHIDE").waitForExistence(timeout: 4), "Escape did not clear sidebar search")
     }
 
     func testSearchWithNoMatchShowsAnEmptyTabList() {
@@ -20,10 +20,10 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         let search = searchField()
         search.click()
         search.typeText("zzzznomatch")
-        XCTAssertFalse(app.buttons["QAPRESENT"].firstMatch.waitForExistence(timeout: 2))
+        XCTAssertFalse(tabRow("QAPRESENT").waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["Archived"].exists)
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(app.buttons["QAPRESENT"].firstMatch.waitForExistence(timeout: 4))
+        XCTAssertTrue(tabRow("QAPRESENT").waitForExistence(timeout: 4))
     }
 
     func testArchiveMovesATabOutOfTheLiveListAndUnarchiveRestoresIt() {
@@ -32,13 +32,13 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         retitleFrontWindow("QAARCH")
         rightClickTab("QAARCH")
         clickContext("Archive")
-        XCTAssertFalse(app.buttons["QAARCH"].firstMatch.waitForExistence(timeout: 2))
+        XCTAssertFalse(tabRow("QAARCH").waitForExistence(timeout: 2))
         XCTAssertTrue(window(titled: "QAKEEP").waitForExistence(timeout: 5))
         app.buttons["Archived"].firstMatch.click()
-        XCTAssertTrue(app.buttons["QAARCH"].firstMatch.waitForExistence(timeout: 5), "Archived list did not show the archived tab")
+        XCTAssertTrue(tabRow("QAARCH").waitForExistence(timeout: 5), "Archived list did not show the archived tab")
         rightClickTab("QAARCH")
         clickContext("Unarchive")
-        XCTAssertTrue(app.buttons["QAARCH"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(tabRow("QAARCH").waitForExistence(timeout: 5))
         XCTAssertTrue(window(titled: "QAARCH").waitForExistence(timeout: 5))
     }
 
@@ -48,11 +48,11 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         clickContext("New Folder")
         let folder = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Folder' AND label CONTAINS 'folder'")).firstMatch
         XCTAssertTrue(folder.waitForExistence(timeout: 5), "New Folder did not add a folder row")
-        XCTAssertTrue(app.buttons["QAFOLDER"].firstMatch.exists)
+        XCTAssertTrue(tabRow("QAFOLDER").exists)
         folder.click()
-        XCTAssertFalse(app.buttons["QAFOLDER"].firstMatch.waitForExistence(timeout: 2))
+        XCTAssertFalse(tabRow("QAFOLDER").waitForExistence(timeout: 2))
         folder.click()
-        XCTAssertTrue(app.buttons["QAFOLDER"].firstMatch.waitForExistence(timeout: 4))
+        XCTAssertTrue(tabRow("QAFOLDER").waitForExistence(timeout: 4))
     }
 
     func testRenameTabUpdatesTheWindowTitle() {
@@ -61,7 +61,7 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         clickContext("Rename Tab")
         app.typeText("QACUSTOM\n")
         XCTAssertTrue(window(titled: "QACUSTOM").waitForExistence(timeout: 8), "Rename did not change the window title")
-        XCTAssertTrue(app.buttons["QACUSTOM"].firstMatch.waitForExistence(timeout: 4))
+        XCTAssertTrue(tabRow("QACUSTOM").waitForExistence(timeout: 4))
     }
 
     func testBackAndForwardWalkTabHistory() {
@@ -84,15 +84,10 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         XCTAssertTrue(searchField().exists)
         clickMenu("View", "Toggle Sidebar")
         XCTAssertTrue(app.buttons["Show sidebar"].waitForExistence(timeout: 4))
-        XCTAssertFalse(searchField().exists)
+        XCTAssertFalse(searchField(require: false).exists)
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.buttons["Hide sidebar"].waitForExistence(timeout: 4))
         XCTAssertTrue(searchField().waitForExistence(timeout: 4))
     }
 
-    private func searchField() -> XCUIElement {
-        let field = app.textViews["Search terminal tabs"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5), "Sidebar search field is missing")
-        return field
-    }
 }

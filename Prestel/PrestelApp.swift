@@ -194,6 +194,7 @@ struct PrestelSettingsView: View {
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
+                                    .accessibilityLabel("Use Option as Meta")
                             }
                         }
                     }
@@ -229,6 +230,7 @@ struct PrestelSettingsView: View {
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
+                                    .accessibilityLabel("Open sidebar in new windows")
                             }
                         }
                     }
@@ -240,6 +242,7 @@ struct PrestelSettingsView: View {
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
+                                    .accessibilityLabel("Expand files by default")
                             }
                         }
                     }

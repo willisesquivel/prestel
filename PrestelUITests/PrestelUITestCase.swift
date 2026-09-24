@@ -14,6 +14,14 @@ class PrestelUITestCase: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
+        addUIInterruptionMonitor(withDescription: "System notification") { alert in
+            let dismiss = alert.buttons["Close"].exists ? alert.buttons["Close"] : alert.buttons.firstMatch
+            if dismiss.exists {
+                dismiss.click()
+                return true
+            }
+            return false
+        }
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25), "Prestel.app did not reach the foreground")
         let window = prestelWindows.firstMatch
@@ -147,15 +155,28 @@ class PrestelUITestCase: XCTestCase {
         "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    func rightClickTab(_ title: String) {
-        let button = app.buttons[title].firstMatch
-        if button.waitForExistence(timeout: 4) {
-            button.rightClick()
-            return
+    func searchField(require: Bool = true) -> XCUIElement {
+        let named = NSPredicate(format: "identifier == %@ OR label == %@", "Search terminal tabs", "Search terminal tabs")
+        let field = app.textViews.matching(named).firstMatch
+        if require {
+            XCTAssertTrue(field.waitForExistence(timeout: 5), "Sidebar search field is missing")
         }
-        let text = app.staticTexts[title].firstMatch
-        XCTAssertTrue(text.waitForExistence(timeout: 4), "No sidebar row titled \(title)")
-        text.rightClick()
+        return field
+    }
+
+    func tabRow(_ title: String) -> XCUIElement {
+        let named = NSPredicate(format: "identifier == %@ OR label == %@ OR value == %@", title, title, title)
+        let button = app.buttons.matching(named).firstMatch
+        if button.waitForExistence(timeout: 2) { return button }
+        let text = app.textViews.matching(named).firstMatch
+        if text.waitForExistence(timeout: 2) { return text }
+        return button
+    }
+
+    func rightClickTab(_ title: String) {
+        let row = tabRow(title)
+        XCTAssertTrue(row.waitForExistence(timeout: 6), "No sidebar row titled \(title)")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).rightClick()
     }
 
     func clickContext(_ title: String) {
@@ -168,7 +189,7 @@ class PrestelUITestCase: XCTestCase {
     func makeGitRepository(dirtyFile: String? = nil) throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("prestel-qa-repo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let git = "/usr/bin/git"
+        let git = developerGit()
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: git), "git is not installed")
         func run(_ arguments: [String]) {
             let process = Process()
@@ -201,5 +222,16 @@ class PrestelUITestCase: XCTestCase {
             try? FileManager.default.removeItem(at: root)
         }
         return root
+    }
+
+    /// `/usr/bin/git` is an `xcrun` shim. The UI-test runner is sandboxed, so that shim fails.
+    private func developerGit() -> String {
+        let developer = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+            ?? (FileManager.default.fileExists(atPath: "/Applications/Xcode_26.6.app")
+                ? "/Applications/Xcode_26.6.app/Contents/Developer"
+                : "/Applications/Xcode.app/Contents/Developer")
+        let candidate = (developer as NSString).appendingPathComponent("usr/bin/git")
+        if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        return "/usr/bin/git"
     }
 }

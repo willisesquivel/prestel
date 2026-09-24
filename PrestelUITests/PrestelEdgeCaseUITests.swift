@@ -8,7 +8,7 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
         retitleFrontWindow("QAVISIBLE")
         clickMenu("File", "New Tab")
         retitleFrontWindow("QADRAG")
-        app.buttons["QAVISIBLE"].firstMatch.click()
+        tabRow("QAVISIBLE").click()
         XCTAssertTrue(window(titled: "QAVISIBLE").waitForExistence(timeout: 8))
 
         dragTab("QADRAG", to: CGVector(dx: 0.86, dy: 0.58))
@@ -41,8 +41,8 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
         retitleFrontWindow("QATOP")
         clickMenu("File", "New Tab")
         retitleFrontWindow("QABOTTOM")
-        let top = app.buttons["QATOP"].firstMatch
-        let bottom = app.buttons["QABOTTOM"].firstMatch
+        let top = tabRow("QATOP")
+        let bottom = tabRow("QABOTTOM")
         XCTAssertTrue(bottom.waitForExistence(timeout: 5))
         XCTAssertLessThan(top.frame.minY, bottom.frame.minY)
 
@@ -51,8 +51,8 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
         start.press(forDuration: 0.5, thenDragTo: end)
         capture("sidebar-reorder")
 
-        let topAfter = app.buttons["QATOP"].firstMatch
-        let bottomAfter = app.buttons["QABOTTOM"].firstMatch
+        let topAfter = tabRow("QATOP")
+        let bottomAfter = tabRow("QABOTTOM")
         XCTAssertTrue(topAfter.waitForExistence(timeout: 4))
         XCTAssertTrue(bottomAfter.exists)
         XCTAssertLessThan(bottomAfter.frame.minY, topAfter.frame.minY, "Dragging the lower tab above the upper tab did not reorder the sidebar")
@@ -122,7 +122,7 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
 
     func testKeysGoToTheShellAfterLeavingSearch() {
         retitleFrontWindow("QAFOCUS")
-        let search = app.textViews["Search terminal tabs"]
+        let search = searchField()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.click()
         search.typeText("not-the-shell")
@@ -159,7 +159,7 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
     func testChromeDoesNotCoverTheSidebarSearchOrTrafficLights() {
         let window = prestelWindows.firstMatch
         let close = window.buttons["Close"].firstMatch
-        let search = app.textViews["Search terminal tabs"]
+        let search = searchField()
         XCTAssertTrue(close.waitForExistence(timeout: 4))
         XCTAssertTrue(search.waitForExistence(timeout: 4))
         XCTAssertTrue(close.isHittable, "Close traffic light is not hittable")
@@ -176,7 +176,7 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
     }
 
     private func dragTab(_ title: String, to point: CGVector) {
-        let row = app.buttons[title].firstMatch
+        let row = tabRow(title)
         XCTAssertTrue(row.waitForExistence(timeout: 5), "No row titled \(title) to drag")
         let start = row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let end = prestelWindows.firstMatch.coordinate(withNormalizedOffset: point)
