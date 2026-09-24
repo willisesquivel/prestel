@@ -369,9 +369,33 @@ final class TerminalModel: ObservableObject {
         return tabs.map(\.id).filter(moving.contains)
     }
 
-    func split(with tabID: UUID, on side: SplitSide) {
+    func split(with tabID: UUID, on side: SplitSide, beside remembered: UUID? = nil) {
         guard tabs.contains(where: { $0.id == tabID }) else { return }
-        if TabSplitGeometry.isNoOp(movingID: tabID, side: side, selectedID: selectedID, split: visibleSplit) {
+        // A press that starts the drag can move selection onto the grabbed tab.
+        // The pane that was showing is the real split partner. Dropping the
+        // already-visible tab onto that same pane stays a single panel.
+        let rememberedPartner: UUID? = {
+            guard let remembered, remembered != tabID,
+                  tabs.contains(where: { $0.id == remembered }) else { return nil }
+            guard selectedID == tabID || selectedID == nil else { return nil }
+            return remembered
+        }()
+        if rememberedPartner == nil,
+           TabSplitGeometry.isNoOp(movingID: tabID, side: side, selectedID: selectedID, split: visibleSplit) {
+            return
+        }
+        if let partner = rememberedPartner, visibleSplit == nil {
+            dissolvePairs(containing: [partner, tabID])
+            splits.append(
+                SplitState(
+                    leadingID: side.isPrimary ? tabID : partner,
+                    trailingID: side.isPrimary ? partner : tabID,
+                    fraction: 0.5,
+                    focusedID: tabID,
+                    axis: side.axis
+                )
+            )
+            keepSplitPairInOneFolder(partner, tabID)
             select(tabID)
             return
         }

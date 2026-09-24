@@ -125,6 +125,8 @@ final class TabDragCoordinator: ObservableObject {
     @Published private(set) var hoveredRowKey: UUID?
 
     private var payload: TabDragPayload?
+    /// Tab showing in the source window when the drag started.
+    private var visibleTabID: UUID?
     private var destination: TabDragDestination?
     private var cancelled = false
     private var finishing = false
@@ -224,6 +226,7 @@ final class TabDragCoordinator: ObservableObject {
         lastScreenPoint = screenPoint
         lastPointerY = nil
         dragDirection = nil
+        visibleTabID = AppDelegate.current?.controllers[payload.sourceWindowID]?.model.selectedID
         cancelCollapsedDwell()
         installEscapeMonitor()
         updatePointer(screenPoint)
@@ -246,7 +249,7 @@ final class TabDragCoordinator: ObservableObject {
             return TabSplitGeometry.isNoOp(
                 movingID: payload.tabID,
                 side: preview.side,
-                selectedID: model.selectedID,
+                selectedID: visibleTabID ?? model.selectedID,
                 split: model.visibleSplit
             )
         case .windowNoOp(_):
@@ -301,10 +304,11 @@ final class TabDragCoordinator: ObservableObject {
         let returning = shouldAnimateReturn
         let destination = cancelled ? nil : self.destination
         let moving = payload
+        let panelTabID = visibleTabID
         cleanupDragState()
         if returning { return }
         guard let moving else { return }
-        commit(moving, destination: destination, screenPoint: screenPoint)
+        commit(moving, destination: destination, screenPoint: screenPoint, beside: panelTabID)
     }
 
     func resetForTests() {
@@ -321,6 +325,7 @@ final class TabDragCoordinator: ObservableObject {
         draggingSession = nil
         lastPointerY = nil
         dragDirection = nil
+        visibleTabID = nil
         zones.removeAll()
         details.removeAll()
         rows.removeAll()
@@ -664,7 +669,7 @@ final class TabDragCoordinator: ObservableObject {
 
     // MARK: Commit
 
-    private func commit(_ payload: TabDragPayload, destination: TabDragDestination?, screenPoint: CGPoint) {
+    private func commit(_ payload: TabDragPayload, destination: TabDragDestination?, screenPoint: CGPoint, beside: UUID?) {
         guard let app = AppDelegate.current,
               let source = app.controllers[payload.sourceWindowID],
               source.model.tabs.contains(where: { $0.id == payload.tabID }) else { return }
@@ -690,7 +695,7 @@ final class TabDragCoordinator: ObservableObject {
             DispatchQueue.main.async { dest.focusTerminal() }
             return
         case .split(let preview):
-            commitSplit(payload, preview: preview, source: source, app: app)
+            commitSplit(payload, preview: preview, source: source, app: app, beside: beside)
             return
         case .windowNoOp(_):
             return
@@ -709,11 +714,12 @@ final class TabDragCoordinator: ObservableObject {
         _ payload: TabDragPayload,
         preview: TabSplitPreview,
         source: TerminalWindowController,
-        app: AppDelegate
+        app: AppDelegate,
+        beside: UUID?
     ) {
         guard payload.tabIDs.count == 1 else { return }
         if preview.windowID == payload.sourceWindowID {
-            source.model.split(with: payload.tabID, on: preview.side)
+            source.model.split(with: payload.tabID, on: preview.side, beside: beside)
             source.refresh()
             DispatchQueue.main.async { source.focusTerminal() }
             return
@@ -748,6 +754,7 @@ final class TabDragCoordinator: ObservableObject {
         draggingSession = nil
         lastPointerY = nil
         dragDirection = nil
+        visibleTabID = nil
     }
 
     private func refreshReturnAnimation() {

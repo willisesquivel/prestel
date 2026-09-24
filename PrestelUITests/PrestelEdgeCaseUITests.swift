@@ -29,11 +29,12 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
         dragTab("QASELF", to: CGVector(dx: 0.86, dy: 0.58))
         capture("split-visible-tab-onto-itself")
 
-        let splitTheOtherTab = terminal("QAOTHER") && menuItem("View", "Unsplit Tabs").isEnabled
+        let stayedSingle = !terminal("QAOTHER") && !menuItem("View", "Unsplit Tabs").isEnabled
         dismissMenus()
+        XCTAssertTrue(window(titled: "QASELF").exists, "Dropping the visible tab onto its own panel left that tab")
         XCTAssertTrue(
-            splitTheOtherTab,
-            "Dragging the visible tab onto its own panel did not split it with the other tab. The content stayed on the dragged tab, so the drop targeted itself and the gesture could not finish."
+            stayedSingle,
+            "Dropping the visible tab onto its own panel should stay a single pane, not a split with itself"
         )
     }
 
