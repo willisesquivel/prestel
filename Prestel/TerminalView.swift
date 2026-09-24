@@ -110,10 +110,12 @@ enum TerminalFontSize {
                           let cols = oldCols, let rows = oldRows,
                           let newCell else { return }
                     let reserve = scrollerReserve(for: surface)
-                    // +1pt lands mid-interval so floor() can't slip a column
-                    // on floating-point boundaries.
-                    let wantSurfaceW = CGFloat(cols) * newCell.width + reserve + 1
-                    let wantSurfaceH = CGFloat(rows) * newCell.height + 1
+                    // The view is wider than cols×cell (insets, fractional cells).
+                    // Keeping only +1pt under-grows, so the next font reflows.
+                    let padW = oldCell.map { max(0, surface.frame.width - CGFloat(cols) * $0.width) } ?? 0
+                    let padH = oldCell.map { max(0, surface.frame.height - CGFloat(rows) * $0.height) } ?? 0
+                    let wantSurfaceW = CGFloat(cols) * newCell.width + padW + reserve + 1
+                    let wantSurfaceH = CGFloat(rows) * newCell.height + padH + 1
                     let dW = wantSurfaceW - surface.frame.width
                     let dH = wantSurfaceH - surface.frame.height
                     guard abs(dW) >= 0.5 || abs(dH) >= 0.5 else { return }
@@ -125,10 +127,8 @@ enum TerminalFontSize {
                     // is what nudged the window upward at minimum size).
                     size.width = max(size.width, window.minSize.width)
                     size.height = max(size.height, window.minSize.height)
-                    if let screen = window.screen?.visibleFrame {
-                        size.width = min(size.width, screen.width)
-                        size.height = min(size.height, screen.height)
-                    }
+                    // Do not clamp the size to the screen. That froze the
+                    // window at 1024 and reflowed the grid on the next zoom.
                     var frame = NSRect(origin: oldFrame.origin, size: size)
                     // Keep top-left anchored (grow right/down).
                     frame.origin.x = oldFrame.minX

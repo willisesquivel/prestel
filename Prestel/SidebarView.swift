@@ -986,9 +986,7 @@ private struct SidebarInlineName: NSViewRepresentable {
         if entersEditing || (firstApply && isRenaming) {
             textView.prepareEditingSession()
             DispatchQueue.main.async { [weak textView] in
-                guard let textView, textView.isEditingMode, textView.window != nil else { return }
-                textView.window?.makeFirstResponder(textView)
-                textView.selectAllDeferred()
+                textView?.claimKeyboardFocus(retries: 5)
             }
         }
     }
@@ -1107,6 +1105,18 @@ final class SidebarInlineNameView: NSTextView {
     func prepareEditingSession() {
         cancelled = false
         committed = false
+    }
+
+    func claimKeyboardFocus(retries: Int) {
+        guard isEditingMode, let window else {
+            guard retries > 0 else { return }
+            DispatchQueue.main.async { [weak self] in self?.claimKeyboardFocus(retries: retries - 1) }
+            return
+        }
+        window.makeFirstResponder(self)
+        selectAllDeferred()
+        guard window.firstResponder !== self, retries > 0 else { return }
+        DispatchQueue.main.async { [weak self] in self?.claimKeyboardFocus(retries: retries - 1) }
     }
 
     func restyle() {
