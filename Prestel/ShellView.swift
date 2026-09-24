@@ -373,6 +373,14 @@ private struct TerminalDetailSurface: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .modifier(ShellDetailAccessibility(title: model.selectedTab?.displayTitle ?? "Local", split: model.visibleSplit != nil))
+        .overlay(alignment: .topLeading) {
+            // Outside the detail container. `.contain` never published the
+            // SwiftTerm hosts, so each pane gets its own element here.
+            if model.visibleSplit != nil {
+                SplitPaneAccessibilityLabels(model: model)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder
@@ -448,9 +456,9 @@ private struct TerminalDetailSurface: View {
     }
 }
 
-/// One pane keeps a single terminal label. A split must expose each pane:
-/// a label on the container hides the other tab, so a drop looks like the
-/// visible session disappeared.
+/// One pane keeps a single terminal label. A split must not replace that with
+/// one container label: that hides the partner, and containing the SwiftTerm
+/// hosts still does not publish their titles.
 private struct ShellDetailAccessibility: ViewModifier {
     let title: String
     let split: Bool
@@ -470,6 +478,31 @@ private struct ShellDetailAccessibilityBody: ViewModifier {
             content.accessibilityElement(children: .contain)
         } else {
             content.accessibilityLabel("\(title) terminal")
+        }
+    }
+}
+
+private struct SplitPaneAccessibilityLabels: View {
+    @ObservedObject var model: TerminalModel
+
+    var body: some View {
+        if let split = model.visibleSplit {
+            VStack(alignment: .leading, spacing: 0) {
+                paneLabel(split.leadingID)
+                paneLabel(split.trailingID)
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    @ViewBuilder
+    private func paneLabel(_ id: UUID) -> some View {
+        if let title = model.tab(id: id)?.displayTitle {
+            Color.clear
+                .frame(width: 4, height: 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(title) terminal")
+                .accessibilityIdentifier("\(title) terminal")
         }
     }
 }
