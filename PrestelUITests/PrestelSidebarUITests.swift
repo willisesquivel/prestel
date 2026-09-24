@@ -61,6 +61,7 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         clickContext("Rename Tab")
         let editor = app.textViews.matching(NSPredicate(format: "value == %@", "QARENAME")).firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 4), "Rename did not open an editor for QARENAME")
+        editor.click()
         editor.typeText("QACUSTOM\n")
         XCTAssertTrue(window(titled: "QACUSTOM").waitForExistence(timeout: 8), "Rename did not change the window title")
         XCTAssertTrue(tabRow("QACUSTOM").waitForExistence(timeout: 4))

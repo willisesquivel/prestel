@@ -202,7 +202,11 @@ class PrestelUITestCase: XCTestCase {
     func makeGitRepository(dirtyFile: String? = nil) throws -> URL {
         // The test runner is sandboxed. Prestel.app cannot see that container, so the repo lives in /tmp.
         let root = URL(fileURLWithPath: "/tmp/prestel-qa-repo-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        } catch {
+            throw XCTSkip("UI test runner cannot create \(root.path): \(error.localizedDescription)")
+        }
         let git = developerGit()
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: git), "git is not installed")
         func run(_ arguments: [String]) {
