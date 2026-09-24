@@ -59,7 +59,9 @@ final class PrestelSidebarUITests: PrestelUITestCase {
         retitleFrontWindow("QARENAME")
         rightClickTab("QARENAME")
         clickContext("Rename Tab")
-        app.typeText("QACUSTOM\n")
+        let editor = app.textViews.matching(NSPredicate(format: "value == %@", "QARENAME")).firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 4), "Rename did not open an editor for QARENAME")
+        editor.typeText("QACUSTOM\n")
         XCTAssertTrue(window(titled: "QACUSTOM").waitForExistence(timeout: 8), "Rename did not change the window title")
         XCTAssertTrue(tabRow("QACUSTOM").waitForExistence(timeout: 4))
     }

@@ -187,6 +187,8 @@ struct PrestelSettingsView: View {
                                         in: Double(TerminalFontSize.minimum)...Double(TerminalFontSize.maximum))
                                     .controlSize(.small)
                                     .fixedSize()
+                                    .accessibilityIdentifier("terminal-text-size")
+                                    .accessibilityValue("\(Int(fontSize)) pt")
                             }
                             SettingsContentDivider()
                             SettingsContentRow(title: "Use Option as Meta", detail: "Send Option as a terminal key instead of typing alternate characters", stacksControl: stacksControls) {
@@ -195,6 +197,8 @@ struct PrestelSettingsView: View {
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
                                     .accessibilityLabel("Use Option as Meta")
+                                    .accessibilityIdentifier("option-as-meta")
+                                    .accessibilityValue(optionAsMeta ? "on" : "off")
                             }
                         }
                     }
@@ -216,6 +220,7 @@ struct PrestelSettingsView: View {
                                         .truncationMode(.middle)
                                         .textSelection(.enabled)
                                         .help(selectedDirectoryPath)
+                                        .accessibilityIdentifier("starting-folder-path")
                                         .accessibilityLabel("Starting folder: \(selectedDirectoryPath)")
                                         .frame(maxWidth: 180, alignment: .trailing)
                                 }
@@ -231,6 +236,8 @@ struct PrestelSettingsView: View {
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
                                     .accessibilityLabel("Open sidebar in new windows")
+                                    .accessibilityIdentifier("open-sidebar-in-new-windows")
+                                    .accessibilityValue(openSidebarInNewWindows ? "on" : "off")
                             }
                         }
                     }
@@ -243,6 +250,8 @@ struct PrestelSettingsView: View {
                                     .toggleStyle(.switch)
                                     .controlSize(.small)
                                     .accessibilityLabel("Expand files by default")
+                                    .accessibilityIdentifier("expand-files-by-default")
+                                    .accessibilityValue(expandReviewFiles ? "on" : "off")
                             }
                         }
                     }

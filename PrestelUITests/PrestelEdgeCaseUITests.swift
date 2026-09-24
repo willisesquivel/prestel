@@ -91,8 +91,10 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
         retitleFrontWindow("QALIVE")
         clickMenu("File", "New Tab")
         retitleFrontWindow("QABUSY")
-        typeLine("sleep 30")
-        Thread.sleep(forTimeInterval: 0.8)
+        let started = markerURL("busy")
+        defer { try? FileManager.default.removeItem(at: started) }
+        typeLine("printf BUSY > \(shellQuoted(started.path)); sleep 30")
+        waitForMarker(started, containing: "BUSY")
         clickMenu("File", "Close Tab")
         let alert = blockingDialog(titled: "Close Tab?")
         if alert.waitForExistence(timeout: 4) {
@@ -184,9 +186,7 @@ final class PrestelEdgeCaseUITests: PrestelUITestCase {
     }
 
     private func terminal(_ title: String) -> Bool {
-        app.staticTexts["\(title) terminal"].exists
-            || app.otherElements["\(title) terminal"].exists
-            || app.groups["\(title) terminal"].exists
+        terminalLabeled(title).exists
     }
 
     private func capture(_ name: String) {

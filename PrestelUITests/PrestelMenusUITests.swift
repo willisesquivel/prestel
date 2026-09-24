@@ -71,8 +71,10 @@ final class PrestelMenusUITests: PrestelUITestCase {
 
     func testQuitWithARunningJobCanBeCancelled() {
         retitleFrontWindow("QAQUIT")
-        typeLine("sleep 45")
-        Thread.sleep(forTimeInterval: 1.0)
+        let started = markerURL("quit")
+        defer { try? FileManager.default.removeItem(at: started) }
+        typeLine("printf QUITJOB > \(shellQuoted(started.path)); sleep 45")
+        waitForMarker(started, containing: "QUITJOB")
         app.typeKey("q", modifierFlags: .command)
         let alert = blockingDialog(titled: "Quit Prestel?")
         XCTAssertTrue(alert.waitForExistence(timeout: 8), "Quit with a live job did not ask for confirmation")

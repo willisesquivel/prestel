@@ -27,7 +27,7 @@ class PrestelUITestCase: XCTestCase {
         let window = prestelWindows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 20), "Prestel.app launched but no window appeared")
         focusTerminal(in: window)
-        Thread.sleep(forTimeInterval: 2.0)
+        _ = searchField(require: false).waitForExistence(timeout: 8)
     }
 
     override func tearDownWithError() throws {
@@ -148,7 +148,13 @@ class PrestelUITestCase: XCTestCase {
     }
 
     func markerURL(_ name: String) -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("prestel-qa-\(name)-\(UUID().uuidString).txt")
+        URL(fileURLWithPath: "/tmp/prestel-qa-\(name)-\(UUID().uuidString).txt")
+    }
+
+    func controlValue(_ element: XCUIElement) -> String {
+        if let text = element.value as? String, !text.isEmpty { return text }
+        if let number = element.value as? NSNumber { return number.stringValue }
+        return ""
     }
 
     func shellQuoted(_ path: String) -> String {
@@ -162,6 +168,13 @@ class PrestelUITestCase: XCTestCase {
             XCTAssertTrue(field.waitForExistence(timeout: 5), "Sidebar search field is missing")
         }
         return field
+    }
+
+    func terminalLabeled(_ title: String) -> XCUIElement {
+        let label = "\(title) terminal"
+        return app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ OR identifier == %@", label, label)
+        ).firstMatch
     }
 
     func tabRow(_ title: String) -> XCUIElement {
@@ -187,7 +200,8 @@ class PrestelUITestCase: XCTestCase {
 
     @discardableResult
     func makeGitRepository(dirtyFile: String? = nil) throws -> URL {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("prestel-qa-repo-\(UUID().uuidString)")
+        // The test runner is sandboxed. Prestel.app cannot see that container, so the repo lives in /tmp.
+        let root = URL(fileURLWithPath: "/tmp/prestel-qa-repo-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let git = developerGit()
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: git), "git is not installed")

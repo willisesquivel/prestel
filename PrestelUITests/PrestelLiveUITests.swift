@@ -64,9 +64,10 @@ final class PrestelLiveUITests: PrestelUITestCase {
 
     func testCloseWindowWithARunningJobAsksAndCancelKeepsIt() {
         let title = retitleFrontWindow("QAJOB")
-        typeLine("sleep 45")
-        // Give the child time to become the foreground process group.
-        Thread.sleep(forTimeInterval: 1.0)
+        let started = markerURL("job")
+        defer { try? FileManager.default.removeItem(at: started) }
+        typeLine("printf JOB > \(shellQuoted(started.path)); sleep 45")
+        waitForMarker(started, containing: "JOB")
         clickMenu("File", "Close Window")
 
         let alert = blockingDialog(titled: "Close Window?")

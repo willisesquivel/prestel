@@ -511,6 +511,8 @@ struct TerminalToolbarHeader: View {
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .accessibilityIdentifier("terminal-directory")
+                    .accessibilityLabel(subtitle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

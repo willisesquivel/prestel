@@ -59,6 +59,8 @@ final class PrestelReviewUITests: PrestelUITestCase {
     }
 
     private func directoryLabel(_ fragment: String) -> XCUIElement {
-        app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", fragment)).firstMatch
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == 'terminal-directory' AND (label CONTAINS %@ OR label CONTAINS %@)", fragment, fragment == "/tmp" ? "tmp" : fragment)
+        ).firstMatch
     }
 }

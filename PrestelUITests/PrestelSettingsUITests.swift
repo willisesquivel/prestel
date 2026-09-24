@@ -43,14 +43,14 @@ final class PrestelSettingsUITests: PrestelUITestCase {
 
     func testTextSizeStepperChangesTheShownPointSize() {
         openSettings()
-        let stepper = app.steppers.firstMatch
+        let stepper = app.steppers["terminal-text-size"]
         XCTAssertTrue(stepper.waitForExistence(timeout: 5), "Text size stepper did not appear")
-        let original = stepper.label
-        XCTAssertTrue(original.contains("pt"), "Text size stepper label was \(original)")
+        let original = controlValue(stepper)
+        XCTAssertTrue(original.contains("pt"), "Text size stepper value was \(original)")
         stepper.buttons["Increment"].click()
-        XCTAssertNotEqual(stepper.label, original)
+        XCTAssertNotEqual(controlValue(stepper), original)
         stepper.buttons["Decrement"].click()
-        XCTAssertEqual(stepper.label, original)
+        XCTAssertEqual(controlValue(stepper), original)
     }
 
     func testOptionAsMetaAndWindowTogglesFlip() {
@@ -61,28 +61,26 @@ final class PrestelSettingsUITests: PrestelUITestCase {
         XCTAssertTrue(meta.waitForExistence(timeout: 5))
         XCTAssertTrue(sidebar.exists)
         XCTAssertTrue(expand.exists)
-        let metaWas = meta.value as? String
+        let metaWas = controlValue(meta)
         meta.click()
-        XCTAssertNotEqual(meta.value as? String, metaWas)
+        XCTAssertNotEqual(controlValue(meta), metaWas)
         meta.click()
-        XCTAssertEqual(meta.value as? String, metaWas)
+        XCTAssertEqual(controlValue(meta), metaWas)
 
-        let sidebarWas = sidebar.value as? String
+        let sidebarWas = controlValue(sidebar)
         sidebar.click()
-        XCTAssertNotEqual(sidebar.value as? String, sidebarWas)
+        XCTAssertNotEqual(controlValue(sidebar), sidebarWas)
         sidebar.click()
 
-        let expandWas = expand.value as? String
+        let expandWas = controlValue(expand)
         expand.click()
-        XCTAssertNotEqual(expand.value as? String, expandWas)
+        XCTAssertNotEqual(controlValue(expand), expandWas)
         expand.click()
     }
 
     func testChooseStartingFolderCancelLeavesThePath() {
         openSettings()
-        let path = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label BEGINSWITH 'Starting folder:'")
-        ).firstMatch
+        let path = app.descendants(matching: .any)["starting-folder-path"]
         XCTAssertTrue(path.waitForExistence(timeout: 5))
         let before = path.label
         app.buttons["Choose Folder…"].click()

@@ -9,12 +9,8 @@ final class PrestelWindowChromeUITests: PrestelUITestCase {
         retitleFrontWindow("QASPLIT2")
         rightClickTab("QASPLIT1")
         clickContext("Split with Active")
-        XCTAssertTrue(app.staticTexts["QASPLIT1 terminal"].waitForExistence(timeout: 6) || app.otherElements["QASPLIT1 terminal"].waitForExistence(timeout: 2))
-        XCTAssertTrue(
-            app.staticTexts["QASPLIT2 terminal"].exists
-                || app.otherElements["QASPLIT2 terminal"].exists
-                || app.groups["QASPLIT2 terminal"].exists
-        )
+        XCTAssertTrue(terminalLabeled("QASPLIT1").waitForExistence(timeout: 6), "Split did not keep QASPLIT1 on screen")
+        XCTAssertTrue(terminalLabeled("QASPLIT2").waitForExistence(timeout: 4), "Split did not show QASPLIT2 beside the active tab")
         XCTAssertTrue(menuItem("View", "Unsplit Tabs").isEnabled)
         menuItem("View", "Unsplit Tabs").click()
         XCTAssertFalse(menuItem("View", "Unsplit Tabs").isEnabled)
