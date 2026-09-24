@@ -38,6 +38,12 @@
 		A10000000000000000000032 /* AppColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000032 /* AppColors.swift */; };
 		A10000000000000000000033 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000033 /* Assets.xcassets */; };
 		A10000000000000000000040 /* PrestelLiveUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000040 /* PrestelLiveUITests.swift */; };
+		A10000000000000000000042 /* PrestelUITestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000042 /* PrestelUITestCase.swift */; };
+		A10000000000000000000043 /* PrestelMenusUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000043 /* PrestelMenusUITests.swift */; };
+		A10000000000000000000044 /* PrestelSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000044 /* PrestelSettingsUITests.swift */; };
+		A10000000000000000000045 /* PrestelSidebarUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000045 /* PrestelSidebarUITests.swift */; };
+		A10000000000000000000046 /* PrestelReviewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000046 /* PrestelReviewUITests.swift */; };
+		A10000000000000000000047 /* PrestelWindowChromeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000047 /* PrestelWindowChromeUITests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
 /* End PBXBuildFile section */
@@ -94,6 +100,12 @@
 		A20000000000000000000032 /* AppColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppColors.swift; sourceTree = "<group>"; };
 		A20000000000000000000033 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000040 /* PrestelLiveUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelLiveUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000042 /* PrestelUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelUITestCase.swift; sourceTree = "<group>"; };
+		A20000000000000000000043 /* PrestelMenusUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelMenusUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000044 /* PrestelSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelSettingsUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000045 /* PrestelSidebarUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelSidebarUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000046 /* PrestelReviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelReviewUITests.swift; sourceTree = "<group>"; };
+		A20000000000000000000047 /* PrestelWindowChromeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrestelWindowChromeUITests.swift; sourceTree = "<group>"; };
 		A20000000000000000000041 /* PrestelUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PrestelUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -200,7 +212,13 @@
 		A50000000000000000000006 /* PrestelUITests */ = {
 			isa = PBXGroup;
 			children = (
+				A20000000000000000000042 /* PrestelUITestCase.swift */,
 				A20000000000000000000040 /* PrestelLiveUITests.swift */,
+				A20000000000000000000043 /* PrestelMenusUITests.swift */,
+				A20000000000000000000044 /* PrestelSettingsUITests.swift */,
+				A20000000000000000000045 /* PrestelSidebarUITests.swift */,
+				A20000000000000000000046 /* PrestelReviewUITests.swift */,
+				A20000000000000000000047 /* PrestelWindowChromeUITests.swift */,
 			);
 			path = PrestelUITests;
 			sourceTree = "<group>";
@@ -369,7 +387,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000042 /* PrestelUITestCase.swift in Sources */,
 				A10000000000000000000040 /* PrestelLiveUITests.swift in Sources */,
+				A10000000000000000000043 /* PrestelMenusUITests.swift in Sources */,
+				A10000000000000000000044 /* PrestelSettingsUITests.swift in Sources */,
+				A10000000000000000000045 /* PrestelSidebarUITests.swift in Sources */,
+				A10000000000000000000046 /* PrestelReviewUITests.swift in Sources */,
+				A10000000000000000000047 /* PrestelWindowChromeUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

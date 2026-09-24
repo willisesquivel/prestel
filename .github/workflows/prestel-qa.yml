@@ -21,7 +21,7 @@ jobs:
   macos:
     name: Build, unit tests, launch UI tests
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out
         uses: actions/checkout@v4

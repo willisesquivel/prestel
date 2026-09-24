@@ -1,41 +1,7 @@
 import XCTest
 
-/// Launches the built Prestel.app and drives its menus, windows, tabs, and PTY.
-/// These are XCUITests: `XCUIApplication().launch()` starts the real application
-/// process. They do not inject the unit-test host, and they do not set
-/// `XCTestConfigurationFilePath` on the app (that flag makes Prestel skip
-/// creating a window).
-final class PrestelLiveUITests: XCTestCase {
-    private var app = XCUIApplication()
-
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-        continueAfterFailure = false
-        app = XCUIApplication()
-        // Fresh windows. Do not pass XCTestConfigurationFilePath: Prestel treats
-        // that variable as "unit-test host" and refuses to open a terminal.
-        app.launchArguments = ["-ApplePersistenceIgnoreState", "YES"]
-        app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 25), "Prestel.app did not reach the foreground")
-        let window = prestelWindows.firstMatch
-        XCTAssertTrue(window.waitForExistence(timeout: 20), "Prestel.app launched but no window appeared")
-        focusTerminal(in: window)
-        // Login shells on the runner need a moment before the first line is delivered intact.
-        Thread.sleep(forTimeInterval: 2.0)
-    }
-
-    override func tearDownWithError() throws {
-        if app.state == .runningForeground {
-            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-            shot.name = "prestel-after-\(name)"
-            shot.lifetime = .keepAlways
-            add(shot)
-            dismissBlockingDialogs()
-            app.terminate()
-        }
-        try super.tearDownWithError()
-    }
-
+/// Windows, tabs, and a live PTY. Each test launches Prestel.app.
+final class PrestelLiveUITests: PrestelUITestCase {
     func testLaunchOpensATerminalWindow() {
         XCTAssertEqual(app.state, .runningForeground)
         XCTAssertGreaterThanOrEqual(prestelWindows.count, 1)
@@ -63,7 +29,7 @@ final class PrestelLiveUITests: XCTestCase {
 
         let first = retitleFrontWindow("QAONE")
         typeLine("printf PRESTEL_QA_OK > \(shellQuoted(marker.path))")
-        try waitForMarker(marker, containing: "PRESTEL_QA_OK")
+        waitForMarker(marker, containing: "PRESTEL_QA_OK")
 
         XCTAssertFalse(menuItem("View", "Next Tab").isEnabled, "Next Tab should be disabled with a single tab")
         dismissMenus()
@@ -93,7 +59,7 @@ final class PrestelLiveUITests: XCTestCase {
         // `ls` fails, the login shell keeps going, and the exit status is recorded.
         // This is a live PTY: the file only appears if the launched app delivered the line.
         typeLine("ls /tmp/prestel-qa-no-such-dir > \(shellQuoted(marker.path)) 2>&1")
-        try waitForMarker(marker, containing: "No such file")
+        waitForMarker(marker, containing: "No such file")
     }
 
     func testCloseWindowWithARunningJobAsksAndCancelKeepsIt() {
@@ -125,103 +91,42 @@ final class PrestelLiveUITests: XCTestCase {
         XCTAssertEqual(prestelWindows.count, 1)
     }
 
-    // MARK: - Driving helpers
-
-    private var prestelWindows: XCUIElementQuery {
-        app.windows.matching(NSPredicate(format: "title CONTAINS %@", "Prestel"))
-    }
-
-    private func window(titled fragment: String) -> XCUIElement {
-        app.windows.matching(NSPredicate(format: "title CONTAINS %@", fragment)).firstMatch
-    }
-
-    private func focusTerminal(in window: XCUIElement) {
-        window.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.62)).click()
-    }
-
-    /// New Window does not replace the old window. Click the one whose title is not `forbidden`.
-    private func focusWindow(notTitled forbidden: String) {
-        let other = app.windows.matching(
-            NSPredicate(format: "title CONTAINS 'Prestel' AND NOT title CONTAINS %@", forbidden)
-        ).firstMatch
-        XCTAssertTrue(other.waitForExistence(timeout: 8), "No second Prestel window besides \(forbidden)")
-        focusTerminal(in: other)
-    }
-
-    private func cancelButton() -> XCUIElement {
-        let candidates = [
-            app.sheets.buttons["Cancel"],
-            app.dialogs.buttons["Cancel"],
-            app.windows.buttons["Cancel"],
-        ]
-        return candidates.first { $0.exists } ?? app.buttons["Cancel"]
-    }
-
-    /// Sets the shell title through the live PTY and returns the fragment the window should show.
-    @discardableResult
-    private func retitleFrontWindow(_ name: String) -> String {
-        typeLine("printf '\\033]0;\(name)\\007'")
-        let titled = window(titled: name)
-        XCTAssertTrue(titled.waitForExistence(timeout: 15), "Shell did not update the window title to \(name). Front title is \(prestelWindows.firstMatch.title)")
-        return name
-    }
-
-    private func typeLine(_ line: String) {
-        focusTerminal(in: prestelWindows.firstMatch)
-        app.typeText(line + "\n")
-    }
-
-    private func clickMenu(_ menu: String, _ item: String) {
-        let menuItem = menuItem(menu, item)
-        XCTAssertTrue(menuItem.waitForExistence(timeout: 5), "Missing menu item \(menu) > \(item)")
-        XCTAssertTrue(menuItem.isEnabled, "\(menu) > \(item) is disabled")
-        menuItem.click()
-    }
-
-    private func menuItem(_ menu: String, _ item: String) -> XCUIElement {
-        let bar = app.menuBars.menuBarItems[menu]
-        if !bar.menuItems[item].exists {
-            bar.click()
+    func testEachWindowHasItsOwnShell() {
+        let firstMarker = markerURL("win-a")
+        let secondMarker = markerURL("win-b")
+        defer {
+            try? FileManager.default.removeItem(at: firstMarker)
+            try? FileManager.default.removeItem(at: secondMarker)
         }
-        return bar.menuItems[item]
+        let first = retitleFrontWindow("QASHELLA")
+        typeLine("printf SHELL_A > \(shellQuoted(firstMarker.path))")
+        waitForMarker(firstMarker, containing: "SHELL_A")
+
+        clickMenu("File", "New Window")
+        let appeared = expectation(for: NSPredicate(format: "count >= 2"), evaluatedWith: prestelWindows)
+        wait(for: [appeared], timeout: 15)
+        focusWindow(notTitled: first)
+        retitleFrontWindow("QASHELLB")
+        typeLine("printf SHELL_B > \(shellQuoted(secondMarker.path))")
+        waitForMarker(secondMarker, containing: "SHELL_B")
+        XCTAssertTrue(window(titled: first).exists)
+        XCTAssertTrue(window(titled: "QASHELLB").exists)
     }
 
-    private func dismissMenus() {
-        app.typeKey(.escape, modifierFlags: [])
+    func testShellAdvertisesPrestelEnvironment() {
+        let marker = markerURL("env")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        typeLine("printf %s \"$TERM_PROGRAM $COLORTERM\" > \(shellQuoted(marker.path))")
+        waitForMarker(marker, containing: "Prestel")
+        waitForMarker(marker, containing: "truecolor")
     }
 
-    private func blockingDialog(titled title: String) -> XCUIElement {
-        let sheet = app.sheets[title]
-        if sheet.exists { return sheet }
-        let dialog = app.dialogs[title]
-        if dialog.exists { return dialog }
-        return app.dialogs[title]
-    }
-
-    private func dismissBlockingDialogs() {
-        for container in [app.sheets.firstMatch, app.dialogs.firstMatch] where container.exists {
-            if container.buttons["Cancel"].exists {
-                container.buttons["Cancel"].click()
-            } else if container.buttons["Quit Prestel"].exists {
-                container.buttons["Quit Prestel"].click()
-            }
-        }
-    }
-
-    private func waitForMarker(_ url: URL, containing needle: String) throws {
-        let deadline = Date().addingTimeInterval(20)
-        var last = ""
-        while Date() < deadline {
-            if let text = try? String(contentsOf: url, encoding: .utf8) {
-                last = text
-                if text.contains(needle) { return }
-            }
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-        XCTFail("PTY did not write \(needle) to \(url.path). Contents: \(last)")
-    }
-
-    private func shellQuoted(_ path: String) -> String {
-        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    func testClosingTheOnlyWindowLeavesTheAppRunning() {
+        clickMenu("File", "Close Window")
+        let gone = expectation(for: NSPredicate(format: "count == 0"), evaluatedWith: prestelWindows)
+        wait(for: [gone], timeout: 8)
+        XCTAssertEqual(app.state, .runningForeground)
+        clickMenu("File", "New Window")
+        XCTAssertTrue(prestelWindows.firstMatch.waitForExistence(timeout: 10))
     }
 }
