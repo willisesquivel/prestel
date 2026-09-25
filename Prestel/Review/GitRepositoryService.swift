@@ -404,13 +404,13 @@ actor GitRepositoryService: GitReviewServicing {
         guard !paths.isEmpty else {
             return CommitMaterial(diff: "", recentSubjects: subjects)
         }
-        var diff = (try? await workingDiff(root: key.worktreeRoot, paths: paths)) ?? ""
-        let untracked = untrackedPreview(root: key.worktreeRoot, paths: untrackedPaths)
+        var diff = try await workingDiff(root: key.worktreeRoot, paths: paths)
+        let untracked = try untrackedPreview(root: key.worktreeRoot, paths: untrackedPaths)
         if !untracked.isEmpty {
             if !diff.isEmpty { diff += "\n" }
             diff += untracked
         }
-        return CommitMaterial(diff: CommitDigest.clip(diff), recentSubjects: subjects)
+        return CommitMaterial(diff: diff, recentSubjects: subjects)
     }
 
     func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
@@ -547,15 +547,15 @@ actor GitRepositoryService: GitReviewServicing {
     private func workingDiff(root: String, paths: [String]) async throws -> String {
         do {
             return try await diffText(root: root, extra: ["HEAD"], paths: paths)
-        } catch {
-            let staged = (try? await diffText(root: root, extra: ["--cached"], paths: paths)) ?? ""
-            let unstaged = (try? await diffText(root: root, extra: [], paths: paths)) ?? ""
+        } catch GitRunnerError.failed {
+            let staged = try await diffText(root: root, extra: ["--cached"], paths: paths)
+            let unstaged = try await diffText(root: root, extra: [], paths: paths)
             return [staged, unstaged].filter { !$0.isEmpty }.joined(separator: "\n")
         }
     }
 
     private func diffText(root: String, extra: [String], paths: [String]) async throws -> String {
-        var combined = ""
+        var chunks: [String] = []
         var start = 0
         while start < paths.count {
             let end = min(start + 40, paths.count)
@@ -576,31 +576,24 @@ actor GitRepositoryService: GitReviewServicing {
                 treatDiffExitAsSuccess: true
             )
             let chunk = text(result.stdout)
-            if !chunk.isEmpty {
-                if !combined.isEmpty { combined += "\n" }
-                combined += chunk
-            }
-            if combined.count > CommitDigest.budget { break }
+            if !chunk.isEmpty { chunks.append(chunk) }
             start = end
         }
-        return combined
+        return chunks.joined(separator: "\n")
     }
 
-    private func untrackedPreview(root: String, paths: [String]) -> String {
+    private func untrackedPreview(root: String, paths: [String]) throws -> String {
         let rootURL = URL(fileURLWithPath: root).standardizedFileURL
         var parts: [String] = []
-        var used = 0
         for relative in paths {
-            if used > CommitDigest.budget { break }
-            let preview = previewFile(root: rootURL, relative: relative)
+            let preview = try previewFile(root: rootURL, relative: relative)
             let block = "new file \(relative)\n\(preview)"
             parts.append(block)
-            used += block.count
         }
         return parts.joined(separator: "\n")
     }
 
-    private func previewFile(root: URL, relative: String) -> String {
+    private func previewFile(root: URL, relative: String) throws -> String {
         let fileURL = URL(fileURLWithPath: relative, relativeTo: root).standardizedFileURL
         let rootPath = root.path
         guard fileURL.path == rootPath || fileURL.path.hasPrefix(rootPath + "/") else {
@@ -610,10 +603,10 @@ actor GitRepositoryService: GitReviewServicing {
         guard lstat(fileURL.path, &info) == 0 else { return "[unreadable]\n" }
         if (info.st_mode & S_IFMT) == S_IFLNK { return "[symlink]\n" }
         if (info.st_mode & S_IFMT) != S_IFREG { return "[not a file]\n" }
-        if info.st_size > 200_000 { return "[file omitted, too large]\n" }
+        if info.st_size > ReviewBudgets.commitDiffBytes { throw GitRunnerError.outputLimitExceeded }
         guard let data = try? Data(contentsOf: fileURL) else { return "[unreadable]\n" }
         if data.prefix(8_000).contains(0) { return "[binary file]\n" }
-        let text = String(data: data.prefix(1_500), encoding: .utf8) ?? ""
+        let text = String(data: data, encoding: .utf8) ?? "[non-UTF-8 file]\n"
         if text.isEmpty { return "[empty]\n" }
         return text.hasSuffix("\n") ? text : text + "\n"
     }

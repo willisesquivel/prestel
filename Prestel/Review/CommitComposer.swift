@@ -135,12 +135,6 @@ private struct CommitDialog: View {
                         .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
                 }
 
-                if let note = model.commitDraft?.modelNote {
-                    Text(note)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
         }
     }
@@ -165,7 +159,7 @@ private struct CommitDialog: View {
         }
         .buttonStyle(CommitPrimaryButtonStyle())
         .disabled(generateDisabled)
-        .help(model.commitDraft?.modelNote ?? "Draft a commit message on this Mac")
+        .help("Draft with a local code model, or Apple Intelligence")
     }
 
     private var filesSection: some View {
@@ -304,7 +298,7 @@ private struct CommitDialog: View {
     }
 
     private var generateDisabled: Bool {
-        model.commitDraft?.modelNote != nil || isBusy
+        isBusy
     }
 
     /// Room for the vertical scroller, taken from the section’s trailing padding

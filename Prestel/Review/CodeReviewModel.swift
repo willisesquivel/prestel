@@ -54,6 +54,7 @@ final class CodeReviewModel: ObservableObject {
     var showWhitespace = false
     @Published var commitDraft: CommitDraft?
     private var commitGeneration = 0
+    private var commitDraftTask: Task<Void, Never>?
 
     func bind(visible: Bool, windowID: UUID, session: TerminalSession?) {
         guard visible else {
@@ -65,6 +66,7 @@ final class CodeReviewModel: ObservableObject {
             loadState = .noTerminal
             snapshot = nil
             if commitDraft?.isCommitting != true {
+                commitDraftTask?.cancel()
                 commitGeneration += 1
                 commitDraft = nil
             }
@@ -101,6 +103,7 @@ final class CodeReviewModel: ObservableObject {
             watcher.stopAll()
             activeKey = nil
             if commitDraft?.isCommitting != true {
+                commitDraftTask?.cancel()
                 commitGeneration += 1
                 commitDraft = nil
             }
@@ -211,11 +214,12 @@ final class CodeReviewModel: ObservableObject {
     func openCommitComposer() {
         guard commitDraft == nil else { return }
         guard case .ready = loadState, let snapshot, !snapshot.isClean, !snapshot.waitingOnIndexLock else { return }
-        commitDraft = CommitDraft(modelNote: CommitMessageGenerator.unavailableReason())
+        commitDraft = CommitDraft()
     }
 
     func closeCommitComposer() {
         guard commitDraft?.isCommitting != true else { return }
+        commitDraftTask?.cancel()
         commitGeneration += 1
         commitDraft = nil
     }
@@ -245,11 +249,6 @@ final class CodeReviewModel: ObservableObject {
     func draftCommitName() {
         guard var draft = commitDraft, !draft.isGenerating, !draft.isCommitting else { return }
         guard let snapshot else { return }
-        if let reason = CommitMessageGenerator.unavailableReason() {
-            draft.modelNote = reason
-            commitDraft = draft
-            return
-        }
         let selection = CommitPlanner.selection(from: snapshot.files)
         guard !selection.paths.isEmpty else {
             draft.notice = CommitPlanner.refusal(
@@ -262,6 +261,7 @@ final class CodeReviewModel: ObservableObject {
             commitDraft = draft
             return
         }
+        commitDraftTask?.cancel()
         commitGeneration += 1
         let token = commitGeneration
         let draftID = draft.id
@@ -274,7 +274,7 @@ final class CodeReviewModel: ObservableObject {
         let branch = snapshot.revision.isDetached ? "detached" : (snapshot.revision.branchName ?? "unknown")
         let paths = selection.paths
         let untracked = selection.untrackedPaths
-        Task { [weak self] in
+        commitDraftTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let material = try await self.service.commitMaterial(for: key, paths: paths, untrackedPaths: untracked)
@@ -318,6 +318,7 @@ final class CodeReviewModel: ObservableObject {
             commitDraft = draft
             return
         }
+        commitDraftTask?.cancel()
         commitGeneration += 1
         let draftID = draft.id
         let push = draft.push
@@ -402,6 +403,7 @@ final class CodeReviewModel: ObservableObject {
         publishWithoutAnimation { loadState = .hidden }
         isRefreshing = false
         if commitDraft?.isCommitting != true {
+            commitDraftTask?.cancel()
             commitGeneration += 1
             commitDraft = nil
         }
@@ -420,6 +422,7 @@ final class CodeReviewModel: ObservableObject {
         highlights = [:]
         isRefreshing = false
         if commitDraft?.isCommitting != true {
+            commitDraftTask?.cancel()
             commitGeneration += 1
             commitDraft = nil
         }
@@ -433,6 +436,7 @@ final class CodeReviewModel: ObservableObject {
             guard let key else {
                 snapshot = nil
                 if commitDraft?.isCommitting != true {
+                    commitDraftTask?.cancel()
                     commitGeneration += 1
                     commitDraft = nil
                 }
@@ -449,6 +453,7 @@ final class CodeReviewModel: ObservableObject {
                 activeKey = key
                 diffs = [:]
                 highlights = [:]
+                commitDraftTask?.cancel()
                 commitGeneration += 1
                 commitDraft = nil
             }
@@ -479,6 +484,7 @@ final class CodeReviewModel: ObservableObject {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
             if commitDraft?.isCommitting != true {
+                commitDraftTask?.cancel()
                 commitGeneration += 1
                 commitDraft = nil
             }
@@ -488,6 +494,7 @@ final class CodeReviewModel: ObservableObject {
             guard self.context?.generation == context.generation else { return }
             snapshot = nil
             if commitDraft?.isCommitting != true {
+                commitDraftTask?.cancel()
                 commitGeneration += 1
                 commitDraft = nil
             }
@@ -672,6 +679,10 @@ final class CodeReviewModel: ObservableObject {
             return "The model did not return a commit name."
         case CommitNameError.vague:
             return "The draft was too vague. Edit the name, or try again."
+        case CommitNameError.tooLarge:
+            return "The local model could not condense this commit. Write the message manually."
+        case GitRunnerError.outputLimitExceeded:
+            return "A changed file is too large for the commit draft. Write the message manually."
         case GitRunnerError.timeout:
             return "Git took too long."
         case GitRunnerError.failed(_, let stderr):

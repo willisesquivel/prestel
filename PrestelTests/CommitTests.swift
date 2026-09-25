@@ -64,11 +64,21 @@ struct CommitTests {
         #expect(!CommitMessage.isWeak("Fix send slot visibility"))
     }
 
-    @Test func digestClipsOnALineBoundary() {
-        let clipped = CommitDigest.clip(String(repeating: "line\n", count: 80), budget: 100)
-        #expect(clipped.hasSuffix("\n[diff truncated]"))
-        #expect(clipped.count <= 100 + "\n[diff truncated]".count)
+    @Test func digestChunksWithoutDroppingContent() {
+        let diff = String(repeating: "line\n", count: 80) + "last line"
+        let chunks = CommitDigest.chunks(diff, budget: 100)
+        #expect(chunks.count > 1)
+        #expect(chunks.joined() == diff)
+        #expect(chunks.allSatisfy { $0.count <= 100 })
         #expect(CommitDigest.failureLine("hint: set upstream\nfatal: no upstream\n", fallback: "failed") == "no upstream")
+    }
+
+    @Test func localModelSelectionPrefersTheCodeModel() {
+        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:30b"]) == "qwen3-coder:30b")
+        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen2.5-coder:7b"]) == "qwen2.5-coder:7b")
+        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
+        #expect(OllamaCommitModel.preferredModel(in: ["qwen2.5-coder:1.5b", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
+        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:480b-cloud"]) == nil)
     }
 
     @Test func promptCarriesTheDiffNotOnlyTheFileNames() {
@@ -113,6 +123,29 @@ struct CommitTests {
         #expect(listed.contains(".gitignore"))
         #expect(!listed.contains("skip.log"))
         #expect(!listed.contains("unstaged.txt"))
+    }
+
+    @Test func draftMaterialIncludesFilesPastTheOldDiffCutoff() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        for index in 0..<45 {
+            let name = String(format: "change-%02d.txt", index)
+            let content = "marker-\(index) " + String(repeating: "code line\n", count: 40)
+            try content.write(toFile: (root as NSString).appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        let untracked = String(repeating: "new code line\n", count: 500) + "last untracked behavior\n"
+        try untracked.write(toFile: (root as NSString).appendingPathComponent("new-large.txt"), atomically: true, encoding: .utf8)
+        try GitFixture.run(["add", "change-*.txt"], in: root)
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root))
+        let snapshot = try await service.loadCatalog(for: key, generation: 1)
+        let selection = CommitPlanner.selection(from: snapshot.files)
+        let material = try await service.commitMaterial(for: key, paths: selection.paths, untrackedPaths: selection.untrackedPaths)
+        #expect(material.diff.count > 6_000)
+        #expect(material.diff.contains("marker-0 "))
+        #expect(material.diff.contains("marker-44 "))
+        #expect(material.diff.contains("last untracked behavior"))
+        #expect(CommitDigest.chunks(material.diff, budget: 6_000).joined() == material.diff)
     }
 
     @Test func pushWithoutARemoteKeepsTheCommit() async throws {

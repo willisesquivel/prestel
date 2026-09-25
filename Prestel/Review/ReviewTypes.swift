@@ -28,7 +28,7 @@ enum ReviewBudgets {
     static let contextLines = 3
     static let commitTimeout: Duration = .seconds(60)
     static let pushTimeout: Duration = .seconds(120)
-    static let commitDiffBytes = 64 * 1024
+    static let commitDiffBytes = 8 * 1024 * 1024
     static let revealMoreLines = 20
     static let intralinePairLimit = 20
     static let intralineCharacterLimit = 2_000
@@ -401,9 +401,6 @@ struct CommitDraft: Equatable {
     var isGenerating = false
     var isCommitting = false
     var notice: String?
-    /// Why the on-device model cannot draft a name. Nil when it can.
-    var modelNote: String?
-
     var push: Bool { action.pushes }
 }
 
