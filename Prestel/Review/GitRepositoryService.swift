@@ -561,9 +561,9 @@ actor GitRepositoryService: GitReviewServicing {
             let end = min(start + 40, paths.count)
             var arguments = [
                 "--no-optional-locks", "-C", root,
-                "-c", "color.ui=never",
+                "-c", "color.ui=never", "-c", "core.quotePath=false",
                 "diff", "--no-ext-diff", "--no-textconv", "--no-color",
-                "-U1", "--find-renames"
+                "-U1", "--find-renames", "--irreversible-delete"
             ]
             arguments.append(contentsOf: extra)
             arguments.append("--")
@@ -582,33 +582,53 @@ actor GitRepositoryService: GitReviewServicing {
         return chunks.joined(separator: "\n")
     }
 
+    /// Untracked files as new-file diff sections, so the draft reads them the
+    /// same way as tracked changes.
     private func untrackedPreview(root: String, paths: [String]) throws -> String {
         let rootURL = URL(fileURLWithPath: root).standardizedFileURL
         var parts: [String] = []
         for relative in paths {
-            let preview = try previewFile(root: rootURL, relative: relative)
-            let block = "new file \(relative)\n\(preview)"
+            var block = "diff --git a/\(relative) b/\(relative)\nnew file (untracked)\n"
+            switch try previewFile(root: rootURL, relative: relative) {
+            case .text(let text):
+                var lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+                if lines.last?.isEmpty == true { lines.removeLast() }
+                block += "--- /dev/null\n+++ b/\(relative)\n@@ -0,0 +1,\(lines.count) @@\n"
+                for line in lines {
+                    block.append("+")
+                    block.append(contentsOf: line)
+                    block.append("\n")
+                }
+            case .binary:
+                block += "Binary files /dev/null and b/\(relative) differ\n"
+            case .unreadable:
+                break
+            }
             parts.append(block)
         }
         return parts.joined(separator: "\n")
     }
 
-    private func previewFile(root: URL, relative: String) throws -> String {
+    private enum FilePreview {
+        case text(String)
+        case binary
+        case unreadable
+    }
+
+    private func previewFile(root: URL, relative: String) throws -> FilePreview {
         let fileURL = URL(fileURLWithPath: relative, relativeTo: root).standardizedFileURL
         let rootPath = root.path
         guard fileURL.path == rootPath || fileURL.path.hasPrefix(rootPath + "/") else {
-            return "[path omitted]\n"
+            return .unreadable
         }
         var info = stat()
-        guard lstat(fileURL.path, &info) == 0 else { return "[unreadable]\n" }
-        if (info.st_mode & S_IFMT) == S_IFLNK { return "[symlink]\n" }
-        if (info.st_mode & S_IFMT) != S_IFREG { return "[not a file]\n" }
+        guard lstat(fileURL.path, &info) == 0 else { return .unreadable }
+        if (info.st_mode & S_IFMT) != S_IFREG { return .unreadable }
         if info.st_size > ReviewBudgets.commitDiffBytes { throw GitRunnerError.outputLimitExceeded }
-        guard let data = try? Data(contentsOf: fileURL) else { return "[unreadable]\n" }
-        if data.prefix(8_000).contains(0) { return "[binary file]\n" }
-        let text = String(data: data, encoding: .utf8) ?? "[non-UTF-8 file]\n"
-        if text.isEmpty { return "[empty]\n" }
-        return text.hasSuffix("\n") ? text : text + "\n"
+        guard let data = try? Data(contentsOf: fileURL) else { return .unreadable }
+        if data.prefix(8_000).contains(0) { return .binary }
+        guard let text = String(data: data, encoding: .utf8) else { return .binary }
+        return .text(text)
     }
 
     private func text(_ data: Data) -> String {

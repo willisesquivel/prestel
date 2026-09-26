@@ -10,9 +10,13 @@ A **Code Review** panel can open on the right of the detail surface.
 It follows the selected terminal’s local working directory and shows staged and
 unstaged Git changes. From the panel you can commit those files, or commit and
 push. When you press Draft, Prestel writes the message with the on-device
-Apple Intelligence model. It summarizes large textual diffs in passes before
-writing the message. Macs without Apple Intelligence can still commit with a
-message written by hand.
+Apple Intelligence model, sized to the context the Mac's model reports. Large
+commits are condensed first: lockfiles, generated and vendored files,
+deletions and binaries become one title line each, and a file larger than its
+share of the budget keeps its least indented lines, an outline of its
+declarations. What still does not fit is summarized in about eight passes at
+most, so a huge commit costs about as much as a large one. Macs without Apple
+Intelligence can still commit with a message written by hand.
 The panel does not discard changes.
 
 ## Status: real PTY via SwiftTerm (integration branch)

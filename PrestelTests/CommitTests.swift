@@ -74,19 +74,154 @@ struct CommitTests {
     }
 
     @Test func promptCarriesTheDiffNotOnlyTheFileNames() {
-        let body = CommitMessagePrompt.body(
+        let header = CommitMessagePrompt.header(
             repository: "prestel",
             branch: "main",
             files: [sample("IOStrip.cpp", additions: 62, deletions: 11)],
-            diff: "+ keep the slot",
             recentSubjects: ["Add terminal tabs"]
         )
+        let body = CommitMessagePrompt.body(header: header, changes: "+ keep the slot", summarized: false)
         #expect(body.contains("Repository: prestel"))
         #expect(body.contains("Modified IOStrip.cpp +62 -11"))
         #expect(body.contains("+ keep the slot"))
         #expect(body.contains("- Add terminal tabs"))
         #expect(body.contains("Write the commit message."))
         #expect(CommitMessagePrompt.instructions.contains("72 characters"))
+        let summarized = CommitMessagePrompt.body(header: header, changes: "Part 1 of 1:\nKeeps the slot", summarized: true)
+        #expect(summarized.contains("- Add terminal tabs"))
+        #expect(summarized.contains("Modified IOStrip.cpp +62 -11"))
+        #expect(summarized.contains("Keeps the slot"))
+    }
+
+    @Test func promptHeaderListsAtMostTheFileLimit() {
+        let files = (0..<30).map { sample(String(format: "File%02d.swift", $0), additions: 2, deletions: 1) }
+        let header = CommitMessagePrompt.header(repository: "prestel", branch: "main", files: files, recentSubjects: [], fileLimit: 20)
+        #expect(header.contains("Modified File19.swift +2 -1"))
+        #expect(!header.contains("File20.swift"))
+        #expect(header.contains("- … and 10 more files +20 -10"))
+    }
+
+    @Test func evidenceKeepsASmallDiffWhole() {
+        let diff = [
+            "diff --git a/Sources/Send.swift b/Sources/Send.swift",
+            "index 1111111..2222222 100644",
+            "--- a/Sources/Send.swift",
+            "+++ b/Sources/Send.swift",
+            "@@ -10,3 +10,4 @@ struct SendSlot {",
+            "     var isVisible: Bool",
+            "-    func hide() {}",
+            "+    func hide() { isVisible = false }",
+            "+    func show() { isVisible = true }"
+        ].joined(separator: "\n")
+        #expect(CommitEvidence.blocks(from: diff, budget: 6_000) == [
+            [
+                "=== Sources/Send.swift (modified, +2 -1)",
+                "@@ struct SendSlot {",
+                " var isVisible: Bool",
+                "-func hide() {}",
+                "+func hide() { isVisible = false }",
+                "+func show() { isVisible = true }"
+            ].joined(separator: "\n")
+        ])
+    }
+
+    @Test func evidenceTitlesLockfilesDeletionsBinariesAndRenames() {
+        var lines = [
+            "diff --git a/package-lock.json b/package-lock.json",
+            "index 1111111..2222222 100644",
+            "--- a/package-lock.json",
+            "+++ b/package-lock.json",
+            "@@ -1,1 +1,80 @@"
+        ]
+        lines += (0..<80).map { "+    \"dep-\($0)\": \"1.0.\($0)\"," }
+        lines += [
+            "diff --git a/Old.swift b/Old.swift",
+            "deleted file mode 100644",
+            "index 3333333..0000000",
+            "diff --git a/Icon.png b/Icon.png",
+            "new file mode 100644",
+            "index 0000000..4444444",
+            "Binary files /dev/null and b/Icon.png differ",
+            "diff --git a/A.swift b/B.swift",
+            "similarity index 100%",
+            "rename from A.swift",
+            "rename to B.swift"
+        ]
+        #expect(CommitEvidence.blocks(from: lines.joined(separator: "\n"), budget: 6_000) == [
+            "=== package-lock.json (modified, lockfile, +80 -0, not shown)",
+            "=== Old.swift (deleted)",
+            "=== Icon.png (binary)",
+            "=== B.swift (renamed from A.swift)"
+        ])
+    }
+
+    @Test func evidenceOutlinesAFileLargerThanItsShare() {
+        var lines = [
+            "diff --git a/Sources/Runner.swift b/Sources/Runner.swift",
+            "new file mode 100644",
+            "index 0000000..5555555",
+            "--- /dev/null",
+            "+++ b/Sources/Runner.swift",
+            "@@ -0,0 +1,402 @@",
+            "+final class Runner {"
+        ]
+        for step in 0..<40 {
+            lines.append("+    func step\(step)() {")
+            for value in 0..<8 {
+                lines.append("+        let value\(value) = compute(\(step), \(value))")
+            }
+            lines.append("+    }")
+        }
+        lines.append("+}")
+        let evidence = CommitEvidence.blocks(from: lines.joined(separator: "\n"), budget: 3_000).joined(separator: "\n")
+        #expect(evidence.count <= 3_000)
+        #expect(evidence.hasPrefix("=== Sources/Runner.swift (new, +402 -0)"))
+        #expect(evidence.contains("+final class Runner {"))
+        #expect(evidence.contains("+func step0() {"))
+        #expect(evidence.contains("+func step39() {"))
+        #expect(evidence.hasSuffix("[255 more changed lines not shown]"))
+    }
+
+    @Test func evidenceTalliesFilesPastTheTitleBudgetByFolder() {
+        var lines = [
+            "diff --git a/Sources/App.swift b/Sources/App.swift",
+            "--- a/Sources/App.swift",
+            "+++ b/Sources/App.swift",
+            "@@ -1 +1 @@",
+            "-let mode = 1",
+            "+let mode = 2"
+        ]
+        for index in 0..<400 {
+            lines += [
+                "diff --git a/Generated/File\(index).swift b/Generated/File\(index).swift",
+                "new file mode 100644",
+                "--- /dev/null",
+                "+++ b/Generated/File\(index).swift",
+                "@@ -0,0 +1 @@",
+                "+let value\(index) = \(index)"
+            ]
+        }
+        let blocks = CommitEvidence.blocks(from: lines.joined(separator: "\n"), budget: 6_000)
+        #expect(blocks.count == 38)
+        #expect(blocks.first == "=== Sources/App.swift (modified, +1 -1)\n@@\n-let mode = 1\n+let mode = 2")
+        #expect(blocks.last == "=== 364 more files, not listed\n- Generated/: 364 files, +364 -0")
+        #expect(blocks.joined(separator: "\n").count <= 6_000)
+    }
+
+    @Test func fairSharesGrantSmallSizesInFull() {
+        #expect(CommitEvidence.fairShares([10, 500, 40], budget: 200) == [10, 150, 40])
+        #expect(CommitEvidence.fairShares([5, 5], budget: 100) == [5, 5])
+        #expect(CommitEvidence.fairShares([7], budget: -5) == [0])
+        #expect(CommitEvidence.fairShares([], budget: 10).isEmpty)
+    }
+
+    @Test func partsRepeatTheTitleOfAFileTheyContinue() {
+        let block = "=== Big.swift (new, +300 -0)\n" + (0..<300).map { "+let line\($0) = \($0)" }.joined(separator: "\n")
+        let parts = CommitEvidence.parts([block], budget: 1_000)
+        #expect(parts.count == 8)
+        #expect(parts.allSatisfy { $0.count <= 1_000 })
+        #expect(parts.allSatisfy { $0.hasPrefix("=== Big.swift (new, +300 -0)") })
+        #expect(parts[1].hasPrefix("=== Big.swift (new, +300 -0) (continued)\n"))
     }
 
     @Test func commitWritesTheWorkingTreeAndLeavesIgnoredFiles() async throws {
@@ -136,8 +271,12 @@ struct CommitTests {
         #expect(material.diff.count > 6_000)
         #expect(material.diff.contains("marker-0 "))
         #expect(material.diff.contains("marker-44 "))
-        #expect(material.diff.contains("last untracked behavior"))
+        #expect(material.diff.contains("diff --git a/new-large.txt b/new-large.txt\nnew file (untracked)\n"))
+        #expect(material.diff.contains("\n+last untracked behavior\n"))
         #expect(CommitDigest.chunks(material.diff, budget: 6_000).joined() == material.diff)
+        let blocks = CommitEvidence.blocks(from: material.diff, budget: 46_000)
+        #expect(blocks.contains { $0.hasPrefix("=== new-large.txt (new, +501 -0)") })
+        #expect(blocks.contains { $0.hasPrefix("=== change-44.txt (new, +40 -0)\n@@\n+marker-44 code line") })
     }
 
     @Test func pushWithoutARemoteKeepsTheCommit() async throws {

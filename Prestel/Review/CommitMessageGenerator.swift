@@ -27,14 +27,14 @@ enum CommitMessageGenerator {
     ) async throws -> String {
         if let reason = unavailableReason() { throw CommitNameError.unavailable(reason) }
 
-        let evidence = CommitMessagePrompt.body(
+        let header = CommitMessagePrompt.header(
             repository: repository,
             branch: branch,
             files: files,
-            diff: diff,
-            recentSubjects: recentSubjects
+            recentSubjects: recentSubjects,
+            fileLimit: max(12, promptCharacters / 300)
         )
-        let prompt = try await condensedEvidence(evidence)
+        let prompt = try await evidencePrompt(header: header, diff: diff)
         try Task.checkCancellation()
         var draft = try await Self.draft(prompt)
         var message = CommitMessage.composed(subject: draft.subject, detail: draft.detail)
@@ -73,36 +73,63 @@ enum CommitMessageGenerator {
         return message
     }
 
-    private static func condensedEvidence(_ evidence: String) async throws -> String {
+    /// The draft prompt. The condensed changes go in whole when they fit;
+    /// otherwise they are summarized in at most about `summaryParts` passes,
+    /// sized so the summaries fit the draft in one round.
+    private static func evidencePrompt(header: String, diff: String) async throws -> String {
         let budget = promptCharacters
-        if evidence.count <= budget { return evidence }
-        var text = evidence
-        while text.count > budget - 200 {
-            let parts = CommitDigest.chunks(text, budget: budget - 500)
+        let room = budget - header.count - 200
+        let blocks = CommitEvidence.blocks(from: diff, budget: (budget - 220) * summaryParts)
+        let full = blocks.joined(separator: "\n")
+        var changes = full
+        if changes.count > room, room > 0, changes.count <= room * 3 / 2 {
+            // Slightly over: an outline of every file beats summaries of it.
+            changes = CommitEvidence.blocks(from: diff, budget: room * 9 / 10).joined(separator: "\n")
+        }
+        if changes.count <= room {
+            return CommitMessagePrompt.body(header: header, changes: changes, summarized: false)
+        }
+        var pieces = blocks
+        var size = full.count
+        while true {
+            let parts = CommitEvidence.parts(pieces, budget: budget)
+            let words = min(200, max(40, room / max(1, parts.count) / 7))
             var summaries: [String] = []
             for (index, part) in parts.enumerated() {
                 try Task.checkCancellation()
                 let summary = try await summarize("""
-                    Summarize part \(index + 1) of \(parts.count) of a git change. Keep concrete names and behavior, including any tests or compatibility changes. Do not invent intent. Limit the answer to 250 words. This is evidence for a commit message, not the message itself.
+                    Summarize part \(index + 1) of \(parts.count) of a git change. Keep concrete names and behavior, including any tests or compatibility changes. Do not invent intent. Limit the answer to \(words) words. This is evidence for a commit message, not the message itself.
 
                     \(part)
-                    """)
+                    """, words: words)
                 summaries.append("Part \(index + 1) of \(parts.count):\n\(summary)")
             }
             let reduced = summaries.joined(separator: "\n\n")
-            guard reduced.count < text.count else { throw CommitNameError.tooLarge }
-            text = reduced
+            if reduced.count <= room {
+                return CommitMessagePrompt.body(header: header, changes: reduced, summarized: true)
+            }
+            guard reduced.count < size else { throw CommitNameError.tooLarge }
+            pieces = summaries
+            size = reduced.count
         }
-        return "Summaries of every part of the change:\n\(text)\n\nWrite the commit message from these summaries."
     }
 
-    /// Prompt characters that leave room in the on-device context for the
-    /// instructions and the answer.
-    private static let promptCharacters = 6_000
+    /// Prompt characters that leave room for the instructions and the answer.
+    /// 6,000 fits the 4,096-token model; larger on-device contexts scale it.
+    private static var promptCharacters: Int {
+        6_000 * max(4_096, SystemLanguageModel.default.contextSize) / 4_096
+    }
 
-    private static func summarize(_ prompt: String) async throws -> String {
+    /// Summary passes before the draft. Condensing caps the evidence at this
+    /// many prompts, so a huge commit costs about as much as a large one.
+    private static let summaryParts = 8
+
+    private static func summarize(_ prompt: String, words: Int) async throws -> String {
         let session = LanguageModelSession(instructions: "Summarize git changes precisely. Preserve file names, identifiers, behavior, and tests. Write only the summary.")
-        let response = try await session.respond(to: prompt, options: GenerationOptions(temperature: 0.1, maximumResponseTokens: 400))
+        let response = try await session.respond(
+            to: prompt,
+            options: GenerationOptions(temperature: 0.1, maximumResponseTokens: words * 2 + 60)
+        )
         return response.content
     }
 
