@@ -73,14 +73,6 @@ struct CommitTests {
         #expect(CommitDigest.failureLine("hint: set upstream\nfatal: no upstream\n", fallback: "failed") == "no upstream")
     }
 
-    @Test func localModelSelectionPrefersTheCodeModel() {
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:30b"]) == "qwen3-coder:30b")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen2.5-coder:7b"]) == "qwen2.5-coder:7b")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
-        #expect(OllamaCommitModel.preferredModel(in: ["qwen2.5-coder:1.5b", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:480b-cloud"]) == nil)
-    }
-
     @Test func promptCarriesTheDiffNotOnlyTheFileNames() {
         let body = CommitMessagePrompt.body(
             repository: "prestel",

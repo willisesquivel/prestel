@@ -680,7 +680,7 @@ final class CodeReviewModel: ObservableObject {
         case CommitNameError.vague:
             return "The draft was too vague. Edit the name, or try again."
         case CommitNameError.tooLarge:
-            return "The local model could not condense this commit. Write the message manually."
+            return "Apple Intelligence could not condense this commit. Write the message manually."
         case GitRunnerError.outputLimitExceeded:
             return "A changed file is too large for the commit draft. Write the message manually."
         case GitRunnerError.timeout:

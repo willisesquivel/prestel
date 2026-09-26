@@ -159,7 +159,7 @@ private struct CommitDialog: View {
         }
         .buttonStyle(CommitPrimaryButtonStyle())
         .disabled(generateDisabled)
-        .help("Draft with a local code model, or Apple Intelligence")
+        .help("Draft with Apple Intelligence")
     }
 
     private var filesSection: some View {

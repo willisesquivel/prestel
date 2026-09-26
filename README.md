@@ -9,11 +9,10 @@ available in the menu bar.
 A **Code Review** panel can open on the right of the detail surface.
 It follows the selected terminal’s local working directory and shows staged and
 unstaged Git changes. From the panel you can commit those files, or commit and
-push. When you press Draft, Prestel uses a supported model in local Ollama, or
-Apple Intelligence if Ollama is unavailable. It summarizes large textual diffs
-in passes before writing the message. Prestel prefers `qwen3-coder:30b`, then
-`gpt-oss-20b`; it also recognizes other installed Coder models. Ollama owns the
-model weights. Prestel does not download or bundle them.
+push. When you press Draft, Prestel writes the message with the on-device
+Apple Intelligence model. It summarizes large textual diffs in passes before
+writing the message. Macs without Apple Intelligence can still commit with a
+message written by hand.
 The panel does not discard changes.
 
 ## Status: real PTY via SwiftTerm (integration branch)
