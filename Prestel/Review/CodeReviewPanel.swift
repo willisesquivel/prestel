@@ -2,6 +2,10 @@ import AppKit
 import SwiftUI
 
 struct CodeReviewPanel: View {
+    private enum ControlsMetrics {
+        static let minimumTitleWidthForLabeledCommit: CGFloat = 52
+    }
+
     @ObservedObject var model: CodeReviewModel
     var visible: Bool
     @Environment(\.colorScheme) private var colorScheme
@@ -228,20 +232,44 @@ struct CodeReviewPanel: View {
     }
 
     private func controls(_ snapshot: ReviewSnapshot) -> some View {
+        ViewThatFits(in: .horizontal) {
+            controlsRow(snapshot, symbolOnly: false)
+            controlsRow(snapshot, symbolOnly: true)
+        }
+        .focusable(false)
+        .padding(.horizontal, ShellMetrics.sidebarInset)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func controlsRow(_ snapshot: ReviewSnapshot, symbolOnly: Bool) -> some View {
         HStack(spacing: 8) {
             Text("Uncommitted changes")
                 .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
-            Spacer(minLength: 0)
+                .frame(
+                    minWidth: symbolOnly ? 0 : ControlsMetrics.minimumTitleWidthForLabeledCommit,
+                    maxWidth: .infinity,
+                    alignment: .leading
+                )
             Button {
                 model.openCommitComposer()
             } label: {
-                Label("Commit", systemImage: "checkmark.circle")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(Color.primary.opacity(snapshot.waitingOnIndexLock ? 0.25 : 0.78))
-                    .padding(.horizontal, 12)
-                    .frame(height: ShellMetrics.navigationHeight)
-                    .contentShape(Capsule())
+                Group {
+                    if symbolOnly {
+                        Image(systemName: "checkmark.circle")
+                            .frame(width: ShellMetrics.navigationHeight)
+                    } else {
+                        Label("Commit", systemImage: "checkmark.circle")
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 12)
+                    }
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(snapshot.waitingOnIndexLock ? 0.25 : 0.78))
+                .frame(height: ShellMetrics.navigationHeight)
+                .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .chromeGlass()
@@ -306,10 +334,6 @@ struct CodeReviewPanel: View {
             .chromeGlass()
             .accessibilityElement(children: .contain)
         }
-        .focusable(false)
-        .padding(.horizontal, ShellMetrics.sidebarInset)
-        .padding(.bottom, 6)
-        .accessibilityElement(children: .contain)
     }
 
     private func branchLabel(_ snapshot: ReviewSnapshot) -> String {

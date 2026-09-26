@@ -1052,6 +1052,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
+    private var suppressMouseUpSelection = false
     private var hovering = false
     private var registered = false
     private var hoverSync: DispatchWorkItem?
@@ -1128,6 +1129,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         mouseDownEvent = event
         didStartDrag = false
+        suppressMouseUpSelection = false
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1141,10 +1143,10 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) {
         defer {
             mouseDownEvent = nil
-            didStartDrag = false
+            suppressMouseUpSelection = false
             activePayload = nil
         }
-        if didStartDrag { return }
+        if suppressMouseUpSelection { return }
         if event.clickCount >= 2, clickIsOnTitle(event) {
             onRename?()
             return
@@ -1286,8 +1288,9 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     private func beginTabDrag(current: NSEvent) {
         guard let tabID else { return }
-        onPrepareDrag?()
         didStartDrag = true
+        suppressMouseUpSelection = true
+        onPrepareDrag?()
         let ids = AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
         let payload = TabDragPayload(
             dragID: UUID(),
@@ -1342,6 +1345,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
         didStartDrag = true
+        suppressMouseUpSelection = true
         guard let tabID else { return }
         let payload = activePayload ?? TabDragPayload(
             dragID: UUID(),
