@@ -382,7 +382,7 @@ struct PrestelTests {
         #expect(layerActionsDisabled)
     }
 
-    @Test func markedTextIsNotSentBeforeCommitAndClipboardIsDenied() async throws {
+    @Test func markedTextIsNotSentBeforeCommitAndClipboardIsWriteOnly() async throws {
         let session = TerminalSession(descriptor: TabDescriptor())
         session.start()
         defer { session.close() }
@@ -393,9 +393,14 @@ struct PrestelTests {
         view.unmarkText()
         #expect(!view.hasMarkedText())
         #expect(session.clipboardRead(source: view) == nil)
-        let before = NSPasteboard.general.changeCount
-        session.clipboardCopy(source: view, content: Data("untrusted".utf8))
-        #expect(NSPasteboard.general.changeCount == before)
+        let saved = NSPasteboard.general.string(forType: .string)
+        defer {
+            NSPasteboard.general.clearContents()
+            if let saved { NSPasteboard.general.setString(saved, forType: .string) }
+        }
+        session.clipboardCopy(source: view, content: Data("from-osc52".utf8))
+        #expect(NSPasteboard.general.string(forType: .string) == "from-osc52")
+        #expect(session.clipboardRead(source: view) == nil)
     }
 
     @Test func sixLivePTYsSurviveTabAndWindowSwitching() async throws {
