@@ -501,12 +501,26 @@ final class TerminalModel: ObservableObject {
             .filter { movingIDs.contains($0.id) }.count
         var destination = min(max(insertionIndex, 0), tabs.count)
         destination -= removedBeforeDestination
+        // A folder emptied by this move stays where it was, in front of the tab
+        // that followed it, instead of following the tabs that left.
+        var stayingPut: [(folder: UUID, successor: UUID?)] = []
+        if assignsFolder {
+            for folder in folders where !folder.tabIDs.isEmpty && folder.tabIDs.allSatisfy(movingIDs.contains) {
+                let first = folder.tabIDs.compactMap { id in tabs.firstIndex(where: { $0.id == id }) }.min() ?? 0
+                stayingPut.append((folder.id, tabs[first...].first { !movingIDs.contains($0.id) }?.id))
+            }
+        }
         Self.animateSidebar {
             tabs.removeAll { movingIDs.contains($0.id) }
             destination = min(max(destination, 0), tabs.count)
             tabs.insert(contentsOf: movingTabs, at: destination)
             if assignsFolder {
                 setFolderMembership(Array(movingIDs), folderID: folderID)
+                for stay in stayingPut {
+                    guard let index = folders.firstIndex(where: { $0.id == stay.folder }),
+                          folders[index].tabIDs.isEmpty else { continue }
+                    folders[index].anchor = stay.successor.flatMap { id in tabs.firstIndex { $0.id == id } } ?? tabs.count
+                }
             }
         }
     }

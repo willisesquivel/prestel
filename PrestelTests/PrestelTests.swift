@@ -610,6 +610,31 @@ struct PrestelTests {
         #expect(other.tabIDs == [d])
     }
 
+    @Test func emptyingAFolderLeavesItInPlace() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        model.select(b)
+        model.select(c, shift: true, command: false)
+        let folder = model.makeFolder(containing: c)!
+
+        model.moveTabs([b, c], to: model.tabs.count, folderID: nil, assignsFolder: true)
+
+        let order = model.sidebarSections.map { section -> UUID in
+            switch section {
+            case .loose(let item): return item.id
+            case .folder(let group): return group.folder.id
+            }
+        }
+        // a, then the (now empty) folder where it was, then d, then the tabs that left.
+        #expect(order.first == a)
+        #expect(order[1] == folder.id)
+        #expect(order[2] == d)
+        #expect(Array(order.suffix(2)) == [b, c])
+    }
+
     @Test func shiftRangeSkipsTabsHiddenInCollapsedFolders() {
         let model = TerminalModel()
         let a = model.selectedID!
