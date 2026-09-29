@@ -258,7 +258,7 @@ struct TerminalFindBar: View {
                 onPrevious: { find.previous() },
                 onEscape: close
             )
-            .frame(width: 130, height: 20)
+            .frame(width: 130)
             .accessibilityLabel("Find in terminal")
             Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
                 .font(.system(size: 11).monospacedDigit())
@@ -334,7 +334,8 @@ struct FindTextField: NSViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: FocusingTextField, context: Context) -> CGSize? {
-        CGSize(width: proposal.width ?? 120, height: proposal.height ?? 20)
+        // Natural text height, so SwiftUI centers the field with its neighbors.
+        CGSize(width: proposal.width ?? 120, height: ceil(nsView.cell?.cellSize.height ?? 17))
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
