@@ -880,7 +880,6 @@ private struct FolderSidebarRow: View {
                     onHover: { _ in },
                     onRename: onBeginRename,
                     onDeleteFolder: onDelete,
-                    allowsDrag: false,
                     isFolder: true
                 )
             }

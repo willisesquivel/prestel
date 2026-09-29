@@ -1626,6 +1626,186 @@ struct PrestelTests {
         #expect(model.sidebarSections.map(\.id) == [first, folder.id, second])
     }
 
+    @Test func movingAFolderKeepsItsTabsTogetherAmongLooseTabs() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+        model.add(c, to: folder.id)
+
+        model.moveFolder(folder.id, before: nil)
+        #expect(model.tabs.map(\.id) == [a, d, b, c])
+        #expect(model.sidebarSections.map(\.id) == [a, d, folder.id])
+        #expect(model.folders[0].tabIDs == [b, c])
+
+        model.moveFolder(folder.id, before: a)
+        #expect(model.tabs.map(\.id) == [b, c, a, d])
+        #expect(model.sidebarSections.map(\.id) == [folder.id, a, d])
+
+        model.moveFolder(folder.id, before: d)
+        #expect(model.tabs.map(\.id) == [a, b, c, d])
+        #expect(model.sidebarSections.map(\.id) == [a, folder.id, d])
+
+        // Collapsed folders move the same way.
+        model.toggleFolder(folder.id)
+        model.moveFolder(folder.id, before: nil)
+        #expect(model.tabs.map(\.id) == [a, d, b, c])
+        #expect(model.folders[0].collapsed)
+        #expect(model.sidebarVisualIDs == [a, d, folder.id])
+    }
+
+    @Test func movingAFolderPastAnotherFolderDoesNotNestIt() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        let first = model.makeFolder(containing: a)!
+        let second = model.makeFolder(containing: c)!
+        model.add(d, to: second.id)
+
+        model.moveFolder(first.id, before: nil)
+        #expect(model.sidebarSections.map(\.id) == [b, second.id, first.id])
+        #expect(model.tabs.map(\.id) == [b, c, d, a])
+        #expect(model.folderContaining(a)?.id == first.id)
+        #expect(model.folders.map(\.id) == [second.id, first.id])
+
+        model.moveFolder(first.id, before: second.id)
+        #expect(model.sidebarSections.map(\.id) == [b, first.id, second.id])
+
+        model.toggleFolder(second.id)
+        model.moveFolder(second.id, before: b)
+        #expect(model.sidebarSections.map(\.id) == [second.id, b, first.id])
+        #expect(model.tabs.map(\.id) == [c, d, b, a])
+        #expect(Set(model.folderContaining(c)?.tabIDs ?? []) == Set([c, d]))
+    }
+
+    @Test func movingAFolderGathersMembersScatteredAmongLooseTabs() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let x = model.newTab().id
+        let b = model.newTab().id
+        let y = model.newTab().id
+        let folder = model.makeFolder(containing: a)!
+        model.add(b, to: folder.id)
+        // Sidebar shows the folder first, then the loose tabs.
+        #expect(model.sidebarSections.map(\.id) == [folder.id, x, y])
+
+        model.moveFolder(folder.id, before: y)
+        #expect(model.sidebarSections.map(\.id) == [x, folder.id, y])
+        #expect(model.tabs.map(\.id) == [x, a, b, y])
+    }
+
+    @Test func movingAFolderWithASplitPairKeepsThePairAdjacent() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let x = model.newTab().id
+        let c = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+        model.add(c, to: folder.id)
+        model.select(b)
+        model.split(with: c, on: .trailing)
+        #expect(model.splits.count == 1)
+
+        model.moveFolder(folder.id, before: a)
+        #expect(model.tabs.map(\.id) == [b, c, a, x])
+        #expect(model.sidebarSections.map(\.id) == [folder.id, a, x])
+        let indexes = [b, c].compactMap { id in model.tabs.firstIndex { $0.id == id } }
+        #expect(abs(indexes[0] - indexes[1]) == 1)
+        #expect(model.splits.count == 1)
+
+        // A loose split pair also moves past the folder as one block.
+        let loose = TerminalModel()
+        let p = loose.selectedID!
+        let q = loose.newTab().id
+        let r = loose.newTab().id
+        let group = loose.makeFolder(containing: r)!
+        loose.select(p)
+        loose.split(with: q, on: .trailing)
+        loose.moveFolder(group.id, before: p)
+        #expect(loose.tabs.map(\.id) == [r, p, q])
+        #expect(loose.splits.count == 1)
+    }
+
+    @Test func movingAnEmptyFolderKeepsItsPlace() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+        model.removeFromFolder(b)
+        #expect(model.sidebarSections.map(\.id) == [a, folder.id, b, c])
+
+        model.moveFolder(folder.id, before: nil)
+        #expect(model.sidebarSections.map(\.id) == [a, b, c, folder.id])
+        model.moveFolder(folder.id, before: a)
+        #expect(model.sidebarSections.map(\.id) == [folder.id, a, b, c])
+        model.moveFolder(folder.id, before: c)
+        #expect(model.sidebarSections.map(\.id) == [a, b, folder.id, c])
+        #expect(model.tabs.map(\.id) == [a, b, c])
+    }
+
+    @Test func movingAFolderLeavesTheTabSelectionAlone() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let folder = model.makeFolder(containing: c)!
+        model.select(a)
+        model.select(b, shift: false, command: true)
+        let selection = model.selectedTabIDs
+        let selected = model.selectedID
+
+        model.moveFolder(folder.id, before: a)
+        #expect(model.selectedTabIDs == selection)
+        #expect(model.selectedID == selected)
+        #expect(model.tabs.map(\.id) == [c, a, b])
+    }
+
+    @Test func folderDropSnapsOutOfFolderInteriors() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+        model.add(c, to: folder.id)
+        // Rows: a, folder, b, c, d
+        #expect(model.sidebarVisualIDs == [a, folder.id, b, c, d])
+
+        #expect(model.folderMoveTarget(visibleInsertion: 0) == FolderMoveTarget(visibleInsertion: 0, beforeID: a))
+        #expect(model.folderMoveTarget(visibleInsertion: 1) == FolderMoveTarget(visibleInsertion: 1, beforeID: folder.id))
+        // Under the header and between the children: closer end wins, never the interior.
+        #expect(model.folderMoveTarget(visibleInsertion: 2) == FolderMoveTarget(visibleInsertion: 1, beforeID: folder.id))
+        #expect(model.folderMoveTarget(visibleInsertion: 3) == FolderMoveTarget(visibleInsertion: 4, beforeID: d))
+        #expect(model.folderMoveTarget(visibleInsertion: 4) == FolderMoveTarget(visibleInsertion: 4, beforeID: d))
+        #expect(model.folderMoveTarget(visibleInsertion: 5) == FolderMoveTarget(visibleInsertion: 5, beforeID: nil))
+        #expect(model.folderMoveTarget(visibleInsertion: 99) == FolderMoveTarget(visibleInsertion: 5, beforeID: nil))
+
+        // Collapsed folders have no interior.
+        model.toggleFolder(folder.id)
+        #expect(model.folderMoveTarget(visibleInsertion: 2) == FolderMoveTarget(visibleInsertion: 2, beforeID: d))
+    }
+
+    @Test func folderMoveIntoItsOwnSlotIsANoOp() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+
+        #expect(!model.folderMoveWouldChange(folder.id, before: folder.id))
+        #expect(!model.folderMoveWouldChange(folder.id, before: c))
+        #expect(model.folderMoveWouldChange(folder.id, before: a))
+        #expect(model.folderMoveWouldChange(folder.id, before: nil))
+        let before = model.tabs.map(\.id)
+        model.moveFolder(folder.id, before: c)
+        #expect(model.tabs.map(\.id) == before)
+    }
+
     @Test func droppingOnAFolderHeaderStaysOutsideTheFolder() {
         let model = TerminalModel()
         let first = model.selectedID!
