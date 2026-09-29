@@ -52,6 +52,46 @@ Xcode resolves SwiftTerm on first build (network required once).
   never persisted. State restoration keeps lightweight descriptors only,
   including per-window review visibility and width.
 
+## Shell integration
+
+Zero config: zsh, bash and fish start with a small bootstrap that reports the
+working directory (OSC 7) and marks prompts and commands (OSC 133: `A` prompt
+start, `B` prompt end, `C` command start, `D;exit` command end). The scripts
+are embedded in `ShellIntegration.swift` and written to
+`~/Library/Application Support/Prestel/ShellIntegration/` at launch. Prestel
+also sets `TERM_PROGRAM=Prestel` and `PRESTEL_SHELL_INTEGRATION=1`.
+
+- Your dotfiles are never edited. zsh gets a wrapper `ZDOTDIR` whose `.zshenv`
+  restores yours and sources your `.zshenv` first; bash runs as an interactive
+  shell with `--rcfile` and replays the login files (`/etc/profile`, then the
+  first of `~/.bash_profile`, `~/.bash_login`, `~/.profile`); fish loads a
+  `vendor_conf.d` snippet through `XDG_DATA_DIRS`.
+- It steps aside when your prompt already carries OSC 133 marks (a custom
+  `PS1`, iTerm2 integration), and fish 4+ keeps its native marks.
+- Untested in this repo: fish (no fish installed when written) and bash 4+.
+  Bash sees `C`/`D` only if you have no `DEBUG` trap of your own.
+- **Jump to Previous/Next Prompt**: ⌥⌘↑ / ⌥⌘↓ (View menu) scroll between
+  prompts using SwiftTerm's stored marks; past the last prompt it returns to
+  the bottom.
+- **Long-command notifications**: a command that ran 10 seconds or more and
+  finishes while Prestel is in the background, or its tab is not on screen,
+  posts "Command finished" with the exit status. Permission is asked on first
+  use. Toggle it under Settings → Notifications.
+
+## Opening folders and scripts
+
+Prestel registers as a handler for folders and for `.command`, shell script and
+executable files, so Finder can open them here (a script runs in a new tab and
+leaves you at the shell). macOS has no public API to make a terminal the
+system default: to use Prestel for `.command` files, select one, Get Info →
+Open with → Prestel → Change All….
+
+- **Services**: Finder → right-click a folder → Services → *New Prestel Tab at
+  Folder* / *New Prestel Window at Folder* (enable them under System Settings →
+  Keyboard → Keyboard Shortcuts → Services if hidden).
+- **Dock menu**: right-click the Dock icon for New Window, New Tab and recent
+  folders (folders opened through Finder, the Services or Open Folder…).
+
 ## Files
 
 - `PrestelApp.swift`: multi-window ownership, menus, Settings screen,
@@ -60,6 +100,9 @@ Xcode resolves SwiftTerm on first build (network required once).
   `ShellMetrics`, glass backdrop, toolbar header.
 - `TerminalModel.swift` + `TerminalSession.swift`: tabs, PTY lifecycle,
   search, history, recently-closed, descriptors.
+- `ShellIntegration.swift` + `ShellMarks.swift`: shell bootstrap scripts and launch
+  environment, OSC 133 parsing, command timing, long-command notifications.
+- `Info.plist`: document types (folders, scripts) and Finder Services, merged with the generated plist.
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
 - `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, highlighting, and commit.

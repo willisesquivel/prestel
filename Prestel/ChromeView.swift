@@ -40,6 +40,12 @@ struct PrestelCommands: Commands {
                 .keyboardShortcut(.tab, modifiers: [.control, .shift]).disabled((window?.model.tabs.count ?? 0) < 2)
             Button("Clear Scrollback") { app.keyController?.clearScrollback(nil) }
                 .keyboardShortcut("k").disabled(window?.model.selectedTab?.kind != .terminal)
+            Button("Jump to Previous Prompt") { window?.model.selectedTab?.jumpToPrompt(previous: true) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(window?.model.selectedTab?.kind != .terminal)
+            Button("Jump to Next Prompt") { window?.model.selectedTab?.jumpToPrompt(previous: false) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(window?.model.selectedTab?.kind != .terminal)
             Button("Unsplit Tabs") { window?.model.unsplit() }
                 .disabled(window?.model.visibleSplit == nil)
             Divider()

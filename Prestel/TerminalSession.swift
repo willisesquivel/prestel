@@ -20,9 +20,10 @@ enum ShellConfiguration {
         }
         return FileManager.default.homeDirectoryForCurrentUser.path
     }
-    static var environment: [String] {
+    static var environment: [String] { environmentValues.map { "\($0.key)=\($0.value)" } }
+    static var environmentValues: [String: String] {
         var values = ProcessInfo.processInfo.environment
-        for key in ["XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID", "SHLVL", "_", "PWD", "OLDPWD"] { values.removeValue(forKey: key) }
+        for key in ["XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID", "SHLVL", "_", "PWD", "OLDPWD", "PRESTEL_ORIG_ZDOTDIR"] { values.removeValue(forKey: key) }
         // Universal TUI transparency contract (same pattern as OpenCode `system`):
         // Prestel renders default-background cells transparently so the glass
         // shows through (SwiftTerm skips filling default-bg runs; see
@@ -41,7 +42,7 @@ enum ShellConfiguration {
         values["SHELL"] = loginShell
         values["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
         if values["LANG"] == nil { values["LANG"] = "en_US.UTF-8" }
-        return values.map { "\($0.key)=\($0.value)" }
+        return values
     }
     static func escapedPath(_ path: String) -> String { "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     static func displayDirectory(_ path: String) -> String {
@@ -112,6 +113,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     private var adapter: ProcessAdapter?
     private var cwdPollTimer: Timer?
     private var cwdDebounceTask: Task<Void, Never>?
+    private var oscObservation: TerminalOscObservation?
+    private var commandTracker = CommandTracker()
+    /// Typed into the shell right after it starts (scripts opened from Finder).
+    private var pendingInput: String?
 
     init(descriptor: TabDescriptor) {
         id = descriptor.id
@@ -174,9 +179,46 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         self.process = process
         state = .running
         let shell = ShellConfiguration.loginShell
-        process.startProcess(executable: shell, args: [], environment: ShellConfiguration.environment,
-                             execName: "-" + URL(fileURLWithPath: shell).lastPathComponent, currentDirectory: directory)
+        let launch = ShellIntegration.launch(shell: shell, environment: ShellConfiguration.environmentValues,
+                                             root: ShellIntegration.installedRoot)
+        process.startProcess(executable: shell, args: launch.arguments,
+                             environment: launch.environment.map { "\($0.key)=\($0.value)" },
+                             execName: (launch.isLogin ? "-" : "") + URL(fileURLWithPath: shell).lastPathComponent, currentDirectory: directory)
+        observeShellMarks(on: surface)
         startCwdPolling()
+        if let pendingInput { self.pendingInput = nil; process.send(data: Array(pendingInput.utf8)[...]) }
+    }
+    /// Runs `command` in this tab's shell, queuing it if the shell hasn't started yet.
+    func run(_ command: String) {
+        if let process, process.running { process.send(data: Array((command + "\r").utf8)[...]) }
+        else { pendingInput = command + "\r" }
+    }
+    /// OSC 133 comes from the shell integration. SwiftTerm stores prompt rows
+    /// itself; this only times commands. The observer runs off the main
+    /// thread, so it stamps arrival there and hops over with a plain value.
+    private func observeShellMarks(on surface: PrestelView) {
+        oscObservation = surface.observeOscEvents { [weak self] event in
+            guard event.code == 133, let mark = ShellMark(payload: event.payload) else { return }
+            let date = Date()
+            Task { @MainActor in self?.handle(mark, at: date) }
+        }
+    }
+    func handle(_ mark: ShellMark, at date: Date) {
+        guard state == .running, let finished = commandTracker.handle(mark, at: date) else { return }
+        let visible = NSApp.isActive && surface?.window?.occlusionState.contains(.visible) == true
+        if CommandNotifier.shouldNotify(finished, enabled: CommandNotifier.isEnabled, isVisible: visible) {
+            CommandNotifier.post(finished, session: self)
+        }
+    }
+    /// Scrolls to the closest OSC 133 prompt above or below the viewport;
+    /// past the last prompt it returns to the live bottom.
+    func jumpToPrompt(previous: Bool) {
+        guard let surface else { return }
+        if let row = previous ? surface.previousSemanticPromptRow() : surface.nextSemanticPromptRow() {
+            surface.scrollTo(row: row)
+        } else if !previous {
+            surface.scroll(toPosition: 1)
+        }
     }
     func close() {
         guard state != .closed else { return }
@@ -184,6 +226,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         cwdPollTimer = nil
         cwdDebounceTask?.cancel()
         cwdDebounceTask = nil
+        oscObservation = nil
         directory = currentDirectory
         state = .closed
         if let process, process.running { ProcessInspection.hangupJobs(shell: process.shellPid) }
