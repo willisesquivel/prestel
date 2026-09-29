@@ -39,7 +39,7 @@ Xcode resolves SwiftTerm on first build (network required once).
 ## Tabs & chrome
 
 - ⌘T new tab (inherits cwd), ⌘W close tab / ⇧⌘W close window, ⇧⌘T reopen,
-  ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌘S toggle sidebar, ⌘R toggle Code Review.
+  ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌘F find in the terminal (⌘G / ⇧⌘G next / previous, Esc closes), ⌘S toggle sidebar, ⌘R toggle Code Review.
   ⌘+ / ⌘= larger terminal text, ⌘- smaller, ⌘0 default size — the window
   resizes to preserve the grid (no rewrap); window chrome stays put. Last tab closes its window.
 - Title comes from the shell (OSC title), cwd from OSC 7; file drops insert
@@ -61,6 +61,7 @@ Xcode resolves SwiftTerm on first build (network required once).
 - `TerminalModel.swift` + `TerminalSession.swift`: tabs, PTY lifecycle,
   search, history, recently-closed, descriptors.
 - `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
+- `TerminalFind.swift`: find bar, match highlights, and search helpers.
 - `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
 - `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, highlighting, and commit.
 - `THIRD_PARTY_NOTICES.md`: bundled Highlighter/Highlight.js notices.

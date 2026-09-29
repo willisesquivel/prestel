@@ -251,8 +251,12 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {
         if let directory, let path = ShellConfiguration.localDirectory(fromOSC: directory) { self.directory = path }
     }
-    func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
-    func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
+    func scrolled(source: SwiftTerm.TerminalView, position: Double) {
+        (source as? PrestelView)?.onViewportChange?()
+    }
+    func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {
+        (source as? PrestelView)?.onViewportChange?()
+    }
     func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
         guard let url = URL(string: link), ["https", "http", "mailto", "file"].contains(url.scheme?.lowercased() ?? "") else { return }
         NSWorkspace.shared.open(url)

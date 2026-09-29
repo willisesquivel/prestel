@@ -306,6 +306,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func previousTab(_ sender: Any?) { model.cycle(-1) }
     @objc func reopenClosedTab(_ sender: Any?) { model.reopenClosedTab() }
     @objc func clearScrollback(_ sender: Any?) { model.selectedTab?.surface?.clearScrollback() }
+    @objc func showFind(_ sender: Any?) {
+        guard model.selectedTab?.kind == .terminal else { return }
+        model.find.show(on: model.selectedTab?.surface)
+    }
+    @objc func findNext(_ sender: Any?) { stepFind(forward: true) }
+    @objc func findPrevious(_ sender: Any?) { stepFind(forward: false) }
+    private func stepFind(forward: Bool) {
+        guard model.selectedTab?.kind == .terminal else { return }
+        guard model.find.isVisible else { return showFind(nil) }
+        if forward { model.find.next() } else { model.find.previous() }
+    }
     @objc func toggleSidebar(_ sender: Any?) {
         ShellPanelAnimation.run { model.sidebarVisible.toggle() }
     }
