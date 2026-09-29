@@ -16,8 +16,15 @@ final class RepositoryWatcher: RepositoryWatching, @unchecked Sendable {
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(box).toOpaque(),
-            retain: nil,
-            release: nil,
+            retain: { info in
+                guard let info else { return nil }
+                _ = Unmanaged<StreamBox>.fromOpaque(info).retain()
+                return UnsafeRawPointer(info)
+            },
+            release: { info in
+                guard let info else { return }
+                Unmanaged<StreamBox>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
         let callback: FSEventStreamCallback = { _, info, count, pathsPointer, flagsPointer, _ in
@@ -70,7 +77,7 @@ final class RepositoryWatcher: RepositoryWatching, @unchecked Sendable {
         FSEventStreamStart(raw)
         continuation.onTermination = { [weak self, weak box] _ in
             box?.stop()
-            self?.remove(key)
+            if let box { self?.remove(key, ifCurrent: box) }
         }
         lock.lock()
         streams[key] = box
@@ -93,9 +100,11 @@ final class RepositoryWatcher: RepositoryWatching, @unchecked Sendable {
         values.forEach { $0.stop() }
     }
 
-    private func remove(_ key: RepositoryKey) {
+    private func remove(_ key: RepositoryKey, ifCurrent box: StreamBox) {
         lock.lock()
-        streams.removeValue(forKey: key)
+        if streams[key] === box {
+            streams.removeValue(forKey: key)
+        }
         lock.unlock()
     }
 }

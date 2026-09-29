@@ -180,7 +180,8 @@ struct ReviewFileCard: View {
         // State-driven value now feeds the diff mask only. Header position is
         // synchronous (visualEffect below). Same math, same numbers.
         let offset = expanded ? stickyOffset : 0
-        let cull = ReviewFileStickyMetrics.contentCull(headerOffset: offset)
+        // A stale offset from a fast fling must never cull the whole pane.
+        let cull = min(ReviewFileStickyMetrics.contentCull(headerOffset: offset), max(paneHeight - 1, 0))
         VStack(spacing: 0) {
             ReviewFileHeaderRow(
                 file: file,
@@ -565,6 +566,16 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     override func layout() {
         super.layout()
         layoutDocument()
+    }
+
+    /// Panes are recycled by the lazy list and can be re-attached mid-fling with
+    /// a stale backing store, which shows as a blank diff. Repaint on attach.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        layoutDocument()
+        document.needsDisplay = true
+        gutter.needsDisplay = true
     }
 
     override func setFrameSize(_ newSize: NSSize) {

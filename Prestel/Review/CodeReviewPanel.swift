@@ -151,10 +151,16 @@ struct CodeReviewPanel: View {
                             paneHeight: paneHeight(for: file),
                             onEscape: { model.onRestoreTerminalFocus?() },
                             onCollapseWhilePinned: {
-                                var transaction = Transaction()
-                                transaction.animation = nil
-                                withTransaction(transaction) {
-                                    proxy.scrollTo(file.id, anchor: .top)
+                                // Wait for the collapse to lay out. Scrolling against the
+                                // pre-collapse content height can leave the offset past the
+                                // shrunken content, which renders as an empty list.
+                                Task { @MainActor in
+                                    await Task.yield()
+                                    var transaction = Transaction()
+                                    transaction.animation = nil
+                                    withTransaction(transaction) {
+                                        proxy.scrollTo(file.id, anchor: .top)
+                                    }
                                 }
                             }
                         )
