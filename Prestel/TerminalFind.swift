@@ -88,10 +88,13 @@ final class TerminalFind: ObservableObject {
 
     private weak var surface: PrestelView?
     private var refreshTask: Task<Void, Never>?
+    private var resetTask: Task<Void, Never>?
 
     private var options: SearchOptions { SearchOptions(caseSensitive: caseSensitive) }
 
     func show(on surface: PrestelView?) {
+        resetTask?.cancel()
+        resetTask = nil
         attach(surface)
         isVisible = true
         focusRequest &+= 1
@@ -112,8 +115,16 @@ final class TerminalFind: ObservableObject {
         isVisible = false
         let closing = surface
         detach()
-        index = 0
-        total = 0
+        // The bar fades out showing what it last showed; the counter resets only
+        // once it is gone, so it never flashes "No results" while closing.
+        resetTask?.cancel()
+        resetTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let self, !Task.isCancelled, !self.isVisible else { return }
+            self.resetTask = nil
+            self.index = 0
+            self.total = 0
+        }
         if let closing, closing.window != nil {
             (window ?? closing.window)?.makeFirstResponder(closing)
         }
@@ -224,42 +235,43 @@ struct TerminalFindHost: View {
 }
 
 /// Compact glass find bar, overlaid at the top-right of the terminal surface.
+/// Every size here is fixed (field width, counter slot, button frames), so
+/// nothing reflows when the counter changes or while the bar fades in and out.
 struct TerminalFindBar: View {
     @ObservedObject var find: TerminalFind
     let close: () -> Void
     @Environment(\.colorScheme) private var colorScheme
-    @FocusState private var fieldFocused: Bool
+
+    /// Equal on every side of the glass.
+    private static let inset: CGFloat = 4
+    private static let counterWidth: CGFloat = 64
 
     private var hasQuery: Bool { !find.query.isEmpty }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                TextField("Find", text: $find.query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($fieldFocused)
-                    .frame(width: 120)
-                    .onKeyPress(.return, phases: .down) { press in
-                        press.modifiers.contains(.shift) ? find.previous() : find.next()
-                        return .handled
-                    }
-                    .onKeyPress(.escape, phases: .down) { _ in
-                        close()
-                        return .handled
-                    }
-                    .accessibilityLabel("Find in terminal")
-                if hasQuery {
-                    Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .accessibilityLabel("Matches")
-                }
+                FindTextField(
+                    text: $find.query,
+                    focusRequest: find.focusRequest,
+                    onNext: { find.next() },
+                    onPrevious: { find.previous() },
+                    onEscape: close
+                )
+                .frame(width: 120, height: 20)
+                .accessibilityLabel("Find in terminal")
+                Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(width: Self.counterWidth, alignment: .trailing)
+                    .opacity(hasQuery ? 1 : 0)
+                    .accessibilityHidden(!hasQuery)
+                    .accessibilityLabel("Matches")
             }
             .padding(.leading, 9)
             .padding(.trailing, 8)
@@ -279,16 +291,112 @@ struct TerminalFindBar: View {
                 FindBarButton(symbol: "xmark", help: "Close (Esc)", action: close)
             }
         }
-        .padding(.horizontal, 6)
-        .frame(height: ShellMetrics.searchHeight + 8)
+        .padding(Self.inset)
         .chromeGlass()
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.32 : 0.12), radius: 10, y: 4)
+        .transaction { $0.animation = nil }
         .accessibilityElement(children: .contain)
-        .onAppear { fieldFocused = true }
-        .onChange(of: find.focusRequest) { fieldFocused = true }
         .onChange(of: find.query) { find.search() }
         .onChange(of: find.caseSensitive) { find.search() }
     }
+}
+
+/// An AppKit field so focus is explicit: the bar takes first responder itself
+/// (on appear and on every ⌘F) instead of relying on SwiftUI focus, which could
+/// fall through to another text view in the window's key-view loop.
+struct FindTextField: NSViewRepresentable {
+    @Binding var text: String
+    let focusRequest: Int
+    let onNext: () -> Void
+    let onPrevious: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> FocusingTextField {
+        let field = FocusingTextField()
+        field.delegate = context.coordinator
+        field.placeholderString = "Find"
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13)
+        field.lineBreakMode = .byClipping
+        field.cell?.usesSingleLineMode = true
+        field.cell?.isScrollable = true
+        field.stringValue = text
+        context.coordinator.focusRequest = focusRequest
+        field.requestFocus()
+        return field
+    }
+
+    func updateNSView(_ field: FocusingTextField, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.parent = self
+        if field.currentEditor() == nil, field.stringValue != text { field.stringValue = text }
+        if coordinator.focusRequest != focusRequest {
+            coordinator.focusRequest = focusRequest
+            field.requestFocus()
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FocusingTextField, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 120, height: proposal.height ?? 20)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: FindTextField?
+        var focusRequest = 0
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
+            parent?.text = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                if NSEvent.modifierFlags.contains(.shift) { parent?.onPrevious() } else { parent?.onNext() }
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent?.onEscape()
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
+/// Takes first responder as soon as it is in a window, retrying briefly while
+/// the overlay is still being installed.
+final class FocusingTextField: NSTextField {
+    private var pending = false
+
+    func requestFocus() {
+        pending = true
+        attemptFocus(retries: 8)
+    }
+
+    private func attemptFocus(retries: Int) {
+        guard pending else { return }
+        if let window, window.makeFirstResponder(self) {
+            pending = false
+            return
+        }
+        guard retries > 0 else { pending = false; return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.attemptFocus(retries: retries - 1)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if pending, window != nil { attemptFocus(retries: 8) }
+    }
+
+    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 }
 
 private struct FindBarButton: View {
@@ -303,7 +411,7 @@ private struct FindBarButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(isEnabled ? 0.72 : 0.22))
-                .frame(width: 26, height: 26)
+                .frame(width: 30, height: 30)
                 .background { if isOn { Circle().fill(Color.accentColor.opacity(0.16)) } }
                 .contentShape(Circle())
         }

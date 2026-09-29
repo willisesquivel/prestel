@@ -41,3 +41,25 @@ struct TerminalFindTests {
         #expect(TerminalFindMatcher.counter(index: 5, total: 1000) == "5 of 1000+")
     }
 }
+
+@MainActor
+struct TerminalFindStateTests {
+    @Test func repeatedShowRequestsFocusEachTime() {
+        let find = TerminalFind()
+        find.show(on: nil)
+        let first = find.focusRequest
+        find.show(on: nil)
+        #expect(find.isVisible)
+        #expect(find.focusRequest == first &+ 1)
+    }
+
+    @Test func reopeningDuringFadeOutKeepsBarVisible() async throws {
+        let find = TerminalFind()
+        find.show(on: nil)
+        find.hide(returningFocusTo: nil)
+        #expect(!find.isVisible)
+        find.show(on: nil)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(find.isVisible)
+    }
+}

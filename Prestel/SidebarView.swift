@@ -237,36 +237,55 @@ private struct FolderSection: View {
                 }
             }
             .padding(.top, open && !group.children.isEmpty ? ShellMetrics.sidebarRowSpacing : 0)
-            // Rows fade and slide toward (or away from) the folder header.
-            // The frame still animates so siblings below make room, but there is
-            // no clip or mask: the rows are already transparent while they overlap.
-            .offset(y: open || reduceMotion ? 0 : -Self.slide)
+            // Rows slide the whole way behind the folder header as the frame
+            // shrinks, on the same transaction, so their bottom edge tracks the
+            // frame's. Only the top is masked (they emerge from behind the
+            // header); nothing is clipped below. Opacity is a separate late fade.
+            .offset(y: open || reduceMotion ? 0 : -rowsFullHeight)
             .opacity(open ? 1 : 0)
-            .animation(fade, value: open)
+            .animation(rowsFade, value: open)
             .frame(height: rowsHeight, alignment: .top)
+            .mask(alignment: .top) { Rectangle().frame(width: width + 80, height: 4000) }
             .allowsHitTesting(group.showsChildren)
         }
         .background {
+            // Follows the folder's animating height; only fades at the very end
+            // of a close (and quickly on open).
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(0.045))
                 .opacity(open ? 1 : 0)
+                .animation(backgroundFade, value: open)
         }
         .onChange(of: group.showsChildren) { _, show in
-            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.25)) {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .easeInOut(duration: Self.duration)) {
                 open = show
             }
         }
         .frame(width: width, alignment: .trailing)
     }
 
-    private static let slide: CGFloat = 12
+    /// Height of the rows when open: how far they travel to hide behind the header.
+    private var rowsFullHeight: CGFloat {
+        let count = CGFloat(group.children.count)
+        guard count > 0 else { return 0 }
+        let gap = ShellMetrics.sidebarRowSpacing
+        return gap + count * ShellMetrics.sidebarRowHeight + (count - 1) * gap
+    }
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
-    /// Closing fades out before the rows below rise into them; opening fades in late.
-    private var fade: Animation {
+    private static let duration = 0.25
+
+    /// Closing fades only near the end of the slide; opening fades in early.
+    /// Reduce Motion is a plain short fade.
+    private var rowsFade: Animation {
         if reduceMotion { return .easeOut(duration: 0.12) }
-        return open ? .easeOut(duration: 0.22).delay(0.04) : .easeOut(duration: 0.14)
+        return open ? .easeOut(duration: 0.14) : .easeIn(duration: 0.08).delay(Self.duration - 0.08)
+    }
+
+    private var backgroundFade: Animation {
+        if reduceMotion { return .easeOut(duration: 0.12) }
+        return open ? .easeOut(duration: 0.1) : .easeOut(duration: 0.06).delay(Self.duration - 0.06)
     }
 }
 
