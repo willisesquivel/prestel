@@ -343,6 +343,8 @@ private struct TerminalDetailSurface: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var splitResizeStartFraction: Double?
 
+    private var findBar: some View { TerminalFindHost(model: model, find: model.find) }
+
     var body: some View {
         Group {
             if let split = model.visibleSplit,
@@ -360,6 +362,7 @@ private struct TerminalDetailSurface: View {
                             TerminalToolbar(model: model)
                             TerminalSurface(model: model)
                         }
+                        .overlay(alignment: .topTrailing) { findBar }
                     }
                 }
             }
@@ -375,6 +378,14 @@ private struct TerminalDetailSurface: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityLabel("\(model.selectedTab?.displayTitle ?? "Local") terminal")
+        .onChange(of: model.selectedID) {
+            // The bar follows the selected terminal; Settings has nothing to search.
+            if model.selectedTab?.kind == .terminal {
+                model.find.attach(model.selectedTab?.surface)
+            } else {
+                model.find.hide(returningFocusTo: nil)
+            }
+        }
     }
 
     @ViewBuilder
@@ -445,6 +456,7 @@ private struct TerminalDetailSurface: View {
                 }
             }
         }
+        .overlay(alignment: .topTrailing) { if isFocused { findBar } }
         .frame(width: max(0, frame.width), height: max(0, frame.height))
         .offset(x: frame.minX, y: frame.minY)
     }

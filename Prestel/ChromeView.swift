@@ -26,6 +26,15 @@ struct PrestelCommands: Commands {
                 .keyboardShortcut("w", modifiers: [.command, .shift]).disabled(NSApp.keyWindow == nil)
         }
         CommandGroup(replacing: .saveItem) {}
+        CommandGroup(after: .textEditing) {
+            let canFind = window?.model.selectedTab?.kind == .terminal
+            Button("Find…") { window?.showFind(nil) }
+                .keyboardShortcut("f").disabled(!canFind)
+            Button("Find Next") { window?.findNext(nil) }
+                .keyboardShortcut("g").disabled(!canFind)
+            Button("Find Previous") { window?.findPrevious(nil) }
+                .keyboardShortcut("g", modifiers: [.command, .shift]).disabled(!canFind)
+        }
         CommandGroup(before: .toolbar) {
             Button("Toggle Sidebar") { app.keyController?.toggleSidebar(nil) }
                 .keyboardShortcut("s").disabled(window == nil)

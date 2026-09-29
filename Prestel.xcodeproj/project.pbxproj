@@ -11,6 +11,7 @@
 		A10000000000000000000002 /* TerminalModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* TerminalModel.swift */; };
 		A10000000000000000000003 /* WindowSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* WindowSupport.swift */; };
 		A10000000000000000000004 /* SearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* SearchField.swift */; };
+		A1000000000000000000F001 /* TerminalFind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F001 /* TerminalFind.swift */; };
 		A10000000000000000000005 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* SidebarView.swift */; };
 		A10000000000000000000006 /* ChromeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ChromeView.swift */; };
 		A10000000000000000000007 /* ShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ShellView.swift */; };
@@ -32,6 +33,7 @@
 		A1000000000000000000002A /* ReviewSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A /* ReviewSelection.swift */; };
 		A1000000000000000000002B /* ReviewSyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002B /* ReviewSyntaxHighlighter.swift */; };
 		A1000000000000000000002C /* GitParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002C /* GitParsingTests.swift */; };
+		A1000000000000000000F002 /* TerminalFindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F002 /* TerminalFindTests.swift */; };
 		A1000000000000000000002D /* CodeReviewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002D /* CodeReviewModelTests.swift */; };
 		A1000000000000000000002E /* CodeReviewUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002E /* CodeReviewUITests.swift */; };
 		A10000000000000000000031 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */; };
@@ -60,6 +62,7 @@
 		A20000000000000000000002 /* TerminalModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalModel.swift; sourceTree = "<group>"; };
 		A20000000000000000000003 /* WindowSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSupport.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
+		A2000000000000000000F001 /* TerminalFind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalFind.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ChromeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChromeView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* ShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellView.swift; sourceTree = "<group>"; };
@@ -84,6 +87,7 @@
 		A2000000000000000000002A /* ReviewSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSelection.swift; sourceTree = "<group>"; };
 		A2000000000000000000002B /* ReviewSyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSyntaxHighlighter.swift; sourceTree = "<group>"; };
 		A2000000000000000000002C /* GitParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitParsingTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000F002 /* TerminalFindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalFindTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000002D /* CodeReviewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewModelTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000002E /* CodeReviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeReviewUITests.swift; sourceTree = "<group>"; };
 		A20000000000000000000031 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = SOURCE_ROOT; };
@@ -134,6 +138,7 @@
 				A20000000000000000000002 /* TerminalModel.swift */,
 				A20000000000000000000003 /* WindowSupport.swift */,
 				A20000000000000000000004 /* SearchField.swift */,
+				A2000000000000000000F001 /* TerminalFind.swift */,
 				A20000000000000000000005 /* SidebarView.swift */,
 				A20000000000000000000006 /* ChromeView.swift */,
 				A20000000000000000000007 /* ShellView.swift */,
@@ -154,6 +159,7 @@
 			children = (
 				A2000000000000000000000A /* PrestelTests.swift */,
 				A2000000000000000000002C /* GitParsingTests.swift */,
+				A2000000000000000000F002 /* TerminalFindTests.swift */,
 				A2000000000000000000002D /* CodeReviewModelTests.swift */,
 				A2000000000000000000002E /* CodeReviewUITests.swift */,
 				A2000000000000000000002F /* CommitTests.swift */,
@@ -295,6 +301,7 @@
 				A10000000000000000000002 /* TerminalModel.swift in Sources */,
 				A10000000000000000000003 /* WindowSupport.swift in Sources */,
 				A10000000000000000000004 /* SearchField.swift in Sources */,
+				A1000000000000000000F001 /* TerminalFind.swift in Sources */,
 				A10000000000000000000005 /* SidebarView.swift in Sources */,
 				A10000000000000000000006 /* ChromeView.swift in Sources */,
 				A10000000000000000000007 /* ShellView.swift in Sources */,
@@ -326,6 +333,7 @@
 			files = (
 				A1000000000000000000000A /* PrestelTests.swift in Sources */,
 				A1000000000000000000002C /* GitParsingTests.swift in Sources */,
+				A1000000000000000000F002 /* TerminalFindTests.swift in Sources */,
 				A1000000000000000000002D /* CodeReviewModelTests.swift in Sources */,
 				A1000000000000000000002E /* CodeReviewUITests.swift in Sources */,
 				A1000000000000000000002F /* CommitTests.swift in Sources */,

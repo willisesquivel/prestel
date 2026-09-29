@@ -164,7 +164,7 @@ enum TerminalFontSize {
     /// cols/rows, not pixels). Falls back to nil → caller keeps fixed-window
     /// behavior rather than resizing wrong. String-based but safe: any
     /// SwiftTerm rename just disables window preservation, never crashes.
-    private static func cellSize(of surface: PrestelView) -> CGSize? {
+    static func cellSize(of surface: PrestelView) -> CGSize? {
         var mirror: Mirror? = Mirror(reflecting: surface)
         while let m = mirror {
             if let child = m.children.first(where: { $0.label == "cellDimension" }) {
@@ -261,6 +261,26 @@ final class PrestelView: SwiftTerm.TerminalView {
     var onFocus: (() -> Void)?
     /// Unfocused split panes stay attached but must not steal first responder.
     var claimsFocus = true
+    /// Scroll or content change; find uses it to recount and repaint matches.
+    var onViewportChange: (() -> Void)?
+    private var findOverlay: TerminalFindOverlay?
+
+    /// Matches painted over the visible rows while the find bar is open.
+    var findHighlights: [TerminalFindHighlight] = [] {
+        didSet {
+            guard findHighlights != oldValue else { return }
+            if findHighlights.isEmpty, findOverlay == nil { return }
+            let overlay = findOverlay ?? {
+                let created = TerminalFindOverlay(frame: bounds)
+                created.autoresizingMask = [.width, .height]
+                addSubview(created)
+                findOverlay = created
+                return created
+            }()
+            overlay.cellSize = TerminalFontSize.cellSize(of: self) ?? .zero
+            overlay.highlights = findHighlights
+        }
+    }
 
     /// Permanently opt the terminal surface out of AppKit implicit animations.
     /// `withoutAnimations` freezes the transaction for the synchronous font

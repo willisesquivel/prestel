@@ -153,6 +153,8 @@ final class TerminalModel: ObservableObject {
     @Published private(set) var splits: [SplitState] = []
     @Published private(set) var folders: [TabFolder] = []
     @Published var searchText = ""
+    /// Find-in-terminal bar state for this window's selected terminal.
+    let find = TerminalFind()
     @Published var sidebarVisible = true
     @Published var sidebarWidth: Double = 172
     @Published var reviewVisible = false
