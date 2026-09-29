@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 
 @main
 struct PrestelApp: App {
@@ -12,7 +13,7 @@ struct PrestelApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, ObservableObject {
     @Published var commandRevision = 0
     static weak var current: AppDelegate?
     override init() { super.init(); Self.current = self }
@@ -25,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         PrestelAppearance.apply(UserDefaults.standard.string(forKey: "appearanceMode") ?? "system")
         NSWindow.allowsAutomaticWindowTabbing = false
         guard !Self.isTesting else { return }
+        // Finder Services ("New Prestel Tab at Folder") call the handlers below.
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
+        UNUserNotificationCenter.current().delegate = self
         if controllers.isEmpty { createWindow() }
     }
     static var isTesting: Bool {
@@ -87,14 +92,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         panel.allowedContentTypes = [.folder]
         if panel.runModal() == .OK, let url = panel.url { openDirectory(url) }
     }
-    func openDirectory(_ url: URL) {
+    func openDirectory(_ url: URL, inNewWindow: Bool = false) {
         var directory: ObjCBool = false
         guard url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else { return }
-        if let controller = NSApp.keyWindow?.windowController as? TerminalWindowController {
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        if !inNewWindow, let controller = NSApp.keyWindow?.windowController as? TerminalWindowController {
             controller.model.newTab(directory: url.path)
         } else { createWindow(directory: url.path) }
     }
-    func application(_ application: NSApplication, open urls: [URL]) { urls.forEach(openDirectory) }
+    /// A `.command`/`.sh`/executable opened from Finder runs in a new tab that
+    /// stays open on the shell afterwards.
+    func openScript(_ url: URL) {
+        let directory = url.deletingLastPathComponent().path
+        let tab: TerminalSession?
+        if let controller = NSApp.keyWindow?.windowController as? TerminalWindowController { tab = controller.model.newTab(directory: directory) }
+        else { tab = createWindow(directory: directory).model.selectedTab }
+        tab?.run(ScriptLauncher.command(forScriptAt: url.path))
+    }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            var directory: ObjCBool = false
+            guard url.isFileURL, FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) else { continue }
+            if directory.boolValue { openDirectory(url) } else { openScript(url) }
+        }
+    }
+    // MARK: Finder Services (NSServices in Info.plist)
+    @objc func newTabAtFolder(_ pasteboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        serviceFolders(pasteboard).forEach { openDirectory($0) }
+    }
+    @objc func newWindowAtFolder(_ pasteboard: NSPasteboard, userData: String, error: AutoreleasingUnsafeMutablePointer<NSString>) {
+        serviceFolders(pasteboard).forEach { openDirectory($0, inNewWindow: true) }
+    }
+    private func serviceFolders(_ pasteboard: NSPasteboard) -> [URL] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        // A selected file means "its folder", like Terminal's service.
+        return urls.map { url in
+            (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true ? url : url.deletingLastPathComponent()
+        }
+    }
+    // MARK: Dock menu
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "New Window", action: #selector(newWindow(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "New Tab", action: #selector(dockNewTab(_:)), keyEquivalent: "").target = self
+        let recents = NSDocumentController.shared.recentDocumentURLs.filter {
+            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }.prefix(8)
+        if !recents.isEmpty {
+            menu.addItem(.separator())
+            menu.addItem(withTitle: "Recent Folders", action: nil, keyEquivalent: "").isEnabled = false
+            for url in recents {
+                let item = menu.addItem(withTitle: FileManager.default.displayName(atPath: url.path), action: #selector(openRecentFolder(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = url
+                item.toolTip = ShellConfiguration.displayDirectory(url.path)
+            }
+        }
+        return menu
+    }
+    @objc func dockNewTab(_ sender: Any?) {
+        if let controller = keyController ?? controllers.values.first {
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.newTab(nil)
+        } else { createWindow() }
+    }
+    @objc func openRecentFolder(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { openDirectory(url) }
+    }
+    // MARK: Command-finished notifications
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let raw = response.notification.request.content.userInfo["tabID"] as? String, let id = UUID(uuidString: raw) else { return }
+        await MainActor.run {
+            for controller in controllers.values where controller.model.tabs.contains(where: { $0.id == id }) {
+                controller.model.select(id)
+                controller.window?.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+            }
+        }
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
@@ -117,6 +195,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Allow asynchronous hangup, PID-safe escalation and reaping to finish before app exit.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { sender.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
+    }
+}
+
+enum ScriptLauncher {
+    /// Executable scripts run through their shebang; others go to the login shell.
+    static func command(forScriptAt path: String) -> String {
+        let quoted = ShellConfiguration.escapedPath(path)
+        if FileManager.default.isExecutableFile(atPath: path) { return quoted }
+        return "\(ShellConfiguration.escapedPath(ShellConfiguration.loginShell)) \(quoted)"
     }
 }
 
@@ -143,6 +230,7 @@ struct PrestelSettingsView: View {
     @AppStorage("startingDirectory") private var directory = ""
     @AppStorage("openSidebarInNewWindows") private var openSidebarInNewWindows = true
     @AppStorage("reviewExpandFilesByDefault") private var expandReviewFiles = false
+    @AppStorage(CommandNotifier.defaultsKey) private var notifyLongCommands = true
 
     var body: some View {
         GeometryReader { proxy in
@@ -191,6 +279,17 @@ struct PrestelSettingsView: View {
                             SettingsContentDivider()
                             SettingsContentRow(title: "Use Option as Meta", detail: "Send Option as a terminal key instead of typing alternate characters", stacksControl: stacksControls) {
                                 Toggle("Use Option as Meta", isOn: $optionAsMeta)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+
+                    SettingsContentSection(title: "Notifications") {
+                        SettingsContentCard {
+                            SettingsContentRow(title: "Notify when long commands finish", detail: "Post a notification when a command that ran over 10 seconds ends while you are in another tab or app", stacksControl: stacksControls) {
+                                Toggle("Notify when long commands finish", isOn: $notifyLongCommands)
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                                     .controlSize(.small)

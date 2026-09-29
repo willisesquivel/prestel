@@ -45,6 +45,9 @@
 		A1000000000000000000002F /* CommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002F /* CommitTests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
+		A1000000000000000000F001 /* ShellIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F001 /* ShellIntegration.swift */; };
+		A1000000000000000000F002 /* ShellMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F002 /* ShellMarks.swift */; };
+		A1000000000000000000F003 /* ShellIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F003 /* ShellIntegrationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -97,6 +100,10 @@
 		A20000000000000000000035 /* CommitComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitComposer.swift; sourceTree = "<group>"; };
 		A20000000000000000000036 /* CommitMessageGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitMessageGenerator.swift; sourceTree = "<group>"; };
 		A2000000000000000000002F /* CommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000F001 /* ShellIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellIntegration.swift; sourceTree = "<group>"; };
+		A2000000000000000000F002 /* ShellMarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellMarks.swift; sourceTree = "<group>"; };
+		A2000000000000000000F003 /* ShellIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellIntegrationTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000F004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -149,6 +156,9 @@
 				A20000000000000000000021 /* ShellLayout.swift */,
 				A20000000000000000000032 /* AppColors.swift */,
 				A20000000000000000000033 /* Assets.xcassets */,
+				A2000000000000000000F001 /* ShellIntegration.swift */,
+				A2000000000000000000F002 /* ShellMarks.swift */,
+				A2000000000000000000F004 /* Info.plist */,
 				A50000000000000000000005 /* Review */,
 			);
 			path = Prestel;
@@ -163,6 +173,7 @@
 				A2000000000000000000002D /* CodeReviewModelTests.swift */,
 				A2000000000000000000002E /* CodeReviewUITests.swift */,
 				A2000000000000000000002F /* CommitTests.swift */,
+				A2000000000000000000F003 /* ShellIntegrationTests.swift */,
 			);
 			path = PrestelTests;
 			sourceTree = "<group>";
@@ -309,6 +320,8 @@
 				A10000000000000000000009 /* TerminalView.swift in Sources */,
 				A10000000000000000000010 /* TabDrag.swift in Sources */,
 				A10000000000000000000011 /* TabSplit.swift in Sources */,
+				A1000000000000000000F001 /* ShellIntegration.swift in Sources */,
+				A1000000000000000000F002 /* ShellMarks.swift in Sources */,
 				A10000000000000000000021 /* ShellLayout.swift in Sources */,
 				A10000000000000000000022 /* ReviewTypes.swift in Sources */,
 				A10000000000000000000023 /* GitProcessRunner.swift in Sources */,
@@ -337,6 +350,7 @@
 				A1000000000000000000002D /* CodeReviewModelTests.swift in Sources */,
 				A1000000000000000000002E /* CodeReviewUITests.swift in Sources */,
 				A1000000000000000000002F /* CommitTests.swift in Sources */,
+				A1000000000000000000F003 /* ShellIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -444,6 +458,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Prestel/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Prestel;
 				INFOPLIST_KEY_CFBundleIconName = Prestel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -467,6 +482,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Prestel/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Prestel;
 				INFOPLIST_KEY_CFBundleIconName = Prestel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
