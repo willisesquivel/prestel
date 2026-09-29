@@ -237,9 +237,13 @@ private struct FolderSection: View {
                 }
             }
             .padding(.top, open && !group.children.isEmpty ? ShellMetrics.sidebarRowSpacing : 0)
-            .frame(height: rowsHeight, alignment: .top)
-            .clipped()
+            // Rows fade and slide toward (or away from) the folder header.
+            // The frame still animates so siblings below make room, but there is
+            // no clip or mask: the rows are already transparent while they overlap.
+            .offset(y: open || reduceMotion ? 0 : -Self.slide)
             .opacity(open ? 1 : 0)
+            .animation(fade, value: open)
+            .frame(height: rowsHeight, alignment: .top)
             .allowsHitTesting(group.showsChildren)
         }
         .background {
@@ -248,11 +252,21 @@ private struct FolderSection: View {
                 .opacity(open ? 1 : 0)
         }
         .onChange(of: group.showsChildren) { _, show in
-            withAnimation(.easeInOut(duration: 0.25)) {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.25)) {
                 open = show
             }
         }
         .frame(width: width, alignment: .trailing)
+    }
+
+    private static let slide: CGFloat = 12
+
+    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    /// Closing fades out before the rows below rise into them; opening fades in late.
+    private var fade: Animation {
+        if reduceMotion { return .easeOut(duration: 0.12) }
+        return open ? .easeOut(duration: 0.22).delay(0.04) : .easeOut(duration: 0.14)
     }
 }
 

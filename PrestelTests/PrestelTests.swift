@@ -586,6 +586,86 @@ struct PrestelTests {
         #expect(model.selectedTabIDs == [c])
     }
 
+    @Test func newFolderTakesEveryTabInTheSelection() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+
+        model.select(b)
+        model.select(c, shift: true, command: false)
+        let folder = model.makeFolder(containing: c)!
+        #expect(Set(folder.tabIDs) == Set([b, c]))
+        #expect(model.folderContaining(a) == nil)
+        #expect(model.folderContaining(d) == nil)
+
+        // A tab outside the selection only takes itself.
+        let other = model.makeFolder(containing: d)!
+        #expect(other.tabIDs == [d])
+    }
+
+    @Test func shiftRangeSkipsTabsHiddenInCollapsedFolders() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        let folder = model.makeFolder(containing: b)!
+        model.add(c, to: folder.id)
+        model.toggleFolder(folder.id)
+
+        model.select(a)
+        model.select(d, shift: true, command: false)
+        #expect(model.selectedTabIDs == Set([a, d]))
+    }
+
+    @Test func shiftRangeSkipsSearchHiddenTabs() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        model.tab(id: a)?.setDisplayTitle("alpha one")
+        model.tab(id: b)?.setDisplayTitle("beta")
+        model.tab(id: c)?.setDisplayTitle("alpha two")
+
+        model.searchText = "alpha"
+        model.select(a)
+        model.select(c, shift: true, command: false)
+        #expect(model.selectedTabIDs == Set([a, c]))
+    }
+
+    @Test func commandDeselectingBackgroundTabKeepsActiveTab() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        model.select(a)
+        model.select(b, shift: false, command: true)
+        model.select(c, shift: false, command: true)
+        #expect(model.selectedID == c)
+
+        model.select(a, shift: false, command: true)
+        #expect(model.selectedTabIDs == Set([b, c]))
+        #expect(model.selectedID == c)
+    }
+
+    @Test func commandDeselectingActiveTabHandsOffToASelectedOne() {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        model.select(a)
+        model.select(b, shift: false, command: true)
+        model.select(b, shift: false, command: true)
+        #expect(model.selectedTabIDs == [a])
+        #expect(model.selectedID == a)
+
+        // The last selected tab stays selected.
+        model.select(a, shift: false, command: true)
+        #expect(model.selectedTabIDs == [a])
+        #expect(model.selectedID == a)
+    }
+
     @Test func selectedTabsReorderAsOneRigidBlock() {
         let model = TerminalModel()
         let a = model.selectedID!
