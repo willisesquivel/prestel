@@ -329,6 +329,18 @@ enum SidebarOutline {
         }
     }
 
+    /// Tabs on screen in display order. Collapsed folders contribute nothing.
+    static func visibleTabOrder(in sections: [SidebarSection]) -> [UUID] {
+        sections.flatMap { section -> [UUID] in
+            switch section {
+            case .loose(let item):
+                return item.members
+            case .folder(let group):
+                return group.showsChildren ? group.children.flatMap(\.members) : []
+            }
+        }
+    }
+
     static func tabOrder(in sections: [SidebarSection]) -> [UUID] {
         sections.flatMap { section -> [UUID] in
             switch section {

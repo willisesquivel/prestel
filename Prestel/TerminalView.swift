@@ -59,14 +59,24 @@ enum TerminalFontSize {
         withoutAnimations {
             for window in NSApp.windows {
                 guard let controller = window.windowController as? TerminalWindowController else { continue }
-                // Record each surface's grid BEFORE changing the font. Split
-                // panes only preserve the selected pane's window sizing; the
-                // secondary may drift a column (far better than reflowing both).
+                // Record each surface's grid BEFORE changing the font. With a
+                // split open, both panes' grids are preserved by growing the
+                // window along the split axis by the sum of both panes' deltas
+                // (the perpendicular axis follows the selected pane). Each pane
+                // may drift a column from the divider fraction, which beats
+                // rewrapping both panes' scrollback.
                 let target = controller.model.selectedTab?.surface
                 let oldCols = target.map { $0.terminalDimensions.cols }
                 let oldRows = target.map { $0.terminalDimensions.rows }
                 let oldFrame = window.frame
-                let isSplit = controller.model.visibleSplit != nil
+                let split = controller.model.visibleSplit
+                let partner: PrestelView? = {
+                    guard let split, let selectedID = controller.model.selectedID,
+                          let partnerID = split.partner(of: selectedID) else { return nil }
+                    return controller.model.tab(id: partnerID)?.surface
+                }()
+                let partnerCols = partner.map { $0.terminalDimensions.cols }
+                let partnerRows = partner.map { $0.terminalDimensions.rows }
                 // Never steal focus: zoom must leave the field editor, search,
                 // or terminal exactly where it was.
                 let focused = window.firstResponder
@@ -101,7 +111,10 @@ enum TerminalFontSize {
                     guard let oldCell, let newCell else { return true }
                     return newCell.width >= oldCell.width
                 }()
-                let canPreserve = !isSplit
+                let splitPreservable = split == nil
+                    || (partner != nil && partner?.window === window
+                        && (partnerCols ?? 0) > 0 && (partnerRows ?? 0) > 0)
+                let canPreserve = splitPreservable
                     && target != nil && target?.window === window
                     && (oldCols ?? 0) > 0 && (oldRows ?? 0) > 0
                     && newCell != nil
@@ -114,8 +127,13 @@ enum TerminalFontSize {
                     // on floating-point boundaries.
                     let wantSurfaceW = CGFloat(cols) * newCell.width + reserve + 1
                     let wantSurfaceH = CGFloat(rows) * newCell.height + 1
-                    let dW = wantSurfaceW - surface.frame.width
-                    let dH = wantSurfaceH - surface.frame.height
+                    var dW = wantSurfaceW - surface.frame.width
+                    var dH = wantSurfaceH - surface.frame.height
+                    if let partner, let split, let pCols = partnerCols, let pRows = partnerRows {
+                        let pW = CGFloat(pCols) * newCell.width + scrollerReserve(for: partner) + 1 - partner.frame.width
+                        let pH = CGFloat(pRows) * newCell.height + 1 - partner.frame.height
+                        if split.axis == .horizontal { dW += pW } else { dH += pH }
+                    }
                     guard abs(dW) >= 0.5 || abs(dH) >= 0.5 else { return }
                     var size = oldFrame.size
                     size.width += dW

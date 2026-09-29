@@ -313,18 +313,41 @@ final class TerminalModel: ObservableObject {
         guard let session = open ?? archivedSession else { return }
         if command {
             if selectedTabIDs.contains(id) {
-                selectedTabIDs.remove(id)
+                var remaining = selectedTabIDs
+                remaining.remove(id)
+                // Never empty the selection: something must stay highlighted.
+                guard !remaining.isEmpty else { return }
+                selectedTabIDs = remaining
+                selectionAnchorID = id
+                // Deselecting a tab that isn't on screen must not switch to it.
+                // Deselecting the on-screen tab hands off to the nearest one
+                // still selected so the terminal and highlight agree.
+                guard id == selectedID else { return }
+                let from = tabs.firstIndex { $0.id == id } ?? 0
+                let next = tabs.enumerated()
+                    .filter { remaining.contains($0.element.id) }
+                    .min { abs($0.offset - from) < abs($1.offset - from) }?.element
+                    ?? archived.first { remaining.contains($0.id) }
+                guard let next else { return }
+                activate(next.id, session: next, isArchived: archived.contains { $0.id == next.id })
+                return
             } else {
                 selectedTabIDs.insert(id)
             }
             selectionAnchorID = id
         } else if shift,
                   open != nil,
-                  let selectionAnchorID,
-                  let anchorIndex = tabs.firstIndex(where: { $0.id == selectionAnchorID }),
-                  let clickedIndex = tabs.firstIndex(where: { $0.id == id }) {
-            let range = min(anchorIndex, clickedIndex)...max(anchorIndex, clickedIndex)
-            selectedTabIDs = Set(range.map { tabs[$0].id })
+                  let selectionAnchorID {
+            // Range over the rows actually on screen, in display order, so
+            // collapsed-folder and search-hidden tabs are never swept in.
+            let visible = SidebarOutline.visibleTabOrder(in: sidebarSections)
+            if let anchorIndex = visible.firstIndex(of: selectionAnchorID),
+               let clickedIndex = visible.firstIndex(of: id) {
+                selectedTabIDs = Set(visible[min(anchorIndex, clickedIndex)...max(anchorIndex, clickedIndex)])
+            } else {
+                selectedTabIDs = [id]
+                self.selectionAnchorID = id
+            }
         } else {
             selectedTabIDs = [id]
             selectionAnchorID = id
@@ -741,12 +764,11 @@ final class TerminalModel: ObservableObject {
     @discardableResult
     func makeFolder(containing tabID: UUID) -> TabFolder? {
         guard tabs.contains(where: { $0.id == tabID }) else { return nil }
-        var members = [tabID]
-        if let partner = split(containing: tabID)?.partner(of: tabID) {
-            members.append(partner)
-        }
+        // A right-clicked tab inside a multi-selection brings the whole
+        // selection (and split partners) along, in tab order.
+        let members = orderedDraggedTabIDs(grabbed: tabID)
         let name = nextFolderName()
-        let anchor = tabs.firstIndex(where: { $0.id == tabID }) ?? tabs.count
+        let anchor = members.compactMap { id in tabs.firstIndex(where: { $0.id == id }) }.min() ?? tabs.count
         detachFromFolders(members)
         let folder = TabFolder(name: name, collapsed: false, tabIDs: members, anchor: anchor)
         folders.append(folder)
