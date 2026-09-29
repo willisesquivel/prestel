@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import SwiftUI
 
 enum TabKind: String, Codable { case terminal, settings }
 
@@ -500,11 +501,13 @@ final class TerminalModel: ObservableObject {
             .filter { movingIDs.contains($0.id) }.count
         var destination = min(max(insertionIndex, 0), tabs.count)
         destination -= removedBeforeDestination
-        tabs.removeAll { movingIDs.contains($0.id) }
-        destination = min(max(destination, 0), tabs.count)
-        tabs.insert(contentsOf: movingTabs, at: destination)
-        if assignsFolder {
-            setFolderMembership(Array(movingIDs), folderID: folderID)
+        Self.animateSidebar {
+            tabs.removeAll { movingIDs.contains($0.id) }
+            destination = min(max(destination, 0), tabs.count)
+            tabs.insert(contentsOf: movingTabs, at: destination)
+            if assignsFolder {
+                setFolderMembership(Array(movingIDs), folderID: folderID)
+            }
         }
     }
 
@@ -771,9 +774,11 @@ final class TerminalModel: ObservableObject {
         let members = orderedDraggedTabIDs(grabbed: tabID)
         let name = nextFolderName()
         let anchor = members.compactMap { id in tabs.firstIndex(where: { $0.id == id }) }.min() ?? tabs.count
-        detachFromFolders(members)
         let folder = TabFolder(name: name, collapsed: false, tabIDs: members, anchor: anchor)
-        folders.append(folder)
+        Self.animateSidebar {
+            detachFromFolders(members)
+            folders.append(folder)
+        }
         return folder
     }
 
@@ -788,7 +793,14 @@ final class TerminalModel: ObservableObject {
 
     func toggleFolder(_ id: UUID) {
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
-        folders[index].collapsed.toggle()
+        Self.animateSidebar { folders[index].collapsed.toggle() }
+    }
+
+    /// One curve for every sidebar structure change (folder toggle, moving
+    /// tabs in or out of folders) so rows, siblings and backgrounds move together.
+    static func animateSidebar(_ body: () -> Void) {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withAnimation(reduce ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.25), body)
     }
 
     func renameFolder(_ id: UUID, to proposed: String) {
@@ -799,7 +811,7 @@ final class TerminalModel: ObservableObject {
     }
 
     func deleteFolder(_ id: UUID) {
-        folders.removeAll { $0.id == id }
+        Self.animateSidebar { folders.removeAll { $0.id == id } }
     }
 
     func renameTab(_ id: UUID, to proposed: String) {
@@ -812,10 +824,12 @@ final class TerminalModel: ObservableObject {
 
     func setFolderMembership(_ tabIDs: [UUID], folderID: UUID?) {
         let ids = expandedMoveIDs(tabIDs)
-        detachFromFolders(Array(ids))
-        guard let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
-        for tab in tabs where ids.contains(tab.id) && !folders[index].tabIDs.contains(tab.id) {
-            folders[index].tabIDs.append(tab.id)
+        Self.animateSidebar {
+            detachFromFolders(Array(ids))
+            guard let folderID, let index = folders.firstIndex(where: { $0.id == folderID }) else { return }
+            for tab in tabs where ids.contains(tab.id) && !folders[index].tabIDs.contains(tab.id) {
+                folders[index].tabIDs.append(tab.id)
+            }
         }
     }
 

@@ -242,42 +242,33 @@ struct TerminalFindBar: View {
     let close: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
-    /// Equal on every side of the glass.
-    private static let inset: CGFloat = 4
     private static let counterWidth: CGFloat = 64
 
     private var hasQuery: Bool { !find.query.isEmpty }
 
     var body: some View {
-        HStack(spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                FindTextField(
-                    text: $find.query,
-                    focusRequest: find.focusRequest,
-                    onNext: { find.next() },
-                    onPrevious: { find.previous() },
-                    onEscape: close
-                )
-                .frame(width: 120, height: 20)
-                .accessibilityLabel("Find in terminal")
-                Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(width: Self.counterWidth, alignment: .trailing)
-                    .opacity(hasQuery ? 1 : 0)
-                    .accessibilityHidden(!hasQuery)
-                    .accessibilityLabel("Matches")
-            }
-            .padding(.leading, 9)
-            .padding(.trailing, 8)
-            .frame(height: ShellMetrics.searchHeight)
-            .background { Capsule().fill(.quaternary) }
-
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.primary.opacity(0.55))
+            FindTextField(
+                text: $find.query,
+                focusRequest: find.focusRequest,
+                onNext: { find.next() },
+                onPrevious: { find.previous() },
+                onEscape: close
+            )
+            .frame(width: 130, height: 20)
+            .accessibilityLabel("Find in terminal")
+            Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(Color.primary.opacity(0.55))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: Self.counterWidth, alignment: .trailing)
+                .opacity(hasQuery ? 1 : 0)
+                .accessibilityHidden(!hasQuery)
+                .accessibilityLabel("Matches")
             HStack(spacing: 0) {
                 FindBarButton(symbol: "textformat", help: "Match case", isOn: find.caseSensitive) {
                     find.caseSensitive.toggle()
@@ -291,7 +282,9 @@ struct TerminalFindBar: View {
                 FindBarButton(symbol: "xmark", help: "Close (Esc)", action: close)
             }
         }
-        .padding(Self.inset)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .frame(height: 36)
         .chromeGlass()
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.32 : 0.12), radius: 10, y: 4)
         .transaction { $0.animation = nil }
@@ -411,7 +404,7 @@ private struct FindBarButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(isEnabled ? 0.72 : 0.22))
-                .frame(width: 30, height: 30)
+                .frame(width: 28, height: 28)
                 .background { if isOn { Circle().fill(Color.accentColor.opacity(0.16)) } }
                 .contentShape(Circle())
         }

@@ -174,7 +174,7 @@ private struct FolderSection: View {
     let beginRename: (SidebarRenameTarget) -> Void
     let commitRename: (SidebarRenameTarget, String) -> Void
     let cancelRename: () -> Void
-    @State private var open: Bool
+    private var open: Bool { group.showsChildren }
 
     init(
         model: TerminalModel,
@@ -194,10 +194,9 @@ private struct FolderSection: View {
         self.beginRename = beginRename
         self.commitRename = commitRename
         self.cancelRename = cancelRename
-        _open = State(initialValue: group.showsChildren)
     }
 
-    /// Header gap plus one 28pt row per child. `open` is local so the height can interpolate.
+    /// Header gap plus one 28pt row per child; animates with the model's transaction.
     private var rowsHeight: CGFloat {
         let count = CGFloat(group.children.count)
         guard open, count > 0 else { return 0 }
@@ -240,26 +239,17 @@ private struct FolderSection: View {
             // Rows slide the whole way behind the folder header as the frame
             // shrinks, on the same transaction, so their bottom edge tracks the
             // frame's. Only the top is masked (they emerge from behind the
-            // header); nothing is clipped below. Opacity is a separate late fade.
-            .offset(y: open || reduceMotion ? 0 : -rowsFullHeight)
-            .opacity(open ? 1 : 0)
-            .animation(rowsFade, value: open)
+            // header); nothing is clipped below.
+            .offset(y: open ? 0 : -rowsFullHeight)
             .frame(height: rowsHeight, alignment: .top)
             .mask(alignment: .top) { Rectangle().frame(width: width + 80, height: 4000) }
             .allowsHitTesting(group.showsChildren)
         }
         .background {
-            // Follows the folder's animating height; only fades at the very end
-            // of a close (and quickly on open).
+            // Follows the folder's animating height and fades on the same curve.
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(0.045))
                 .opacity(open ? 1 : 0)
-                .animation(backgroundFade, value: open)
-        }
-        .onChange(of: group.showsChildren) { _, show in
-            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .easeInOut(duration: Self.duration)) {
-                open = show
-            }
         }
         .frame(width: width, alignment: .trailing)
     }
@@ -272,21 +262,6 @@ private struct FolderSection: View {
         return gap + count * ShellMetrics.sidebarRowHeight + (count - 1) * gap
     }
 
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-
-    private static let duration = 0.25
-
-    /// Closing fades only near the end of the slide; opening fades in early.
-    /// Reduce Motion is a plain short fade.
-    private var rowsFade: Animation {
-        if reduceMotion { return .easeOut(duration: 0.12) }
-        return open ? .easeOut(duration: 0.14) : .easeIn(duration: 0.08).delay(Self.duration - 0.08)
-    }
-
-    private var backgroundFade: Animation {
-        if reduceMotion { return .easeOut(duration: 0.12) }
-        return open ? .easeOut(duration: 0.1) : .easeOut(duration: 0.06).delay(Self.duration - 0.06)
-    }
 }
 
 private struct SidebarItemRow: View {
