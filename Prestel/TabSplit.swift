@@ -176,6 +176,14 @@ struct SidebarDropTarget: Equatable {
     var folderID: UUID?
 }
 
+/// Where a dragged folder lands. Folders never nest, so the gap always sits between sections.
+struct FolderMoveTarget: Equatable {
+    /// Gap in the on-screen rows after snapping out of any folder interior.
+    var visibleInsertion: Int
+    /// Top-level section the folder lands in front of. Nil drops it after the last section.
+    var beforeID: UUID?
+}
+
 struct FolderDropRow: Equatable {
     var id: UUID
     var frame: CGRect
@@ -403,6 +411,27 @@ enum SidebarOutline {
             }
         }
         return SidebarDropTarget(index: index, folderID: nil)
+    }
+
+    /// Snap a gap in the on-screen rows to the nearest section boundary. A gap inside a
+    /// folder (under its header or between its children) counts as before or after the
+    /// whole folder, whichever end is closer, so a folder drag never targets an interior.
+    static func folderMoveTarget(visibleInsertion: Int, sections: [SidebarSection]) -> FolderMoveTarget {
+        var spans: [(id: UUID, start: Int, count: Int)] = []
+        var total = 0
+        for section in sections {
+            let count = visualIDs(in: [section]).count
+            spans.append((section.id, total, count))
+            total += count
+        }
+        var gap = min(max(visibleInsertion, 0), total)
+        if let inside = spans.first(where: { gap > $0.start && gap < $0.start + $0.count }) {
+            gap = (gap - inside.start) * 2 <= inside.count ? inside.start : inside.start + inside.count
+        }
+        return FolderMoveTarget(
+            visibleInsertion: gap,
+            beforeID: spans.first { $0.start == gap }?.id
+        )
     }
 
     /// Collapsed folder whose label the pointer is resting on. Firefox arms the

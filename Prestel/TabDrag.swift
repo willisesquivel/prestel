@@ -12,12 +12,15 @@ struct TabDragPayload: Codable, Equatable {
     let tabID: UUID
     let tabIDs: [UUID]
     let sourceWindowID: UUID
+    /// Non-nil when the drag carries a whole folder. `tabID` is then the folder's id.
+    let folderID: UUID?
 
-    init(dragID: UUID, tabID: UUID, sourceWindowID: UUID, tabIDs: [UUID]? = nil) {
+    init(dragID: UUID, tabID: UUID, sourceWindowID: UUID, tabIDs: [UUID]? = nil, folderID: UUID? = nil) {
         self.dragID = dragID
         self.tabID = tabID
         self.tabIDs = tabIDs.flatMap { $0.isEmpty ? nil : $0 } ?? [tabID]
         self.sourceWindowID = sourceWindowID
+        self.folderID = folderID
     }
 }
 
@@ -28,6 +31,8 @@ struct TabDragPin: Equatable {
     let canonicalIndex: Int
     /// Non-nil when this drop joins a folder.
     let folderID: UUID?
+    /// Folder drags only: the top-level section the folder lands in front of. Nil means last.
+    var beforeUnitID: UUID? = nil
 }
 
 /// Pure geometry for vertical tab insertion. Screen space uses AppKit's bottom-left origin.
@@ -235,6 +240,8 @@ final class TabDragCoordinator: ObservableObject {
     /// chrome that is not a list or detail target. Empty-space detach does not return.
     var shouldAnimateReturn: Bool {
         if cancelled { return true }
+        // A folder only reorders inside its own window. Anywhere else it slides back.
+        if payload?.folderID != nil, destination == nil { return true }
         guard let payload, let destination else { return false }
         switch destination {
         case .list(let pin):
@@ -275,7 +282,7 @@ final class TabDragCoordinator: ObservableObject {
         lastPointerY = screenPoint.y
         lastScreenPoint = screenPoint
         guard payload != nil, !cancelled else { return }
-        if moved {
+        if moved, payload?.folderID == nil {
             scheduleCollapsedDwell(at: screenPoint)
         }
         let next = resolveDestination(at: screenPoint)
@@ -333,7 +340,7 @@ final class TabDragCoordinator: ObservableObject {
         let topWindow = NSApp.windows.first { $0.windowNumber == topNumber }
         let topController = topWindow.flatMap { $0.windowController as? TerminalWindowController }
 
-        if let topController, topController.model.sidebarVisible {
+        if let topController, topController.model.sidebarVisible, acceptsList(in: topController.model.id) {
             let clip = clipFrame(for: topController.model.id)
             if clip.contains(screenPoint) {
                 return .list(pin(in: topController.model.id, at: screenPoint))
@@ -350,13 +357,13 @@ final class TabDragCoordinator: ObservableObject {
             }
         }
 
-        if payload?.tabIDs.count == 1,
+        if payload?.tabIDs.count == 1, payload?.folderID == nil,
            let topController,
            let split = splitDestination(in: topController, at: screenPoint) {
             return .split(split)
         }
 
-        if let topController, topController.model.sidebarVisible {
+        if let topController, topController.model.sidebarVisible, acceptsList(in: topController.model.id) {
             let clip = clipFrame(for: topController.model.id)
             let distance = TabInsertionGeometry.distance(from: screenPoint, to: clip)
             if distance <= TabInsertionGeometry.acquireDistance,
@@ -371,7 +378,7 @@ final class TabDragCoordinator: ObservableObject {
 
         for window in NSApp.orderedWindows {
             guard let controller = window.windowController as? TerminalWindowController,
-                  controller.model.sidebarVisible else { continue }
+                  controller.model.sidebarVisible, acceptsList(in: controller.model.id) else { continue }
             let clip = clipFrame(for: controller.model.id)
             let distance = TabInsertionGeometry.distance(from: screenPoint, to: clip)
             if distance <= TabInsertionGeometry.acquireDistance,
@@ -380,6 +387,12 @@ final class TabDragCoordinator: ObservableObject {
             }
         }
         return nil
+    }
+
+    /// Tabs drop into any window's list. A folder stays in the window it came from.
+    private func acceptsList(in windowID: UUID) -> Bool {
+        guard let payload, payload.folderID != nil else { return true }
+        return windowID == payload.sourceWindowID
     }
 
     private func splitDestination(in controller: TerminalWindowController, at screenPoint: CGPoint) -> TabSplitPreview? {
@@ -399,6 +412,20 @@ final class TabDragCoordinator: ObservableObject {
     private func pin(in windowID: UUID, at screenPoint: CGPoint) -> TabDragPin {
         let rows = visibleRowFrames(in: windowID)
         let index = TabInsertionGeometry.insertionIndex(at: screenPoint.y, rows: rows.map(\.frame))
+        if payload?.folderID != nil,
+           let model = AppDelegate.current?.controllers[windowID]?.model {
+            // Folders never nest: a gap inside a folder snaps to just before or after it.
+            let target = model.folderMoveTarget(visibleInsertion: index)
+            return TabDragPin(
+                windowID: windowID,
+                insertionIndex: target.visibleInsertion,
+                canonicalIndex: target.beforeID.flatMap { id in
+                    model.tabs.firstIndex { $0.id == id }
+                } ?? model.tabs.count,
+                folderID: nil,
+                beforeUnitID: target.beforeID
+            )
+        }
         let visibleIDs = rows.map(\.id)
         let probe = FolderDropProbe(
             pointerY: screenPoint.y,
@@ -510,6 +537,11 @@ final class TabDragCoordinator: ObservableObject {
     }
 
     private func insertionIsStationary(_ pin: TabDragPin, payload: TabDragPayload) -> Bool {
+        if let folderID = payload.folderID {
+            guard pin.windowID == payload.sourceWindowID,
+                  let model = AppDelegate.current?.controllers[pin.windowID]?.model else { return false }
+            return !model.folderMoveWouldChange(folderID, before: pin.beforeUnitID)
+        }
         if let model = AppDelegate.current?.controllers[pin.windowID]?.model,
            pin.windowID == payload.sourceWindowID {
             return !model.tabMoveWouldChange(
@@ -665,6 +697,12 @@ final class TabDragCoordinator: ObservableObject {
     // MARK: Commit
 
     private func commit(_ payload: TabDragPayload, destination: TabDragDestination?, screenPoint: CGPoint) {
+        if let folderID = payload.folderID {
+            guard case .list(let pin)? = destination, pin.windowID == payload.sourceWindowID,
+                  let source = AppDelegate.current?.controllers[payload.sourceWindowID] else { return }
+            source.model.moveFolder(folderID, before: pin.beforeUnitID)
+            return
+        }
         guard let app = AppDelegate.current,
               let source = app.controllers[payload.sourceWindowID],
               source.model.tabs.contains(where: { $0.id == payload.tabID }) else { return }
@@ -1287,17 +1325,25 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     private func beginTabDrag(current: NSEvent) {
-        guard let tabID else { return }
-        didStartDrag = true
-        suppressMouseUpSelection = true
-        onPrepareDrag?()
-        let ids = AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
-        let payload = TabDragPayload(
-            dragID: UUID(),
-            tabID: tabID,
-            sourceWindowID: windowID,
-            tabIDs: ids?.isEmpty == false ? ids : [tabID]
-        )
+        let payload: TabDragPayload
+        if isFolder {
+            guard let folderID = listRowID else { return }
+            didStartDrag = true
+            suppressMouseUpSelection = true
+            payload = TabDragPayload(dragID: UUID(), tabID: folderID, sourceWindowID: windowID, folderID: folderID)
+        } else {
+            guard let tabID else { return }
+            didStartDrag = true
+            suppressMouseUpSelection = true
+            onPrepareDrag?()
+            let ids = AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
+            payload = TabDragPayload(
+                dragID: UUID(),
+                tabID: tabID,
+                sourceWindowID: windowID,
+                tabIDs: ids?.isEmpty == false ? ids : [tabID]
+            )
+        }
         activePayload = payload
         let pasteboardItem = NSPasteboardItem()
         if let data = try? JSONEncoder().encode(payload) {
@@ -1324,6 +1370,9 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     private func dragPreviewItems(for payload: TabDragPayload) -> [TabDragPreview.Item] {
+        if payload.folderID != nil {
+            return [.init(title: titleText, symbol: "folder")]
+        }
         guard let model = AppDelegate.current?.controllers[windowID]?.model else {
             return [.init(title: titleText, symbol: symbol)]
         }
@@ -1346,13 +1395,14 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
         didStartDrag = true
         suppressMouseUpSelection = true
-        guard let tabID else { return }
-        let payload = activePayload ?? TabDragPayload(
-            dragID: UUID(),
-            tabID: tabID,
-            sourceWindowID: windowID,
-            tabIDs: AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
-        )
+        guard let payload = activePayload ?? tabID.map({ tabID in
+            TabDragPayload(
+                dragID: UUID(),
+                tabID: tabID,
+                sourceWindowID: windowID,
+                tabIDs: AppDelegate.current?.controllers[windowID]?.model.orderedDraggedTabIDs(grabbed: tabID)
+            )
+        }) else { return }
         TabDragCoordinator.shared.begin(payload: payload, at: screenPoint, session: session)
     }
 

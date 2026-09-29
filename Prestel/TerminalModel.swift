@@ -766,6 +766,83 @@ final class TerminalModel: ObservableObject {
         )
     }
 
+    func folderMoveTarget(visibleInsertion: Int) -> FolderMoveTarget {
+        SidebarOutline.folderMoveTarget(visibleInsertion: visibleInsertion, sections: sidebarSections)
+    }
+
+    /// Top-level sidebar blocks in display order: loose items and whole folders.
+    /// Ignores the search filter so a reorder never drops hidden tabs.
+    private struct SidebarBlock {
+        var id: UUID
+        var tabIDs: [UUID]
+        var isFolder: Bool
+    }
+
+    private func sidebarBlocks() -> [SidebarBlock] {
+        let order = Dictionary(uniqueKeysWithValues: tabs.enumerated().map { ($1.id, $0) })
+        func ordered(_ ids: [UUID]) -> [UUID] {
+            ids.sorted { (order[$0] ?? .max) < (order[$1] ?? .max) }
+        }
+        let sections = SidebarOutline.sections(tabs: tabs, splits: splits, folders: folders, selectedID: nil, query: "")
+        return sections.map { section in
+            switch section {
+            case .loose(let item):
+                return SidebarBlock(id: item.id, tabIDs: ordered(item.members), isFolder: false)
+            case .folder(let group):
+                return SidebarBlock(id: group.id, tabIDs: group.children.flatMap { ordered($0.members) }, isFolder: true)
+            }
+        }
+    }
+
+    /// The blocks after lifting `folderID` and reinserting it in front of `unitID`
+    /// (a loose item, one of its members, or a folder). Nil `unitID` moves it last.
+    private func reordering(_ blocks: [SidebarBlock], moving folderID: UUID, before unitID: UUID?) -> [SidebarBlock]? {
+        guard let from = blocks.firstIndex(where: { $0.id == folderID && $0.isFolder }) else { return nil }
+        if let unitID, blocks[from].id == unitID || blocks[from].tabIDs.contains(unitID) { return blocks }
+        var result = blocks
+        let moving = result.remove(at: from)
+        let destination = unitID.flatMap { id in
+            result.firstIndex { $0.id == id || $0.tabIDs.contains(id) }
+        } ?? result.count
+        result.insert(moving, at: destination)
+        return result
+    }
+
+    func folderMoveWouldChange(_ folderID: UUID, before unitID: UUID?) -> Bool {
+        let current = sidebarBlocks()
+        guard let moved = reordering(current, moving: folderID, before: unitID) else { return false }
+        return moved.map(\.id) != current.map(\.id)
+    }
+
+    /// Reorders a folder, with all its tabs, as one block in front of `unitID`.
+    /// The tab array is rewritten in display order so the block stays contiguous and
+    /// split pairs stay adjacent; empty folders get anchors that keep their place.
+    func moveFolder(_ folderID: UUID, before unitID: UUID?) {
+        let current = sidebarBlocks()
+        guard let moved = reordering(current, moving: folderID, before: unitID),
+              moved.map(\.id) != current.map(\.id) else { return }
+        let byID = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
+        var reordered: [TerminalSession] = []
+        var anchors: [UUID: Int] = [:]
+        var placed = Set<UUID>()
+        for block in moved {
+            if block.isFolder { anchors[block.id] = reordered.count }
+            for id in block.tabIDs where placed.insert(id).inserted {
+                if let tab = byID[id] { reordered.append(tab) }
+            }
+        }
+        reordered.append(contentsOf: tabs.filter { !placed.contains($0.id) })
+        let folderOrder = moved.filter(\.isFolder).map(\.id)
+        Self.animateSidebar {
+            tabs = reordered
+            for index in folders.indices where folders[index].tabIDs.isEmpty {
+                if let anchor = anchors[folders[index].id] { folders[index].anchor = anchor }
+            }
+            let rank = Dictionary(uniqueKeysWithValues: folderOrder.enumerated().map { ($1, $0) })
+            folders.sort { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
+        }
+    }
+
     @discardableResult
     func makeFolder(containing tabID: UUID) -> TabFolder? {
         guard tabs.contains(where: { $0.id == tabID }) else { return nil }
