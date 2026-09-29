@@ -116,9 +116,10 @@ struct CommitTests {
         let subject = try GitFixture.output(["log", "-1", "--format=%s"], in: root)
         #expect(subject.trimmingCharacters(in: .whitespacesAndNewlines) == "Record the working tree files")
         let status = try GitFixture.output(["status", "--porcelain"], in: root)
-        #expect(status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        #expect(status == " M both.txt\n")
         let both = try GitFixture.output(["show", "HEAD:both.txt"], in: root)
-        #expect(both == "unstaged-both\n")
+        // both.txt was split with `git add -p`: only the staged hunk is committed.
+        #expect(both == "staged-both\n")
         let listed = try GitFixture.output(["ls-files"], in: root)
         #expect(listed.contains(".gitignore"))
         #expect(!listed.contains("skip.log"))
@@ -146,6 +147,41 @@ struct CommitTests {
         #expect(material.diff.contains("marker-44 "))
         #expect(material.diff.contains("last untracked behavior"))
         #expect(CommitDigest.chunks(material.diff, budget: 6_000).joined() == material.diff)
+    }
+
+    @Test func commitKeepsStagedRenamesWhole() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try GitFixture.run(["mv", "staged.txt", "renamed.txt"], in: root)
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root))
+        let snapshot = try await service.loadCatalog(for: key, generation: 1)
+        let paths = CommitPlanner.selection(from: snapshot.files).paths
+        _ = try await service.commit(in: key, paths: paths, message: "Rename the staged file", push: false)
+        let listed = try GitFixture.output(["ls-tree", "-r", "--name-only", "HEAD"], in: root).split(separator: "\n").map(String.init)
+        #expect(listed.contains("renamed.txt"))
+        #expect(!listed.contains("staged.txt"))
+    }
+
+    @Test func pullRequestFollowsTheUpstreamRemote() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try GitFixture.run(["remote", "add", "origin", "https://github.com/me/fork.git"], in: root)
+        try GitFixture.run(["remote", "add", "upstream", "git@github.com:team/project.git"], in: root)
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root))
+        // No upstream yet: the push goes to origin.
+        #expect(await service.pullRequestURL(for: key)?.absoluteString == "https://github.com/me/fork/pull/new/main")
+        try GitFixture.run(["config", "branch.main.remote", "upstream"], in: root)
+        try GitFixture.run(["config", "branch.main.merge", "refs/heads/main"], in: root)
+        #expect(await service.pullRequestURL(for: key)?.absoluteString == "https://github.com/team/project/pull/new/main")
+    }
+
+    @MainActor @Test func clipboardWritesAcceptBoundedText() {
+        #expect(TerminalSession.clipboardText(from: Data("hello".utf8)) == "hello")
+        #expect(TerminalSession.clipboardText(from: Data()) == nil)
+        #expect(TerminalSession.clipboardText(from: Data([0xFF, 0xFE])) == nil)
+        #expect(TerminalSession.clipboardText(from: Data(count: TerminalSession.maxClipboardWriteBytes + 1)) == nil)
     }
 
     @Test func pushWithoutARemoteKeepsTheCommit() async throws {

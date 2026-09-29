@@ -257,8 +257,24 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         guard let url = URL(string: link), ["https", "http", "mailto", "file"].contains(url.scheme?.lowercased() ?? "") else { return }
         NSWorkspace.shared.open(url)
     }
-    func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {}
+    /// OSC 52 write: programs like vim and tmux set the system clipboard.
+    func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {
+        guard let text = Self.clipboardText(from: content) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// OSC 52 queries stay unanswered so a program cannot read what the user copied.
     func clipboardRead(source: SwiftTerm.TerminalView) -> Data? { nil }
+
+    static let maxClipboardWriteBytes = 1_048_576
+
+    /// The text an OSC 52 write may place on the clipboard; oversized or non-text payloads are dropped.
+    static func clipboardText(from content: Data) -> String? {
+        guard !content.isEmpty, content.count <= maxClipboardWriteBytes else { return nil }
+        return String(data: content, encoding: .utf8)
+    }
 }
 
 enum ProcessInspection {

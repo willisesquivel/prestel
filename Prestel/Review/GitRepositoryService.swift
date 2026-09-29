@@ -445,13 +445,39 @@ actor GitRepositoryService: GitReviewServicing {
     func pullRequestURL(for key: RepositoryKey) async -> URL? {
         let root = key.worktreeRoot
         guard let branch = try? await pathOutput(directory: root, arguments: ["rev-parse", "--abbrev-ref", "HEAD"]),
-              let remote = try? await pathOutput(directory: root, arguments: ["remote", "get-url", "origin"]) else {
+              branch != "HEAD" else {
+            return nil
+        }
+        // The page must belong to the remote the push went to, which is not
+        // always `origin`.
+        let name = await pushRemoteName(root: root, branch: branch)
+        guard let remote = try? await pathOutput(directory: root, arguments: ["remote", "get-url", "--push", name]) else {
             return nil
         }
         return CommitPlanner.pullRequestURL(remote: remote, branch: branch)
     }
 
+    /// The remote a plain `git push` from `branch` uses once an upstream exists;
+    /// a branch without one is pushed to `origin` with `-u`.
+    private func pushRemoteName(root: String, branch: String) async -> String {
+        func config(_ key: String) async -> String? {
+            guard let value = try? await pathOutput(directory: root, arguments: ["config", "--get", key]),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+        guard await config("branch.\(branch).merge") != nil else { return "origin" }
+        if let name = await config("branch.\(branch).pushRemote") { return name }
+        if let name = await config("remote.pushDefault") { return name }
+        return await config("branch.\(branch).remote") ?? "origin"
+    }
+
+    /// Stages what still needs it. A file already in the index is left as is:
+    /// one the user split with `git add -p` keeps only its staged hunks in the
+    /// commit, and a staged deletion or rename side has nothing left in the
+    /// work tree for `git add` to match.
     private func stage(root: String, paths: [String]) async throws {
+        let inIndex = try await stagedPaths(root: root, paths: paths)
+        let paths = paths.filter { !inIndex.contains($0) }
         var start = 0
         while start < paths.count {
             let end = min(start + 100, paths.count)
@@ -465,6 +491,26 @@ actor GitRepositoryService: GitReviewServicing {
             )
             start = end
         }
+    }
+
+    /// Paths among `paths` whose index entry differs from HEAD.
+    private func stagedPaths(root: String, paths: [String]) async throws -> Set<String> {
+        var staged = Set<String>()
+        var start = 0
+        while start < paths.count {
+            let end = min(start + 100, paths.count)
+            var arguments = ["-C", root, "diff", "--cached", "--name-only", "-z", "--no-renames", "--"]
+            arguments.append(contentsOf: paths[start..<end])
+            let result = try await git(
+                directory: root,
+                arguments: arguments,
+                timeout: ReviewBudgets.commitTimeout,
+                limit: 1024 * 1024
+            )
+            staged.formUnion(text(result.stdout).split(separator: "\u{0}").map(String.init))
+            start = end
+        }
+        return staged
     }
 
     private func pushHead(root: String) async -> CommitOutcome {
@@ -490,9 +536,6 @@ actor GitRepositoryService: GitReviewServicing {
             return .committedPushFailed("Committed. The remotes could not be read, so nothing was pushed.")
         }
         let names = remotes.split(whereSeparator: \.isNewline).map(String.init)
-        guard names.contains("origin") else {
-            return .committedPushFailed("Committed. There is no remote to push to.")
-        }
         var hasUpstream = false
         do {
             _ = try await git(
@@ -504,6 +547,9 @@ actor GitRepositoryService: GitReviewServicing {
             hasUpstream = true
         } catch {
             hasUpstream = false
+        }
+        if !hasUpstream, !names.contains("origin") {
+            return .committedPushFailed("Committed. There is no remote to push to.")
         }
         let arguments = hasUpstream
             ? ["-C", root, "push"]

@@ -1,69 +1,102 @@
 # Prestel
 
-A native macOS terminal with a glass window treatment, inset detail surface,
-collapsible sidebar, custom rows, and a search capsule.
-Every sidebar row is a **terminal tab** backed by its own real PTY running
-the account login shell. Window controls use the native macOS titlebar; tab/sidebar commands are also
-available in the menu bar.
+A native macOS terminal with a glass window, a collapsible sidebar of tabs,
+and a built-in Code Review panel for your Git changes.
 
-A **Code Review** panel can open on the right of the detail surface.
-It follows the selected terminal’s local working directory and shows staged and
-unstaged Git changes. From the panel you can commit those files, or commit and
-push. When you press Draft, Prestel uses a supported model in local Ollama, or
-Apple Intelligence if Ollama is unavailable. It summarizes large textual diffs
-in passes before writing the message. Prestel prefers `qwen3-coder:30b`, then
-`gpt-oss-20b`; it also recognizes other installed Coder models. Ollama owns the
-model weights. Prestel does not download or bundle them.
-The panel does not discard changes.
+Prestel is written in SwiftUI and AppKit and uses
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) for terminal emulation.
+Every tab runs your login shell in its own real PTY, so full-screen programs,
+Unicode, IME input, and selection work as they do anywhere else.
 
-## Status: real PTY via SwiftTerm (integration branch)
+## Features
 
-- Each tab owns a `LocalProcess` PTY + `PrestelView` (SwiftTerm core:
-  grid, SGR/cursor parsing, alt-screen TUIs, Unicode/IME, selection).
-- SwiftTerm is pinned via SwiftPM (`12ea7f5`); HighlighterSwift is pinned at
-  `fe7aae9c` for review syntax highlighting. See `Package.resolved`.
-- Only `Terminal` tabs fork shells. The `Settings` tab never creates a PTY.
-- Sidebar keeps its soft scroll-edge; the terminal surface scrolls with its
-  own native scroller (no wrapper scroll view).
+- **Glass window.** The terminal surface is transparent where the background
+  is the default color, so the glass shows through. See
+  [TUI transparency](#tui-transparency-glass-background).
+- **Sidebar tabs.** Every row is a terminal tab. Search them, reopen closed
+  ones, and open new tabs in the current directory.
+- **Code Review.** A panel on the right shows the staged and unstaged changes
+  of the selected terminal's working directory, with syntax-highlighted diffs.
+- **Commit from the panel.** Write a message, or press Draft to have a local
+  model write one. Commit, commit and push, or commit, push, and open a pull
+  request page.
+- **Clipboard from programs.** Programs such as vim and tmux can set the
+  system clipboard through OSC 52. Programs cannot read the clipboard.
+- **Window restoration.** Tabs, working directories, and per-window review
+  state come back after a relaunch. Running jobs are never restored, and
+  quitting with live jobs asks first.
 
-## Run
+## Requirements
 
-Open `Prestel.xcodeproj` in Xcode 26.5+ and run the `Prestel` scheme; the built application is named `Prestel`.
-Xcode resolves SwiftTerm on first build (network required once).
+- macOS 26 or later
+- Xcode 26.5 or later to build
+- Git, for Code Review
+- Optional: [Ollama](https://ollama.com) for commit message drafts
 
-- Baseline window 960×650, min 760×540.
-- Shell metrics: sidebar 172 (150–300, ≥320 detail), review 420 (256–720),
-  detail inset 10 / radius 20, search 30h/15r, rows 28h, spacing 1.
-- Tests: `xcodebuild test` — unit + live-PTTY tests (spawn real shells).
+## Install and build
 
-## Tabs & chrome
+Prestel is built from source.
 
-- ⌘T new tab (inherits cwd), ⌘W close tab / ⇧⌘W close window, ⇧⌘T reopen,
-  ⌃⇧Tab / ⌃Tab cycle, ⌘K clear, ⌘S toggle sidebar, ⌘R toggle Code Review.
-  ⌘+ / ⌘= larger terminal text, ⌘- smaller, ⌘0 default size — the window
-  resizes to preserve the grid (no rewrap); window chrome stays put. Last tab closes its window.
-- Title comes from the shell (OSC title), cwd from OSC 7; file drops insert
-  shell-quoted paths; only http(s)/mailto/file links open.
-- Code Review uses that same local cwd. It does not infer directories from
-  prompt text or follow remote/tmux panes. Files start collapsed. Opening
-  the panel outside a Git repository explains that state. Commit writes the
-  files listed in the commit sheet and leaves ignored files alone.
-- Quitting or closing with live jobs asks for confirmation; PIDs are reaped,
-  never persisted. State restoration keeps lightweight descriptors only,
-  including per-window review visibility and width.
+1. Clone this repository.
+2. Open `Prestel.xcodeproj` in Xcode.
+3. Run the `Prestel` scheme. Xcode fetches the Swift packages on the first
+   build, so you need a network connection once.
 
-## Files
+From the command line:
 
-- `PrestelApp.swift`: multi-window ownership, menus, Settings screen,
-  quit/close confirmation, restoration.
-- `WindowSupport.swift`: `TerminalWindowController`, restoration,
-  `ShellMetrics`, glass backdrop, toolbar header.
-- `TerminalModel.swift` + `TerminalSession.swift`: tabs, PTY lifecycle,
-  search, history, recently-closed, descriptors.
-- `TerminalView.swift`: SwiftTerm surface hosted directly with content insets.
-- `ShellView.swift`, `SidebarView.swift`, `SearchField.swift`, `ChromeView.swift`: chrome.
-- `ShellLayout.swift` + `Review/`: Code Review panel, Git discovery, diffs, highlighting, and commit.
-- `THIRD_PARTY_NOTICES.md`: bundled Highlighter/Highlight.js notices.
+```sh
+xcodebuild -project Prestel.xcodeproj -scheme Prestel build
+xcodebuild -project Prestel.xcodeproj -scheme Prestel test
+```
+
+The tests include some that start real shells.
+
+## Code Review
+
+The panel follows the local working directory of the selected terminal, using
+the directory the shell reports. It does not guess from prompt text and does
+not follow remote or tmux panes. Outside a Git repository it says so.
+
+- Files start collapsed. Expand one to see its staged, unstaged, or untracked
+  diff. Large diffs load on request.
+- Commit writes the files listed in the commit sheet and leaves ignored files
+  alone. A file you already split with `git add -p` keeps only its staged
+  hunks in the commit; the rest stays unstaged.
+- Push goes to the branch's upstream remote, or to `origin` with `-u` when the
+  branch has none. The pull request page opens for that same remote.
+- The panel never discards changes.
+
+### Commit drafts with Ollama
+
+Press Draft in the commit sheet and Prestel asks a model on your Mac to write
+the message from the diff and your recent commit subjects. It uses local
+Ollama when a supported model is installed, and Apple Intelligence otherwise.
+Large diffs are summarized in passes first.
+
+Prestel prefers `qwen3-coder:30b`, then `gpt-oss-20b`, and also recognizes
+other installed Coder models. Ollama owns the model weights; Prestel does not
+download or bundle them. To set one up, install Ollama and run
+`ollama pull qwen3-coder:30b`.
+
+## Shortcuts
+
+- ⌘T new tab (inherits the working directory), ⌘W close tab, ⇧⌘W close window,
+  ⇧⌘T reopen closed tab
+- ⌃Tab / ⌃⇧Tab cycle tabs
+- ⌘K clear
+- ⌘S toggle the sidebar
+- ⌘R toggle Code Review
+- ⌘+ / ⌘= larger text, ⌘- smaller, ⌘0 default size. The window resizes to
+  keep the same grid, so nothing rewraps.
+
+The window title comes from the shell (OSC title) and the working directory
+from OSC 7. File drops insert shell-quoted paths. Only http(s), mailto, and
+file links open.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Bundled third-party notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## TUI transparency (glass background)
 
