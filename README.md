@@ -178,7 +178,7 @@ Recipes (restart the TUI after changing):
   light/dark auto-switching works via OSC 11 (`ui.autoThemeSwitching`,
   on by default). Custom themes via `ui.customThemes` in `settings.json`.
 - Grok Build (`grok`): fullscreen paints its own theme bg (GrokNight
-  `#0a0a0a`, as in your screenshot) — run `/minimal` (or `grok --minimal`,
+  `#0a0a0a`) — run `/minimal` (or `grok --minimal`,
   or `[ui] screen_mode = "minimal"` in `~/.grok/config.toml` for sticky):
   minimal mode uses the terminal's native background, which is the glass.
   Themes via `/theme` or `[ui] theme` (`GROK_THEME` env, `auto` follows OS);
