@@ -3,7 +3,7 @@ import SwiftUI
 
 extension NSPasteboard.PasteboardType {
     /// In-app tab drag only. Not a public UTI; other apps receive no useful session data.
-    static let prestelTab = NSPasteboard.PasteboardType("com.example.Prestel.tab-drag")
+    static let prestelTab = NSPasteboard.PasteboardType("io.github.willisesquivel.Prestel.tab-drag")
 }
 
 /// Transient identifiers for a live tab. Resolves through the window registry; never serializes a PTY.

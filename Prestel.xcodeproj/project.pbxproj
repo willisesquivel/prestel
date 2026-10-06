@@ -463,7 +463,7 @@
 				INFOPLIST_KEY_CFBundleIconName = Prestel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.Prestel;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_MODULE_NAME = Prestel;
@@ -480,6 +480,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Prestel/Info.plist;
@@ -487,7 +488,7 @@
 				INFOPLIST_KEY_CFBundleIconName = Prestel;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				MARKETING_VERSION = 0.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.Prestel;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_MODULE_NAME = Prestel;
@@ -503,7 +504,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.PrestelTests;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.PrestelTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Prestel.app/Contents/MacOS/Prestel";
@@ -519,7 +520,7 @@
 				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.PrestelTests;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.PrestelTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Prestel.app/Contents/MacOS/Prestel";
