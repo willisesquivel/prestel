@@ -103,6 +103,12 @@ struct CodeReviewPanel: View {
             }
             guard freezeToken == token else { return }
             frozenPaint = nil
+            // The slide is over. A closed panel was still mounted offscreen with
+            // the last file list, so its diff text and views lived until quit.
+            if !visible {
+                lastVisibleLoadState = .hidden
+                model.releaseHiddenContents()
+            }
         }
     }
 

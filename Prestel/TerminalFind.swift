@@ -213,6 +213,86 @@ final class TerminalFindOverlay: NSView {
     }
 }
 
+/// Widths for the find pill. The field is the part that gives up space, so the
+/// bar stays inside the terminal when Code Review (or a split) narrows it.
+enum FindBarLayout {
+    static let barHeight: CGFloat = 36
+    static let preferredFieldWidth: CGFloat = 96
+    static let counterWidth: CGFloat = 56
+    static let iconWidth: CGFloat = 14
+    static let buttonWidth: CGFloat = 28
+    static let buttonCount = 4
+    static let spacing: CGFloat = 6
+    static let leadingPadding: CGFloat = 12
+    static let trailingPadding: CGFloat = 4
+    static let outerLeading: CGFloat = 12
+    static let outerTrailing: CGFloat = 20
+
+    struct Metrics: Equatable {
+        var fieldWidth: CGFloat
+        var counterWidth: CGFloat
+        var buttonWidth: CGFloat
+        var leadingPadding: CGFloat
+        var trailingPadding: CGFloat
+        var outerLeading: CGFloat
+        var outerTrailing: CGFloat
+
+        var contentWidth: CGFloat {
+            leadingPadding
+                + FindBarLayout.iconWidth
+                + FindBarLayout.spacing * 3
+                + fieldWidth
+                + counterWidth
+                + buttonWidth * CGFloat(FindBarLayout.buttonCount)
+                + trailingPadding
+        }
+
+        var occupiedWidth: CGFloat { contentWidth + outerLeading + outerTrailing }
+    }
+
+    static func metrics(forSurfaceWidth surfaceWidth: CGFloat) -> Metrics {
+        var metrics = Metrics(
+            fieldWidth: preferredFieldWidth,
+            counterWidth: counterWidth,
+            buttonWidth: buttonWidth,
+            leadingPadding: leadingPadding,
+            trailingPadding: trailingPadding,
+            outerLeading: outerLeading,
+            outerTrailing: outerTrailing
+        )
+        guard surfaceWidth.isFinite else { return metrics }
+        var overflow = max(0, metrics.occupiedWidth - max(0, surfaceWidth))
+        // The query field shrinks first, then the counter, then the margins.
+        // Buttons stay full size until there is nothing else to give up.
+        take(&overflow, from: &metrics.fieldWidth, floor: 48)
+        take(&overflow, from: &metrics.counterWidth, floor: 40)
+        take(&overflow, from: &metrics.outerLeading, floor: 8)
+        take(&overflow, from: &metrics.outerTrailing, floor: 8)
+        take(&overflow, from: &metrics.fieldWidth, floor: 0)
+        take(&overflow, from: &metrics.counterWidth, floor: 0)
+        takeButtons(&overflow, metrics: &metrics, floor: 20)
+        take(&overflow, from: &metrics.leadingPadding, floor: 6)
+        take(&overflow, from: &metrics.trailingPadding, floor: 2)
+        take(&overflow, from: &metrics.outerLeading, floor: 4)
+        take(&overflow, from: &metrics.outerTrailing, floor: 4)
+        takeButtons(&overflow, metrics: &metrics, floor: 16)
+        return metrics
+    }
+
+    private static func take(_ overflow: inout CGFloat, from value: inout CGFloat, floor: CGFloat) {
+        let cut = min(overflow, max(0, value - floor))
+        value -= cut
+        overflow -= cut
+    }
+
+    private static func takeButtons(_ overflow: inout CGFloat, metrics: inout Metrics, floor: CGFloat) {
+        let slack = max(0, (metrics.buttonWidth - floor) * CGFloat(buttonCount))
+        let cut = min(overflow, slack)
+        metrics.buttonWidth -= cut / CGFloat(buttonCount)
+        overflow -= cut
+    }
+}
+
 /// Observes `find` directly (nested objects don't re-render their parent)
 /// and hosts the bar only over a terminal tab.
 struct TerminalFindHost: View {
@@ -220,37 +300,42 @@ struct TerminalFindHost: View {
     @ObservedObject var find: TerminalFind
 
     var body: some View {
-        ZStack {
-            if find.isVisible, model.selectedTab?.kind == .terminal {
-                TerminalFindBar(find: find) { find.hide(returningFocusTo: NSApp.keyWindow) }
+        GeometryReader { proxy in
+            let metrics = FindBarLayout.metrics(forSurfaceWidth: proxy.size.width)
+            ZStack(alignment: .topTrailing) {
+                if find.isVisible, model.selectedTab?.kind == .terminal {
+                    TerminalFindBar(find: find, metrics: metrics) {
+                        find.hide(returningFocusTo: NSApp.keyWindow)
+                    }
                     .padding(.top, ShellMetrics.navigationHeight + 24) // clears the toolbar row
-                    .padding(.trailing, 20)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+                    .padding(.trailing, metrics.outerTrailing)
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topTrailing)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .allowsHitTesting(find.isVisible)
         .animation(.easeOut(duration: 0.16), value: find.isVisible)
     }
 }
 
 /// Compact glass find bar, overlaid at the top-right of the terminal surface.
-/// Every size here is fixed (field width, counter slot, button frames), so
-/// nothing reflows when the counter changes or while the bar fades in and out.
+/// The counter keeps its slot so typing does not reflow the pill; only the
+/// terminal width changes the field.
 struct TerminalFindBar: View {
     @ObservedObject var find: TerminalFind
+    var metrics: FindBarLayout.Metrics
     let close: () -> Void
     @Environment(\.colorScheme) private var colorScheme
-
-    private static let counterWidth: CGFloat = 64
 
     private var hasQuery: Bool { !find.query.isEmpty }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: FindBarLayout.spacing) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.primary.opacity(0.55))
+                .frame(width: FindBarLayout.iconWidth, height: FindBarLayout.iconWidth)
             FindTextField(
                 text: $find.query,
                 focusRequest: find.focusRequest,
@@ -258,33 +343,33 @@ struct TerminalFindBar: View {
                 onPrevious: { find.previous() },
                 onEscape: close
             )
-            .frame(width: 130)
+            .frame(width: metrics.fieldWidth)
             .accessibilityLabel("Find in terminal")
             Text(TerminalFindMatcher.counter(index: find.index, total: find.total))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(Color.primary.opacity(0.55))
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(width: Self.counterWidth, alignment: .trailing)
+                .minimumScaleFactor(0.6)
+                .frame(width: metrics.counterWidth, alignment: .trailing)
                 .opacity(hasQuery ? 1 : 0)
                 .accessibilityHidden(!hasQuery)
                 .accessibilityLabel("Matches")
             HStack(spacing: 0) {
-                FindBarButton(symbol: "textformat", help: "Match case", isOn: find.caseSensitive) {
+                FindBarButton(symbol: "textformat", help: "Match case", width: metrics.buttonWidth, isOn: find.caseSensitive) {
                     find.caseSensitive.toggle()
                 }
-                FindBarButton(symbol: "chevron.up", help: "Previous match (⇧⌘G)", isEnabled: find.total > 0) {
+                FindBarButton(symbol: "chevron.up", help: "Previous match (⇧⌘G)", width: metrics.buttonWidth, isEnabled: find.total > 0) {
                     find.previous()
                 }
-                FindBarButton(symbol: "chevron.down", help: "Next match (⌘G)", isEnabled: find.total > 0) {
+                FindBarButton(symbol: "chevron.down", help: "Next match (⌘G)", width: metrics.buttonWidth, isEnabled: find.total > 0) {
                     find.next()
                 }
-                FindBarButton(symbol: "xmark", help: "Close (Esc)", action: close)
+                FindBarButton(symbol: "xmark", help: "Close (Esc)", width: metrics.buttonWidth, action: close)
             }
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 4)
-        .frame(height: 36)
+        .padding(.leading, metrics.leadingPadding)
+        .padding(.trailing, metrics.trailingPadding)
+        .frame(height: FindBarLayout.barHeight)
         .chromeGlass()
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.32 : 0.12), radius: 10, y: 4)
         .transaction { $0.animation = nil }
@@ -306,96 +391,305 @@ struct FindTextField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> FocusingTextField {
-        let field = FocusingTextField()
-        field.delegate = context.coordinator
-        field.placeholderString = "Find"
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.font = .systemFont(ofSize: 13)
-        field.lineBreakMode = .byClipping
-        field.cell?.usesSingleLineMode = true
-        field.cell?.isScrollable = true
+    func makeNSView(context: Context) -> FindEditorView {
+        let field = FindEditorView()
         field.stringValue = text
         context.coordinator.focusRequest = focusRequest
         field.requestFocus()
         return field
     }
 
-    func updateNSView(_ field: FocusingTextField, context: Context) {
+    func updateNSView(_ field: FindEditorView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
-        if field.currentEditor() == nil, field.stringValue != text { field.stringValue = text }
+        field.onTextChange = { coordinator.parent?.text = $0 }
+        field.onNext = onNext
+        field.onPrevious = onPrevious
+        field.onEscape = onEscape
+        if field.window?.firstResponder !== field.textView, field.stringValue != text {
+            field.stringValue = text
+        }
         if coordinator.focusRequest != focusRequest {
             coordinator.focusRequest = focusRequest
             field.requestFocus()
         }
     }
 
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FocusingTextField, context: Context) -> CGSize? {
-        // Natural text height, so SwiftUI centers the field with its neighbors.
-        CGSize(width: proposal.width ?? 120, height: ceil(nsView.cell?.cellSize.height ?? 17))
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FindEditorView, context: Context) -> CGSize? {
+        // Fill the row. The text view centers its line inside that height, so the
+        // first layout matches later ones instead of sitting on the top baseline.
+        CGSize(width: proposal.width ?? FindBarLayout.preferredFieldWidth, height: FindBarLayout.barHeight)
     }
 
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    final class Coordinator {
         var parent: FindTextField?
         var focusRequest = 0
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
-            parent?.text = field.stringValue
-        }
-
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            switch selector {
-            case #selector(NSResponder.insertNewline(_:)):
-                if NSEvent.modifierFlags.contains(.shift) { parent?.onPrevious() } else { parent?.onNext() }
-                return true
-            case #selector(NSResponder.cancelOperation(_:)):
-                parent?.onEscape()
-                return true
-            default:
-                return false
-            }
-        }
     }
 }
 
-/// Takes first responder as soon as it is in a window, retrying briefly while
-/// the overlay is still being installed.
-final class FocusingTextField: NSTextField {
-    private var pending = false
+/// One scrolling line, vertically centered in the find pill from the first layout.
+final class FindEditorView: NSScrollView {
+    /// Room for the caret, outside the scrolled document. The stroke is 2pt and
+    /// centered on the insertion point, so 1pt hangs off both sides; the glow
+    /// hangs 5pt. Inset on the text container scrolls under the clip once the
+    /// line is wider than the field. These insets belong to the clip view, so
+    /// the same margin stays at either end of the line.
+    static let caretLeadingInset: CGFloat = 5
 
-    func requestFocus() {
-        pending = true
-        attemptFocus(retries: 8)
+    let textView = FindLineTextView()
+    private var isUpdatingCaretInsets = false
+
+    var onTextChange: ((String) -> Void)? {
+        get { textView.onTextChange }
+        set { textView.onTextChange = newValue }
+    }
+    var onNext: (() -> Void)? {
+        get { textView.onNext }
+        set { textView.onNext = newValue }
+    }
+    var onPrevious: (() -> Void)? {
+        get { textView.onPrevious }
+        set { textView.onPrevious = newValue }
+    }
+    var onEscape: (() -> Void)? {
+        get { textView.onEscape }
+        set { textView.onEscape = newValue }
     }
 
-    private func attemptFocus(retries: Int) {
-        guard pending else { return }
-        if let window, window.makeFirstResponder(self) {
-            pending = false
-            return
-        }
-        guard retries > 0 else { pending = false; return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-            self?.attemptFocus(retries: retries - 1)
+    var stringValue: String {
+        get { textView.string }
+        set {
+            guard textView.string != newValue else { return }
+            textView.string = newValue
+            textView.centerLine()
         }
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if pending, window != nil { attemptFocus(retries: 8) }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: FindBarLayout.barHeight)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        drawsBackground = false
+        borderType = .noBorder
+        hasVerticalScroller = false
+        hasHorizontalScroller = false
+        verticalScrollElasticity = .none
+        horizontalScrollElasticity = .none
+        focusRingType = .none
+        documentView = textView
+    }
+
+    /// Keeps the caret's overhang inside the clip without padding the document.
+    /// Reapplied from layout because a scroll view will otherwise take content
+    /// insets from the window.
+    func applyCaretInsets() {
+        guard !isUpdatingCaretInsets else { return }
+        isUpdatingCaretInsets = true
+        defer { isUpdatingCaretInsets = false }
+        automaticallyAdjustsContentInsets = false
+        let clip = contentView
+        clip.automaticallyAdjustsContentInsets = false
+        clip.drawsBackground = false
+        let insets = NSEdgeInsets(
+            top: 0, left: Self.caretLeadingInset, bottom: 0, right: Self.caretLeadingInset)
+        let current = clip.contentInsets
+        guard current.top != insets.top || current.left != insets.left
+            || current.bottom != insets.bottom || current.right != insets.right else { return }
+        clip.contentInsets = insets
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    func requestFocus() { textView.requestFocus() }
+
+    override func layout() {
+        super.layout()
+        guard !isUpdatingCaretInsets else { return }
+        applyCaretInsets()
+        let height = contentSize.height > 1 ? contentSize.height : bounds.height
+        let width = max(textView.frame.width, contentSize.width)
+        if abs(textView.frame.height - height) > 0.5 || textView.frame.width < width {
+            textView.setFrameSize(NSSize(width: width, height: height))
+        }
+        textView.centerLine()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(textView)
     }
 
     override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 }
 
+final class FindLineTextView: NSTextView {
+    var onTextChange: ((String) -> Void)?
+    var onNext: (() -> Void)?
+    var onPrevious: (() -> Void)?
+    var onEscape: (() -> Void)?
+    private var pendingFocus = false
+    private var isCentering = false
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        configure()
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+
+    private func configure() {
+        drawsBackground = false
+        isRichText = false
+        isFieldEditor = false
+        allowsUndo = true
+        isEditable = true
+        isSelectable = true
+        insertionPointColor = .controlAccentColor
+        font = .systemFont(ofSize: 13)
+        textColor = .labelColor
+        focusRingType = .none
+        isVerticallyResizable = false
+        isHorizontallyResizable = true
+        minSize = .zero
+        maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        clipsToBounds = false
+        textContainer?.lineFragmentPadding = 0
+        textContainer?.maximumNumberOfLines = 1
+        textContainer?.widthTracksTextView = false
+        textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byClipping
+        defaultParagraphStyle = paragraph
+        typingAttributes = [
+            .font: font ?? .systemFont(ofSize: 13),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph
+        ]
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticTextCompletionEnabled = false
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+        writingToolsBehavior = .none
+    }
+
+    func requestFocus() {
+        if window?.firstResponder === self {
+            centerLine()
+            selectAll(nil)
+            return
+        }
+        pendingFocus = true
+        attemptFocus(retries: 8)
+    }
+
+    /// Keeps the line in the middle of the row. Called from layout so the first
+    /// open uses the same inset as every later one.
+    func centerLine() {
+        guard !isCentering, let font, let layoutManager else { return }
+        let visible = enclosingScrollView?.contentSize ?? bounds.size
+        guard visible.height > 1 else { return }
+        isCentering = true
+        defer { isCentering = false }
+        let line = layoutManager.defaultLineHeight(for: font)
+        // Vertical only. Horizontal room is FindEditorView.caretLeadingInset
+        // on both sides of the clip, which is not part of the scrolled document.
+        let inset = NSSize(width: 0, height: max(0, (visible.height - line) / 2))
+        if textContainerInset != inset { textContainerInset = inset }
+        let textWidth = (string as NSString).size(withAttributes: typingAttributes).width
+        // No extra document past the glyphs. A scroll to the end would otherwise
+        // park that padding inside the field, past the trailing caret inset.
+        let size = NSSize(width: max(visible.width, ceil(textWidth)), height: visible.height)
+        if abs(frame.width - size.width) > 0.5 || abs(frame.height - size.height) > 0.5 {
+            setFrameSize(size)
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        centerLine()
+        if pendingFocus { attemptFocus(retries: 8) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        centerLine()
+        if pendingFocus, window != nil { attemptFocus(retries: 8) }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        guard super.becomeFirstResponder() else { return false }
+        pendingFocus = false
+        centerLine()
+        selectAll(nil)
+        return true
+    }
+
+    override func didChangeText() {
+        centerLine()
+        scrollRangeToVisible(selectedRange())
+        super.didChangeText()
+        if !hasMarkedText() { onTextChange?(string) }
+    }
+
+    override func doCommand(by selector: Selector) {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            if NSEvent.modifierFlags.contains(.shift) { onPrevious?() } else { onNext?() }
+        case #selector(NSResponder.cancelOperation(_:)):
+            onEscape?()
+        default:
+            super.doCommand(by: selector)
+        }
+    }
+
+    override func insertText(_ value: Any, replacementRange: NSRange) {
+        let raw = (value as? NSAttributedString)?.string ?? (value as? String) ?? ""
+        let singleLine = raw.components(separatedBy: .newlines)
+            .joined(separator: " ").replacingOccurrences(of: "\t", with: " ")
+        super.insertText(singleLine, replacementRange: replacementRange)
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        insertText(text, replacementRange: selectedRange())
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        // The caret is an insertion-indicator subview, composited above this draw.
+        guard string.isEmpty, let font else { return }
+        ("Find" as NSString).draw(at: textContainerOrigin, withAttributes: [
+            .font: font, .foregroundColor: NSColor.placeholderTextColor
+        ])
+    }
+
+    override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
+
+    private func attemptFocus(retries: Int) {
+        guard pendingFocus else { return }
+        centerLine()
+        if let window, bounds.height > 1, window.makeFirstResponder(self) {
+            pendingFocus = false
+            return
+        }
+        guard retries > 0 else { pendingFocus = false; return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.attemptFocus(retries: retries - 1)
+        }
+    }
+}
+
 private struct FindBarButton: View {
     let symbol: String
     let help: String
+    var width: CGFloat = FindBarLayout.buttonWidth
     var isOn = false
     var isEnabled = true
     let action: () -> Void
@@ -405,7 +699,7 @@ private struct FindBarButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(isEnabled ? 0.72 : 0.22))
-                .frame(width: 28, height: 28)
+                .frame(width: width, height: 28)
                 .background { if isOn { Circle().fill(Color.accentColor.opacity(0.16)) } }
                 .contentShape(Circle())
         }

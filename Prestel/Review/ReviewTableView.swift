@@ -481,9 +481,120 @@ enum ReviewHighlightMapper {
     }
 }
 
+/// Portion of `view` that sits inside the list viewport. The pane itself stays
+/// as tall as the file so the list can scroll through it; only this rect is drawn.
+///
+/// Clip bounds are used as-is, including a negative origin while the list
+/// rubber-bands past the top. Intersecting with `view.bounds` first clamps that
+/// origin back to zero, and the slice then jumps while the scroll view stretches.
+/// The diff's own clip is as tall as the file (it only pans horizontally) and
+/// must not clamp the list's vertical overscroll.
+@MainActor
+private func clippedViewport(of view: NSView) -> NSRect {
+    guard view.window != nil else { return .zero }
+    var clips: [NSRect] = []
+    var ancestor = view.superview
+    while let current = ancestor {
+        if let clip = current as? NSClipView {
+            let local = view.convert(clip.bounds, from: clip)
+            if local.isNull || local.width < 1 || local.height < 1 { return .zero }
+            clips.append(local)
+        }
+        ancestor = current.superview
+    }
+    guard !clips.isEmpty else { return .zero }
+
+    var minX = -CGFloat.greatestFiniteMagnitude
+    var maxX = CGFloat.greatestFiniteMagnitude
+    var minY = -CGFloat.greatestFiniteMagnitude
+    var maxY = CGFloat.greatestFiniteMagnitude
+    let document = view.bounds
+    var constrainedVertical = false
+    for local in clips {
+        minX = max(minX, local.minX)
+        maxX = min(maxX, local.maxX)
+        let coversDocumentHeight = local.height + 0.5 >= document.height
+            && local.minY <= document.minY + 0.5
+            && local.maxY >= document.maxY - 0.5
+        if coversDocumentHeight { continue }
+        constrainedVertical = true
+        minY = max(minY, local.minY)
+        maxY = min(maxY, local.maxY)
+    }
+    if !constrainedVertical {
+        for local in clips {
+            minY = max(minY, local.minY)
+            maxY = min(maxY, local.maxY)
+        }
+    }
+    let rect = NSRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    if rect.width < 1 || rect.height < 1 { return .zero }
+    return rect
+}
+
+/// Draws one visible slice. The parent stays the full content height (that is
+/// the scrollable size) but does not rasterize it; this view's layer is only
+/// as tall as the clip.
+private final class ReviewDiffDrawingSlice: NSView {
+    var render: ((NSRect) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = .clear
+        layer?.actions = [
+            "contents": NSNull(),
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "frame": NSNull()
+        ]
+        autoresizingMask = []
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    /// Clicks belong to the full-height document, not the slice.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        render?(dirtyRect)
+    }
+
+    func place(in viewport: NSRect) {
+        let target = (viewport.isNull || viewport.width < 1 || viewport.height < 1) ? NSRect.zero : viewport
+        if nearlyEqual(frame, target), nearlyEqual(bounds, NSRect(origin: target.origin, size: target.size)) {
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        frame = target
+        bounds = NSRect(origin: target.origin, size: target.size)
+        CATransaction.commit()
+        needsDisplay = true
+    }
+
+    private func nearlyEqual(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) < 0.5
+            && abs(a.minY - b.minY) < 0.5
+            && abs(a.width - b.width) < 0.5
+            && abs(a.height - b.height) < 0.5
+    }
+}
+
 private final class ReviewDiffScrollView: NSScrollView {
     var onDidScroll: (() -> Void)?
     private var isReflecting = false
+    /// Direction of the current trackpad gesture, including its momentum tail.
+    /// Nil until the first non-zero delta.
+    private var verticalPassthrough: Bool?
+    /// `.began` usually carries a zero delta. Held until the gesture shows a
+    /// direction so the scroll view that elastically tracks it also receives began.
+    private var stashedWheel: NSEvent?
+    private var isForwardingWheel = false
 
     override func reflectScrolledClipView(_ cView: NSClipView) {
         super.reflectScrolledClipView(cView)
@@ -493,19 +604,88 @@ private final class ReviewDiffScrollView: NSScrollView {
         isReflecting = false
     }
 
-    /// Panes scroll horizontally only; the file list owns vertical scrolling.
-    /// Horizontal gestures stay here, everything else travels up the responder
-    /// chain to the outer list so wheeling over a file never dead-ends.
+    /// Panes scroll horizontally only. Vertical wheel, including the elastic
+    /// overscroll at the top and bottom of the file list, goes to that list's
+    /// scroll view for the whole gesture (began, changed, ended, momentum).
+    ///
+    /// A zero-delta `.began` used to hit `super`, which latches the gesture on
+    /// this horizontal scroller, and later deltas walked `nextResponder`.
+    /// AppKit's rubber band only tracks when one scroll view sees every phase;
+    /// the split gesture jumps instead of stretching.
     override func scrollWheel(with event: NSEvent) {
+        if isForwardingWheel { return }
+        if event.phase.contains(.mayBegin) { return }
+
+        if event.phase.isEmpty, event.momentumPhase.isEmpty {
+            verticalPassthrough = nil
+            stashedWheel = nil
+            deliverWheel(event, vertically: !isHorizontal(event))
+            return
+        }
+
+        if event.phase.contains(.began) {
+            verticalPassthrough = nil
+            stashedWheel = nil
+        }
+
+        if verticalPassthrough == nil {
+            if event.scrollingDeltaX == 0, event.scrollingDeltaY == 0 {
+                if event.phase.contains(.began) {
+                    stashedWheel = event
+                } else if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                    stashedWheel = nil
+                }
+                return
+            }
+            verticalPassthrough = !isHorizontal(event)
+        }
+
+        let vertically = verticalPassthrough ?? !isHorizontal(event)
+        if let began = stashedWheel {
+            stashedWheel = nil
+            deliverWheel(began, vertically: vertically)
+        }
+        deliverWheel(event, vertically: vertically)
+
+        if event.phase.contains(.cancelled)
+            || event.momentumPhase.contains(.ended)
+            || event.momentumPhase.contains(.cancelled) {
+            verticalPassthrough = nil
+            stashedWheel = nil
+        }
+    }
+
+    private func isHorizontal(_ event: NSEvent) -> Bool {
         let dx = event.scrollingDeltaX
         let dy = event.scrollingDeltaY
-        if dx != 0 && abs(dx) >= abs(dy) {
-            super.scrollWheel(with: event)
-        } else if dy != 0 {
-            nextResponder?.scrollWheel(with: event)
-        } else {
-            super.scrollWheel(with: event)
+        return dx != 0 && abs(dx) >= abs(dy)
+    }
+
+    private func deliverWheel(_ event: NSEvent, vertically: Bool) {
+        if vertically {
+            guard let list = enclosingListScrollView else {
+                nextResponder?.scrollWheel(with: event)
+                return
+            }
+            isForwardingWheel = true
+            defer { isForwardingWheel = false }
+            list.scrollWheel(with: event)
+            return
         }
+        super.scrollWheel(with: event)
+    }
+
+    /// Nearest scroll view above this one: the file list.
+    /// `enclosingScrollView` on a scroll view returns itself.
+    private var enclosingListScrollView: NSScrollView? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let scroll = view as? NSScrollView {
+                return scroll
+            }
+            ancestor = view.superview
+        }
+        return nil
     }
 }
 
@@ -515,11 +695,17 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     private let document = ReviewDiffDocumentView()
     private let gutter = ReviewDiffGutterView()
     private var isSyncingGutter = false
+    private var isUpdatingSlices = false
+    private var clipObservers: [NSObjectProtocol] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = .clear
+        // The pane is as tall as the file. Don't rasterize that height; the
+        // drawing slices are the only views that keep a backing store.
+        layerContentsRedrawPolicy = .never
+        canDrawSubviewsIntoLayer = false
         clipsToBounds = true
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
@@ -532,6 +718,10 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         scrollView.horizontalScrollElasticity = .allowed
         scrollView.verticalScrollElasticity = .none
         scrollView.allowsMagnification = false
+        scrollView.layerContentsRedrawPolicy = .never
+        scrollView.canDrawSubviewsIntoLayer = false
+        scrollView.contentView.layerContentsRedrawPolicy = .never
+        scrollView.contentView.canDrawSubviewsIntoLayer = false
         scrollView.documentView = document
         scrollView.onDidScroll = { [weak self] in
             self?.syncStickyGutter()
@@ -541,6 +731,12 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         addSubview(scrollView)
         addSubview(gutter)
         document.pane = self
+    }
+
+    isolated deinit {
+        for token in clipObservers {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -572,10 +768,54 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     /// a stale backing store, which shows as a blank diff. Repaint on attach.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        observeEnclosingClips()
         guard window != nil else { return }
         layoutDocument()
-        document.needsDisplay = true
-        gutter.needsDisplay = true
+        document.redrawSlice()
+        gutter.redrawSlice()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        observeEnclosingClips()
+        updateDrawingSlices()
+    }
+
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        updateDrawingSlices()
+    }
+
+    private func observeEnclosingClips() {
+        for token in clipObservers {
+            NotificationCenter.default.removeObserver(token)
+        }
+        clipObservers.removeAll()
+        guard window != nil else { return }
+        var ancestor = superview
+        while let current = ancestor {
+            if let clip = current as? NSClipView {
+                clip.postsBoundsChangedNotifications = true
+                clipObservers.append(NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: clip,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.updateDrawingSlices()
+                    }
+                })
+            }
+            ancestor = current.superview
+        }
+    }
+
+    private func updateDrawingSlices() {
+        guard !isUpdatingSlices else { return }
+        isUpdatingSlices = true
+        defer { isUpdatingSlices = false }
+        document.placeDrawingSlice()
+        gutter.placeDrawingSlice()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -612,7 +852,8 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         if gutter.bounds.origin != origin {
             gutter.setBoundsOrigin(origin)
         }
-        gutter.needsDisplay = true
+        gutter.redrawSlice()
+        updateDrawingSlices()
     }
 
     func scrollDiffWheel(_ event: NSEvent) {
@@ -623,6 +864,7 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
     var codeScrollFrame: NSRect { scrollView.frame }
     var diffVisibleOrigin: NSPoint { scrollView.documentVisibleRect.origin }
     var diffDocumentWidth: CGFloat { document.bounds.width }
+    var diffDrawingSliceFrame: NSRect { document.drawingSliceFrame }
 
     func scrollDiffDocument(to origin: NSPoint) {
         scrollView.contentView.scroll(to: origin)
@@ -653,6 +895,20 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
 
 private final class ReviewDiffGutterView: NSView {
     weak var document: ReviewDiffDocumentView?
+    private let drawingSlice = ReviewDiffDrawingSlice()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        layerContentsRedrawPolicy = .never
+        canDrawSubviewsIntoLayer = false
+        drawingSlice.render = { [weak self] rect in
+            guard let self else { return }
+            self.document?.drawGutter(in: rect, width: self.bounds.width)
+        }
+        addSubview(drawingSlice)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
@@ -663,8 +919,17 @@ private final class ReviewDiffGutterView: NSView {
         document?.pane?.scrollDiffWheel(event)
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        document?.drawGutter(in: dirtyRect, width: bounds.width)
+    func placeDrawingSlice() {
+        drawingSlice.place(in: clippedViewport(of: self))
+    }
+
+    func redrawSlice() {
+        drawingSlice.needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        drawingSlice.needsDisplay = true
     }
 }
 
@@ -679,6 +944,7 @@ private final class ReviewDiffDocumentView: NSView {
     private var maxCodeWidth: CGFloat = 0
     private var isMessageOnly = false
     private let selection = ReviewSelectionController()
+    private let drawingSlice = ReviewDiffDrawingSlice()
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -694,7 +960,16 @@ private final class ReviewDiffDocumentView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = .clear
-        selection.onChange = { [weak self] in self?.needsDisplay = true }
+        // Full content height, but no backing store of that height. `wantsLayer =
+        // false` does not opt out once an ancestor is layer-backed; refusing to
+        // redraw this layer does. The slice above draws only the visible rows.
+        layerContentsRedrawPolicy = .never
+        canDrawSubviewsIntoLayer = false
+        drawingSlice.render = { [weak self] rect in
+            self?.renderRows(in: rect)
+        }
+        addSubview(drawingSlice)
+        selection.onChange = { [weak self] in self?.drawingSlice.needsDisplay = true }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -713,7 +988,7 @@ private final class ReviewDiffDocumentView: NSView {
         isMessageOnly = !hasCode
         gutterWidth = hasCode ? ReviewDiffMetrics.lineNumberGutterWidth(for: rows, font: font) : 0
         maxCodeWidth = Self.maxCodeWidth(for: rows, font: font)
-        needsDisplay = true
+        drawingSlice.needsDisplay = true
     }
 
     func sizeToFit(clipWidth: CGFloat) {
@@ -723,10 +998,28 @@ private final class ReviewDiffDocumentView: NSView {
         if frame.size != size {
             setFrameSize(size)
         }
-        needsDisplay = true
+        placeDrawingSlice()
+        drawingSlice.needsDisplay = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
+    var drawingSliceFrame: NSRect { drawingSlice.frame }
+
+    func placeDrawingSlice() {
+        drawingSlice.place(in: clippedViewport(of: self))
+    }
+
+    func redrawSlice() {
+        drawingSlice.needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        drawingSlice.needsDisplay = true
+    }
+
+    override func draw(_: NSRect) {}
+
+    func renderRows(in dirtyRect: NSRect) {
         var y: CGFloat = 0
         for row in rows {
             let height = ReviewDocumentBuilder.height(of: row)

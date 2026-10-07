@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import Prestel
 
@@ -158,6 +159,234 @@ struct CodeReviewUITests {
         #expect(surface.window === window)
     }
 
+    @Test func tallDiffDocumentDoesNotAllocateAFullHeightBackingStore() {
+        let file = ChangedFile(
+            identityPath: .from("Long.swift"),
+            kind: .modified,
+            comparisons: [
+                ComparisonSummary(
+                    kind: .unstaged,
+                    additions: 4000,
+                    deletions: 0,
+                    isBinary: false,
+                    oldPath: nil,
+                    newPath: .from("Long.swift"),
+                    oldMode: nil,
+                    newMode: nil,
+                    oldOID: nil,
+                    newOID: nil
+                )
+            ],
+            oldPath: nil
+        )
+        let rows: [ReviewDocumentRow] = (0..<4000).map { index in
+            .code(
+                DiffLine(kind: .addition, oldNumber: nil, newNumber: index + 1, text: "let line\(index) = \(index)", missingNewline: false),
+                fileID: file.id,
+                comparison: .unstaged,
+                revision: "rev",
+                hunkIndex: 0,
+                lineIndex: index
+            )
+        }
+        let contentHeight = ReviewDocumentBuilder.contentHeight(of: rows)
+        #expect(contentHeight > 10_000)
+
+        // Production geometry: the pane is the full file, and the file list
+        // clips it to the viewport. Vertical scrolling belongs to that list.
+        let pane = ReviewDiffPane(frame: NSRect(x: 0, y: 0, width: 420, height: contentHeight))
+        pane.reload(rows: rows, highlights: [:], showWhitespace: false, file: file)
+
+        let outer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: 280))
+        outer.drawsBackground = false
+        outer.hasVerticalScroller = false
+        outer.hasHorizontalScroller = false
+        outer.automaticallyAdjustsContentInsets = false
+        // The file list is a flipped scroller: y = 0 is the top of the file.
+        let content = FlippedReviewListDocument(frame: NSRect(x: 0, y: 0, width: 420, height: contentHeight))
+        pane.frame = NSRect(x: 0, y: 0, width: 420, height: contentHeight)
+        content.addSubview(pane)
+        outer.documentView = content
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 280))
+        root.wantsLayer = true
+        window.contentView = root
+        outer.frame = root.bounds
+        root.addSubview(outer)
+
+        let scrolled: CGFloat = 1800
+        outer.contentView.scroll(to: NSPoint(x: 0, y: scrolled))
+        outer.reflectScrolledClipView(outer.contentView)
+        root.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        let document = documentView(in: pane)
+        let documentHeight = document?.frame.height ?? 0
+        #expect(documentHeight > 10_000)
+        #expect(abs(documentHeight - contentHeight) < 1)
+
+        let slice = pane.diffDrawingSliceFrame
+        #expect(slice.height > 40)
+        #expect(slice.height < 400)
+        #expect(abs(slice.minY - scrolled) < 2)
+        #expect(pane.diffVisibleOrigin.y == 0)
+        #expect(pane.stickyGutterFrame.minX == 0)
+        let tall = fullHeightBackingStores(in: root, tallerThan: 2_000)
+        #expect(tall.isEmpty, "full-height backing stores: \(tall.joined(separator: "; "))")
+        #expect(sliceHasPaint(document?.subviews.first { $0.frame.height > 40 && $0.frame.height < 400 }))
+        #expect(layerTreeHasPaint(root))
+    }
+
+    @Test func maskedTallDiffStillPaintsWithoutAFullHeightBackingStore() {
+        let file = ChangedFile(
+            identityPath: .from("Long.swift"),
+            kind: .modified,
+            comparisons: [
+                ComparisonSummary(
+                    kind: .unstaged,
+                    additions: 4000,
+                    deletions: 0,
+                    isBinary: false,
+                    oldPath: nil,
+                    newPath: .from("Long.swift"),
+                    oldMode: nil,
+                    newMode: nil,
+                    oldOID: nil,
+                    newOID: nil
+                )
+            ],
+            oldPath: nil
+        )
+        let rows: [ReviewDocumentRow] = (0..<4000).map { index in
+            .code(
+                DiffLine(kind: .addition, oldNumber: nil, newNumber: index + 1, text: "let line\(index) = \(index)", missingNewline: false),
+                fileID: file.id,
+                comparison: .unstaged,
+                revision: "rev",
+                hunkIndex: 0,
+                lineIndex: index
+            )
+        }
+        let contentHeight = ReviewDocumentBuilder.contentHeight(of: rows)
+        let host = NSHostingView(rootView: MaskedDiffProbe(rows: rows, file: file, height: contentHeight))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 280)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        let tall = fullHeightBackingStores(in: host, tallerThan: 2_000)
+        #expect(tall.isEmpty, "full-height backing stores: \(tall.joined(separator: "; "))")
+        #expect(layerTreeHasPaint(host))
+    }
+
+    private func documentView(in view: NSView) -> NSView? {
+        if let scroll = view as? NSScrollView { return scroll.documentView }
+        for subview in view.subviews {
+            if let found = documentView(in: subview) { return found }
+        }
+        return nil
+    }
+
+    /// Layers taller than the viewport are fine as containers. A backing store
+    /// (drawn contents, or a rasterized layer) of that height is the leak.
+    private func fullHeightBackingStores(in root: NSView, tallerThan: CGFloat) -> [String] {
+        var found: [String] = []
+        func visit(_ view: NSView) {
+            if let layer = view.layer {
+                visitLayer(layer, viewName: String(describing: type(of: view)), into: &found, tallerThan: tallerThan)
+            }
+            for subview in view.subviews {
+                visit(subview)
+            }
+        }
+        visit(root)
+        return found
+    }
+
+    private func visitLayer(_ layer: CALayer, viewName: String, into found: inout [String], tallerThan: CGFloat) {
+        let height = layer.bounds.height
+        if height > tallerThan {
+            let pixels = contentsPixelHeight(layer.contents)
+            let largeBitmap = (pixels ?? 0) > Int(tallerThan * 2)
+            let unknownContents = layer.contents != nil && pixels == nil
+            if largeBitmap || unknownContents || (layer.shouldRasterize && height > tallerThan) {
+                found.append("\(viewName) \(Int(height))pt \(describeContents(layer.contents)) rasterize=\(layer.shouldRasterize)")
+            }
+        }
+        for sublayer in layer.sublayers ?? [] {
+            visitLayer(sublayer, viewName: viewName, into: &found, tallerThan: tallerThan)
+        }
+    }
+
+    private func layerTreeHasPaint(_ view: NSView) -> Bool {
+        guard let layer = view.layer else { return false }
+        let width = max(Int(view.bounds.width.rounded(.down)), 1)
+        let height = max(Int(view.bounds.height.rounded(.down)), 1)
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        layer.render(in: context)
+        guard let data = context.data else { return false }
+        let pixels = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        let x = min(width - 1, max(width / 2, 0))
+        let y = min(height - 1, max(height / 2, 0))
+        return pixels[(y * width + x) * 4 + 3] > 10
+    }
+
+    private func sliceHasPaint(_ slice: NSView?) -> Bool {
+        guard let slice, slice.bounds.width > 2, slice.bounds.height > 2,
+              let rep = slice.bitmapImageRepForCachingDisplay(in: slice.bounds) else { return false }
+        slice.cacheDisplay(in: slice.bounds, to: rep)
+        let x = max(rep.pixelsWide - 2, 0)
+        let y = max(rep.pixelsHigh / 2, 0)
+        guard let color = rep.colorAt(x: x, y: y) else { return false }
+        return color.alphaComponent > 0.05
+    }
+
+    private func describeContents(_ contents: Any?) -> String {
+        guard let contents else { return "nil" }
+        if let pixels = contentsPixelHeight(contents) {
+            return "\(pixels)px \(type(of: contents))"
+        }
+        let object = contents as AnyObject
+        return "\(NSStringFromClass(type(of: object))) \(String(describing: contents).prefix(160))"
+    }
+
+    private func contentsPixelHeight(_ contents: Any?) -> Int? {
+        guard let contents else { return nil }
+        let typeID = CFGetTypeID(contents as CFTypeRef)
+        if typeID == CGImage.typeID {
+            return (contents as! CGImage).height
+        }
+        if let image = contents as? NSImage {
+            return image.representations.first?.pixelsHigh
+        }
+        return nil
+    }
+
     @Test func diffGutterStaysPinnedDuringHorizontalPan() {
         let pane = ReviewDiffPane(frame: NSRect(x: 0, y: 0, width: 220, height: 140))
         let file = ChangedFile(
@@ -206,6 +435,130 @@ struct CodeReviewUITests {
         #expect(pane.codeScrollFrame.minX == pane.stickyGutterFrame.maxX)
         #expect(abs(pane.diffVisibleOrigin.x - 90) < 0.5)
         #expect(pane.diffDocumentWidth == documentWidthAtRest)
+    }
+
+    /// A view between the diff and the list swallows `scrollWheel`. Reaching the
+    /// list anyway means the gesture was delivered to that scroll view directly,
+    /// which is what keeps elastic overscroll tracking.
+    @Test func verticalDiffWheelReachesTheListScrollView() {
+        let list = ListScrollRecorder(frame: NSRect(x: 0, y: 0, width: 220, height: 160))
+        let content = FlippedReviewListDocument(frame: NSRect(x: 0, y: 0, width: 220, height: 800))
+        let swallow = WheelSwallowingView(frame: content.bounds)
+        let pane = ReviewDiffPane(frame: NSRect(x: 0, y: 0, width: 220, height: 400))
+        pane.reload(rows: wideDiffRows(), highlights: [:], showWhitespace: false, file: wideDiffFile())
+        content.addSubview(swallow)
+        swallow.addSubview(pane)
+        list.documentView = content
+
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 0, phase: ReviewWheelPhase.began))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 24, phase: ReviewWheelPhase.changed))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 1, dy: 18, phase: ReviewWheelPhase.changed))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 0, phase: ReviewWheelPhase.ended))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 12, phase: 0, momentum: ReviewWheelPhase.momentumBegan))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 6, dy: 4, phase: 0, momentum: ReviewWheelPhase.momentumChanged))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 0, phase: 0, momentum: ReviewWheelPhase.momentumEnded))
+
+        #expect(list.wheels.map(\.phase.rawValue) == [
+            NSEvent.Phase.began.rawValue,
+            NSEvent.Phase.changed.rawValue,
+            NSEvent.Phase.changed.rawValue,
+            NSEvent.Phase.ended.rawValue,
+            0, 0, 0
+        ])
+        #expect(list.wheels.map(\.momentum.rawValue) == [
+            0, 0, 0, 0,
+            NSEvent.Phase.began.rawValue,
+            NSEvent.Phase.changed.rawValue,
+            NSEvent.Phase.ended.rawValue
+        ])
+        #expect(list.wheels[1].dy == 24)
+        #expect(pane.diffVisibleOrigin.y == 0)
+    }
+
+    @Test func horizontalDiffWheelStaysOutOfTheList() {
+        let list = ListScrollRecorder(frame: NSRect(x: 0, y: 0, width: 220, height: 160))
+        let content = FlippedReviewListDocument(frame: NSRect(x: 0, y: 0, width: 220, height: 800))
+        let pane = ReviewDiffPane(frame: NSRect(x: 0, y: 0, width: 220, height: 140))
+        pane.reload(rows: wideDiffRows(), highlights: [:], showWhitespace: false, file: wideDiffFile())
+        content.addSubview(pane)
+        list.documentView = content
+
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 0, phase: ReviewWheelPhase.began))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 40, dy: 2, phase: ReviewWheelPhase.changed))
+        pane.scrollDiffWheel(reviewWheelEvent(dx: 0, dy: 0, phase: ReviewWheelPhase.ended))
+
+        #expect(list.wheels.isEmpty)
+        #expect(pane.stickyGutterFrame.minX == 0)
+    }
+
+    @Test func diffSliceFollowsListOverscrollOrigin() {
+        let rows = (0..<80).map { index in
+            ReviewDocumentRow.code(
+                DiffLine(kind: .addition, oldNumber: nil, newNumber: index + 1, text: "let line\(index) = \(index)", missingNewline: false),
+                fileID: "Overscroll.swift",
+                comparison: .unstaged,
+                revision: "rev",
+                hunkIndex: 0,
+                lineIndex: index
+            )
+        }
+        let contentHeight = ReviewDocumentBuilder.contentHeight(of: rows)
+        #expect(contentHeight > 400)
+        let file = ChangedFile(
+            identityPath: .from("Overscroll.swift"),
+            kind: .modified,
+            comparisons: [
+                ComparisonSummary(
+                    kind: .unstaged,
+                    additions: 80,
+                    deletions: 0,
+                    isBinary: false,
+                    oldPath: nil,
+                    newPath: .from("Overscroll.swift"),
+                    oldMode: nil,
+                    newMode: nil,
+                    oldOID: nil,
+                    newOID: nil
+                )
+            ],
+            oldPath: nil
+        )
+
+        let outer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 240, height: 220))
+        let clip = OverscrollClipView(frame: outer.bounds)
+        outer.contentView = clip
+        outer.hasVerticalScroller = false
+        outer.hasHorizontalScroller = false
+        outer.automaticallyAdjustsContentInsets = false
+        let content = FlippedReviewListDocument(frame: NSRect(x: 0, y: 0, width: 240, height: contentHeight))
+        let pane = ReviewDiffPane(frame: NSRect(x: 0, y: 0, width: 240, height: contentHeight))
+        pane.reload(rows: rows, highlights: [:], showWhitespace: false, file: file)
+        content.addSubview(pane)
+        outer.documentView = content
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 240, height: 220),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: true
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = outer
+        outer.layoutSubtreeIfNeeded()
+
+        let overscroll: CGFloat = -48
+        outer.contentView.setBoundsOrigin(NSPoint(x: 0, y: overscroll))
+        #expect(outer.contentView.bounds.origin.y < -20)
+        pane.needsLayout = true
+        pane.layoutSubtreeIfNeeded()
+        pane.scrollDiffDocument(to: .zero)
+
+        let slice = pane.diffDrawingSliceFrame
+        #expect(slice.minY < -20)
+        #expect(slice.height > 180)
+        #expect(slice.height < 400)
+        #expect(pane.stickyGutterFrame.minX == 0)
     }
 
     @Test func gutterNumberColorIsOpaqueAndHigherContrastThanTertiary() {
@@ -330,6 +683,132 @@ struct CodeReviewUITests {
         )
         let badLine = DiffLine(kind: .deletion, oldNumber: 99, newNumber: nil, text: "let x = 1", missingNewline: false)
         #expect(ReviewHighlightMapper.runs(for: badLine, fileID: fileID, comparison: .unstaged, highlights: ["old:\(key)": outOfRange]) == nil)
+    }
+}
+
+private final class FlippedReviewListDocument: NSView {
+    override var isFlipped: Bool { true }
+}
+
+private final class ListScrollRecorder: NSScrollView {
+    struct Wheel: Equatable {
+        var phase: NSEvent.Phase
+        var momentum: NSEvent.Phase
+        var dx: CGFloat
+        var dy: CGFloat
+    }
+
+    var wheels: [Wheel] = []
+
+    override func scrollWheel(with event: NSEvent) {
+        wheels.append(Wheel(
+            phase: event.phase,
+            momentum: event.momentumPhase,
+            dx: event.scrollingDeltaX,
+            dy: event.scrollingDeltaY
+        ))
+    }
+}
+
+/// Stops the responder chain so a vertical wheel only reaches the list if the
+/// diff scroll view forwards it to that scroll view directly.
+private final class WheelSwallowingView: NSView {
+    override func scrollWheel(with event: NSEvent) {}
+}
+
+/// Lets a test place the clip origin above the document, the way a rubber-band does.
+private final class OverscrollClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        proposedBounds
+    }
+}
+
+private enum ReviewWheelPhase {
+    static let began: Int64 = 1
+    static let changed: Int64 = 2
+    static let ended: Int64 = 4
+    static let momentumBegan: Int64 = 1
+    static let momentumChanged: Int64 = 2
+    static let momentumEnded: Int64 = 3
+}
+
+private func reviewWheelEvent(dx: Int32, dy: Int32, phase: Int64, momentum: Int64 = 0) -> NSEvent {
+    let event = CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .pixel,
+        wheelCount: 2,
+        wheel1: dy,
+        wheel2: dx,
+        wheel3: 0
+    )!
+    event.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+    event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum)
+    event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+    event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(dy))
+    event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(dx))
+    return NSEvent(cgEvent: event)!
+}
+
+private func wideDiffFile() -> ChangedFile {
+    ChangedFile(
+        identityPath: .from("Wide.swift"),
+        kind: .modified,
+        comparisons: [
+            ComparisonSummary(
+                kind: .unstaged,
+                additions: 1,
+                deletions: 1,
+                isBinary: false,
+                oldPath: nil,
+                newPath: .from("Wide.swift"),
+                oldMode: nil,
+                newMode: nil,
+                oldOID: nil,
+                newOID: nil
+            )
+        ],
+        oldPath: nil
+    )
+}
+
+private func wideDiffRows() -> [ReviewDocumentRow] {
+    let file = wideDiffFile()
+    let long = String(repeating: "let value = 1234567890; ", count: 12)
+    return [
+        .code(DiffLine(kind: .deletion, oldNumber: 40, newNumber: nil, text: long, missingNewline: false), fileID: file.id, comparison: .unstaged, revision: "rev", hunkIndex: 0, lineIndex: 0),
+        .code(DiffLine(kind: .addition, oldNumber: nil, newNumber: 41, text: long, missingNewline: false), fileID: file.id, comparison: .unstaged, revision: "rev", hunkIndex: 0, lineIndex: 1),
+        .code(DiffLine(kind: .context, oldNumber: 41, newNumber: 42, text: long, missingNewline: false), fileID: file.id, comparison: .unstaged, revision: "rev", hunkIndex: 0, lineIndex: 2)
+    ]
+}
+
+private struct MaskedDiffProbe: View {
+    var rows: [ReviewDocumentRow]
+    var file: ChangedFile
+    var height: CGFloat
+
+    var body: some View {
+        ScrollView(.vertical) {
+            ProbePane(rows: rows, file: file)
+                .frame(height: height, alignment: .top)
+                .compositingGroup()
+                .mask(alignment: .top) {
+                    Rectangle().padding(.top, 12)
+                }
+        }
+        .frame(width: 420, height: 280)
+    }
+}
+
+private struct ProbePane: NSViewRepresentable {
+    var rows: [ReviewDocumentRow]
+    var file: ChangedFile
+
+    func makeNSView(context: Context) -> ReviewDiffPane {
+        ReviewDiffPane()
+    }
+
+    func updateNSView(_ nsView: ReviewDiffPane, context: Context) {
+        nsView.reload(rows: rows, highlights: [:], showWhitespace: false, file: file)
     }
 }
 

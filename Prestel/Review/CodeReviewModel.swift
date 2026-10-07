@@ -390,6 +390,17 @@ final class CodeReviewModel: ObservableObject {
         watcher.stopAll()
     }
 
+    /// Drops the catalog, diffs, and highlight spans once the panel has finished
+    /// sliding away. `hide()` leaves them in place so the slide can keep painting
+    /// the last list; keeping them after that holds the file text until quit.
+    func releaseHiddenContents() {
+        guard loadState == .hidden else { return }
+        snapshot = nil
+        diffs = [:]
+        highlights = [:]
+        diagnostic = nil
+    }
+
     private func hide() {
         loadTask?.cancel()
         watchTask?.cancel()
