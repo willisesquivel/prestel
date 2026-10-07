@@ -467,8 +467,9 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running in Prestel wants to control another app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -488,7 +489,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_TESTABILITY = YES;
+				ENABLE_TESTABILITY = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Prestel/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Prestel;
@@ -496,8 +497,9 @@
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "A program running in Prestel wants to control another app.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
-				MARKETING_VERSION = 0.1;
+				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;
