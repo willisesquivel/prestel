@@ -74,7 +74,7 @@ struct CodeReviewModelTests {
         let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
         await runner.release("b")
         model.bind(visible: true, windowID: UUID(), session: session)
-        try? await Task.sleep(for: .milliseconds(80))
+        await waitUntilReady(model)
         model.bind(visible: false, windowID: UUID(), session: session)
         #expect(model.loadState == .hidden)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
@@ -91,7 +91,7 @@ struct CodeReviewModelTests {
         model.bind(visible: true, windowID: UUID(), session: session)
         model.bind(visible: true, windowID: UUID(), session: session)
         await runner.release("b")
-        try? await Task.sleep(for: .milliseconds(80))
+        await waitUntilReady(model)
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
@@ -104,7 +104,7 @@ struct CodeReviewModelTests {
         ShellPanelAnimation.run {
             model.bind(visible: true, windowID: UUID(), session: session)
         }
-        try? await Task.sleep(for: .milliseconds(80))
+        await waitUntilReady(model)
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
@@ -121,6 +121,23 @@ struct CodeReviewModelTests {
         try? await Task.sleep(for: .milliseconds(80))
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
+    }
+}
+
+/// The catalog load yields once before it publishes, so a fixed sleep can
+/// return while the state is still `.resolving` or `.loading`. A busy suite
+/// made 80ms too short. This follows `loadState` instead.
+@MainActor
+private func waitUntilReady(_ model: CodeReviewModel) async {
+    let deadline = ContinuousClock().now.advanced(by: .seconds(5))
+    while model.loadState != .ready {
+        switch model.loadState {
+        case .resolving, .loading, .waitingForGit, .hidden:
+            if ContinuousClock().now >= deadline { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        default:
+            return
+        }
     }
 }
 
