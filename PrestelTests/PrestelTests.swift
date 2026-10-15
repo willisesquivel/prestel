@@ -53,6 +53,92 @@ struct PrestelTests {
         #expect(model.tabs.allSatisfy { $0.state == .ready })
     }
 
+    @Test func numberedTabSelectionUsesBrowserPositionsAndCurrentOrder() {
+        let model = TerminalModel()
+        for _ in 0..<9 { model.newTab() }
+        let ids = model.tabs.map(\.id)
+
+        for number in 1...8 {
+            model.selectTab(number: number)
+            #expect(model.selectedID == ids[number - 1])
+        }
+        model.selectTab(number: 9)
+        #expect(model.selectedID == ids[9])
+        model.moveTab(ids[9], to: 0)
+        model.selectTab(number: 1)
+        #expect(model.selectedID == ids[9])
+        model.selectTab(number: 9)
+        #expect(model.selectedID == ids[8])
+        model.navigate(-1)
+        #expect(model.selectedID == ids[9])
+    }
+
+    @Test func numberedTabSelectionIgnoresUnavailablePositionsAndArchivedTabs() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let archived = model.newTab().id
+        model.archiveTab(archived)
+        model.select(archived)
+        for number in [0, 2, 8, 10] {
+            model.selectTab(number: number)
+            #expect(model.selectedID == archived)
+        }
+        model.selectTab(number: 9)
+        #expect(model.selectedID == first)
+        #expect(!model.showingArchive)
+        model.showSettings()
+        let settings = model.selectedID
+        model.selectTab(number: 1)
+        #expect(model.selectedID == first)
+        model.selectTab(number: 9)
+        #expect(model.selectedID == settings)
+        #expect(model.selectedTab?.kind == .settings)
+    }
+
+    @Test func numberedTabSelectionKeepsFolderOrderDuringSearchAndCollapse() throws {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        let d = model.newTab().id
+        model.select(a)
+        let folder = try #require(model.makeFolder(containing: a))
+        model.add(c, to: folder.id)
+        model.toggleFolder(folder.id)
+        model.select(d)
+        model.searchText = "no-match"
+
+        model.selectTab(number: 2)
+        #expect(model.selectedID == c)
+        #expect(model.selectedTabIDs == [c])
+        model.selectTab(number: 3)
+        #expect(model.selectedID == b)
+        model.selectTab(number: 9)
+        #expect(model.selectedID == d)
+        #expect(model.searchText == "no-match")
+        #expect(model.folders.first?.collapsed == true)
+    }
+
+    @Test func numberedTabSelectionFocusesBothSplitPanes() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        let third = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+
+        model.selectTab(number: 2)
+        #expect(model.selectedID == second)
+        #expect(model.visibleSplit?.focusedID == second)
+        model.selectTab(number: 1)
+        #expect(model.selectedID == first)
+        #expect(model.visibleSplit?.focusedID == first)
+        model.selectTab(number: 9)
+        #expect(model.selectedID == third)
+        #expect(model.visibleSplit == nil)
+        #expect(model.splits.count == 1)
+    }
+
     @Test func archiveRemovesTabWithoutClosingTheSession() {
         let model = TerminalModel()
         let first = model.selectedTab!
@@ -475,6 +561,208 @@ struct PrestelTests {
         }
         #expect(session.directory == "/private/tmp")
         #expect(ShellConfiguration.displayDirectory(FileManager.default.homeDirectoryForCurrentUser.path) == "~")
+    }
+
+    @Test func toolbarsFitNarrowPanesAndLongTitles() {
+        let model = TerminalModel(directory: "/private/tmp")
+        model.selectedTab?.setDisplayTitle(String(repeating: "Long title ", count: 20))
+        for sidebar in [false, true] {
+            model.sidebarVisible = sidebar
+            for (navigation, review, widths) in [(true, false, [160, 240, 320]),
+                                                  (false, true, [160, 240, 320]),
+                                                  (true, true, [320, 480, 640])] {
+                let hosting = NSHostingController(rootView: TerminalToolbar(model: model,
+                    showsNavigation: navigation, showsReviewToggle: review))
+                for width in widths {
+                    let fitted = hosting.sizeThatFits(in: CGSize(width: CGFloat(width), height: 100))
+                    #expect(fitted.width <= CGFloat(width), "Toolbar exceeds its pane")
+                    #expect(fitted.height <= 60, "Toolbar grows into the terminal")
+                }
+            }
+        }
+    }
+
+    @Test func narrowSplitKeepsTerminalContentInsideItsCards() async throws {
+        try await withTerminalFontSize(13) {
+            let model = TerminalModel(directory: "/private/tmp")
+            let first = model.tabs[0]
+            let second = model.newTab(directory: "/private/tmp")
+            model.sidebarVisible = false
+            model.reviewVisible = true
+            model.select(first.id)
+            model.split(with: second.id, on: .trailing)
+            model.tabs.forEach { $0.start() }
+            let controller = TerminalWindowController(model: model)
+            let window = try #require(controller.window)
+            defer { controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window)) }
+            window.setContentSize(NSSize(width: 760, height: 540))
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            try await Task.sleep(for: .milliseconds(500))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let root = try #require(window.contentView)
+            let layout = ShellLayout.resolve(.init(windowWidth: root.bounds.width,
+                sidebarVisible: false, reviewVisible: true,
+                preferredSidebarWidth: model.sidebarWidth, preferredReviewWidth: model.reviewWidth))
+            let cards = SplitCardLayout.cards(in: CGSize(width: layout.detailWidth, height: root.bounds.height - 20),
+                                             axis: .horizontal, fraction: 0.5, gap: ShellMetrics.splitCardGap)
+            for (session, card) in [(first, cards.primary), (second, cards.secondary)] {
+                let surface = try #require(session.surface)
+                let frame = surface.convert(surface.bounds, to: root)
+                let left = layout.detailOriginX + card.minX + 12
+                let right = layout.detailOriginX + card.maxX - 12
+                print("NARROW_LAYOUT expected=\(left)...\(right) actual=\(frame.minX)...\(frame.maxX)")
+                #expect(frame.width > 0)
+                #expect(frame.minX >= left - 1)
+                #expect(frame.maxX <= right + 1)
+            }
+            if let bitmap = root.bitmapImageRepForCachingDisplay(in: root.bounds) {
+                root.cacheDisplay(in: root.bounds, to: bitmap)
+                if let image = bitmap.representation(using: .png, properties: [:]) {
+                    Attachment.record(image, named: "narrow-split.png")
+                }
+            }
+        }
+    }
+
+    @Test(.timeLimit(.minutes(3))) func sustainedOutputSurvivesLayoutAndSessionChanges() async throws {
+        try await withTerminalFontSize(13) {
+            let model = TerminalModel(directory: "/private/tmp")
+            let controller = TerminalWindowController(model: model)
+            let window = try #require(controller.window)
+            defer {
+                window.orderOut(nil)
+                controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+            }
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            for _ in 0..<2 { model.newTab(directory: "/private/tmp") }
+            let sessions = model.tabs
+            let progress = ReliabilityProgress()
+            let observations = try sessions.map { session in
+                session.start()
+                let surface = try #require(session.surface)
+                return surface.observeOscEvents { event in
+                    guard event.code == 777 else { return }
+                    let marker = String(decoding: event.payload, as: UTF8.self)
+                    Task { @MainActor in progress.received.insert(marker) }
+                }
+            }
+            defer { withExtendedLifetime(observations) {} }
+            let pids = try sessions.map { try #require($0.process?.shellPid) }
+            let logs = FileManager.default.temporaryDirectory.appendingPathComponent("prestel-stress-\(UUID().uuidString)")
+            for (index, session) in sessions.enumerated() {
+                let directory = logs.appendingPathComponent(String(index))
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                session.process?.setHostLogging(directory: directory.path)
+            }
+            defer {
+                sessions.forEach { $0.process?.setHostLogging(directory: nil) }
+                try? FileManager.default.removeItem(at: logs)
+            }
+            var heartbeatDelays: [Double] = []
+            let heartbeat = Task { @MainActor in
+                var previous = ContinuousClock.now
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .milliseconds(20)) }
+                    catch { return }
+                    let now = ContinuousClock.now
+                    let elapsed = previous.duration(to: now).components
+                    heartbeatDelays.append(Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18)
+                    previous = now
+                }
+            }
+            defer { heartbeat.cancel() }
+
+            for (index, session) in sessions.enumerated() {
+                session.run("printf '\\033]777;READY_%s\\007' \(index)")
+            }
+            let startupDeadline = ContinuousClock.now + .seconds(30)
+            while !sessions.indices.allSatisfy({ progress.received.contains("READY_\($0)") }),
+                  ContinuousClock.now < startupDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try #require(sessions.indices.allSatisfy { progress.received.contains("READY_\($0)") },
+                         "The stress-test shells did not finish starting")
+
+            for round in 0..<24 {
+                let previousRenders = sessions.reduce(0) { $0 + ($1.surface?.diagnostics.renders ?? 0) }
+                for (index, session) in sessions.enumerated() {
+                    session.run("/usr/bin/awk 'BEGIN { for (i=0; i<3000; i++) printf \"\\033[38;5;%dmrow %06d abcdefghijklmnopqrstuvwxyz 0123456789\\033[0m\\n\", i%16, i; printf \"RELIABILITY_%s_%s_DONE\\n\\033]777;RELIABILITY_%s_%s_DONE\\007\", \"\(round)\", \"\(index)\", \"\(round)\", \"\(index)\" }'")
+                }
+                model.select(sessions[round % sessions.count].id)
+                model.unsplit()
+                model.split(with: sessions[(round + 1) % sessions.count].id,
+                            on: round.isMultiple(of: 2) ? .trailing : .bottom)
+                controller.toggleSidebar(nil)
+                controller.toggleCodeReview(nil)
+                window.setContentSize(NSSize(width: round.isMultiple(of: 2) ? 760 : 1240,
+                                             height: round.isMultiple(of: 3) ? 540 : 800))
+                TerminalFontSize.set(round.isMultiple(of: 2) ? 12 : 16)
+                sessions.forEach { $0.surface?.applyPreferences() }
+                window.contentView?.layoutSubtreeIfNeeded()
+
+                let deadline = ContinuousClock.now + .seconds(15)
+                var completed = Set<Int>()
+                while completed.count < sessions.count, ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(20))
+                    for (index, session) in sessions.enumerated() where !completed.contains(index) {
+                        if progress.received.contains("RELIABILITY_\(round)_\(index)_DONE") {
+                            completed.insert(index)
+                        }
+                    }
+                }
+                for (index, session) in sessions.enumerated() where !completed.contains(index) {
+                    let output = buffer(session)
+                    print("MISSING_OUTPUT round=\(round) session=\(index) running=\(session.process?.running ?? false) dimensions=\(String(describing: session.surface?.terminalDimensions)) frame=\(String(describing: session.surface?.frame)) bytes=\(session.surface?.diagnostics.bytesFed ?? 0)")
+                    print("MISSING_OUTPUT tail=\(output.suffix(1500))")
+                    Attachment.record(output, named: "missing-output-\(round)-\(index).txt")
+                    let files = try FileManager.default.contentsOfDirectory(at: logs.appendingPathComponent(String(index)),
+                        includingPropertiesForKeys: nil).sorted {
+                            (Int($0.lastPathComponent.dropFirst(4)) ?? 0) < (Int($1.lastPathComponent.dropFirst(4)) ?? 0)
+                        }
+                    let raw = try files.suffix(16).reduce(into: Data()) { $0.append(try Data(contentsOf: $1)) }
+                    let rawText = String(decoding: raw, as: UTF8.self)
+                    print("RAW_OUTPUT markerReceived=\(rawText.contains("RELIABILITY_\(round)_\(index)_DONE")) tail=\(String(reflecting: rawText.suffix(1800)))")
+                    Attachment.record(raw, named: "raw-output-\(round)-\(index).bin")
+                }
+                try #require(completed.count == sessions.count, "Missing terminal output in round \(round)")
+                #expect(sessions.allSatisfy {
+                    buffer($0).replacingOccurrences(of: "\n", with: "").contains("row 002998")
+                })
+                sessions.forEach { $0.surface?.display() }
+                CATransaction.flush()
+                try await eventually {
+                    sessions.reduce(0) { $0 + ($1.surface?.diagnostics.renders ?? 0) } > previousRenders
+                }
+                #expect(sessions.map { $0.process?.shellPid } == pids.map(Optional.some))
+                #expect(sessions.allSatisfy { $0.process?.running == true })
+
+                let transient = model.newTab(directory: "/private/tmp")
+                transient.start()
+                let transientPID = try #require(transient.process?.shellPid)
+                transient.run("printf 'TRANSIENT_%s_READY\\n' \(round)")
+                try await eventually { buffer(transient).contains("TRANSIENT_\(round)_READY") }
+                model.closeTab(transient.id)
+                try await eventually { kill(transientPID, 0) == -1 && errno == ESRCH }
+                model.select(sessions[round % sessions.count].id)
+                window.contentView?.layoutSubtreeIfNeeded()
+                try await eventually { model.selectedTab?.surface?.window === window }
+            }
+
+            let diagnostics = sessions.compactMap { $0.surface?.diagnostics }
+            let bytes = diagnostics.reduce(0) { $0 + $1.bytesFed }
+            let renders = diagnostics.reduce(0) { $0 + $1.renders }
+            let worstDelay = heartbeatDelays.max() ?? 0
+            print("RELIABILITY rounds=24 outputLines=216000 transientSessions=24 bytes=\(bytes) renders=\(renders) maxHeartbeatSeconds=\(worstDelay)")
+            #expect(bytes > 10_000_000)
+            #expect(renders > 0)
+            #expect(worstDelay < 2, "Main actor stopped responding during output and layout changes")
+            model.closeAll()
+            try await eventually { pids.allSatisfy { kill($0, 0) == -1 && errno == ESRCH } }
+        }
+    }
+
+    @MainActor private final class ReliabilityProgress {
+        var received: Set<String> = []
     }
 
     private func buffer(_ session: TerminalSession) -> String {

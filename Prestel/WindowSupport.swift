@@ -546,28 +546,33 @@ struct TerminalToolbar: View {
     var showsReviewToggle = true
 
     var body: some View {
-        HStack(spacing: 12) {
-            if showsNavigation {
-                NavigationCapsule(model: model)
-            }
-            if let headerSession = session ?? model.selectedTab {
-                TerminalToolbarHeader(session: headerSession)
-            }
-            Spacer(minLength: 0)
-            if showsReviewToggle {
-                CodeReviewToggle(model: model)
-            }
+        ViewThatFits(in: .horizontal) {
+            controls(compactNavigation: false, showsHeader: true)
+            controls(compactNavigation: true, showsHeader: true)
+            controls(compactNavigation: true, showsHeader: false)
         }
-        // Same horizontal inset as the terminal text below (12pt). When the
-        // sidebar is collapsed the detail surface slides under the traffic
-        // lights (24…76pt window), so the header shifts right to sit beside
-        // them: mirror the 14pt gap between the surface edge and the lights,
-        // starting the header at 80pt detail-relative.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, showsNavigation && !model.sidebarVisible ? 80 : 12)
         .padding(.trailing, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Terminal toolbar")
+    }
+
+    private func controls(compactNavigation: Bool, showsHeader: Bool) -> some View {
+        HStack(spacing: 12) {
+            if showsNavigation {
+                NavigationCapsule(model: model, compact: compactNavigation)
+            }
+            if showsHeader, let headerSession = session ?? model.selectedTab {
+                TerminalToolbarHeader(session: headerSession)
+                    .frame(minWidth: 44, idealWidth: 44, maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+            if showsReviewToggle {
+                CodeReviewToggle(model: model)
+            }
+        }
     }
 }

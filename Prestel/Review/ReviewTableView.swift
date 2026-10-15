@@ -764,8 +764,8 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         layoutDocument()
     }
 
-    /// Panes are recycled by the lazy list and can be re-attached mid-fling with
-    /// a stale backing store, which shows as a blank diff. Repaint on attach.
+    /// Panes can be re-attached after a panel update with a stale backing store,
+    /// which shows as a blank diff. Repaint on attach.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         observeEnclosingClips()

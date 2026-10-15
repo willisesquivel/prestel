@@ -39,17 +39,46 @@ Prestel is built from source.
 
 1. Clone this repository.
 2. Open `Prestel.xcodeproj` in Xcode.
-3. Run the `Prestel` scheme. Xcode fetches the Swift packages on the first
-   build, so you need a network connection once.
+3. Run the `Prestel` scheme. It uses a Release build with the debugger and
+   runtime checkers disabled for everyday terminal work. Xcode fetches the Swift packages on
+   the first build, so you need a network connection once.
+
+Use the `Debug Prestel` scheme when you need breakpoints or runtime checks.
+Keep long-running terminal sessions in the `Prestel` scheme or launch the
+built app directly. For a frozen debugging session, try pausing and continuing
+in Xcode before force quitting; this may recover the existing shells.
 
 From the command line:
 
 ```sh
-xcodebuild -project Prestel.xcodeproj -scheme Prestel build
+xcodebuild -project Prestel.xcodeproj -scheme Prestel -configuration Release build
 xcodebuild -project Prestel.xcodeproj -scheme Prestel test
 ```
 
 The tests include some that start real shells.
+
+Run the terminal reliability check with:
+
+```sh
+python3 scripts/check-reliability.py --runs 5
+```
+
+Each run starts a fresh test app with a hidden window, sends 216,000 colored
+lines through three PTYs, changes splits, panels, window size and font size, and opens and closes
+24 temporary sessions. It checks output, completed draws, UI delays and shell
+cleanup. Logs and test results go under `.build/reliability/Release`; an external
+timeout captures the test app's stack if it hangs. Use `--configuration Debug`
+to check the unoptimized build too.
+
+Zsh sessions use a temporary startup directory and wait for a shell handshake
+before the stress phase. Completion markers pass through the terminal parser
+so wrapping and prompt redraws cannot erase the completion signal.
+
+The optimized test host enables testability and disables hardened runtime so
+XCTest can load its locally signed bundle. The timing run removes Xcode's
+runtime-checker injection; `Debug Prestel` keeps the diagnostic tools. Normal
+Release builds retain their project settings. A passing stress run covers these operations; it does not
+establish the cause of an unreproduced freeze.
 
 ## Code Review
 
@@ -83,6 +112,8 @@ download or bundle them. To set one up, install Ollama and run
 - ⌘T new tab (inherits the working directory), ⌘W close tab, ⇧⌘W close window,
   ⇧⌘T reopen closed tab
 - ⌃Tab / ⌃⇧Tab cycle tabs
+- ⌘1–⌘8 select tabs by sidebar order, ⌘9 selects the last tab. Folders and
+  split panes count; archived tabs do not. Search does not change the numbering.
 - ⌘K clear
 - ⌘F find in the terminal (⌘G / ⇧⌘G next / previous, Esc closes)
 - ⌘S toggle the sidebar

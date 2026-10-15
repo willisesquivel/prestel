@@ -47,6 +47,13 @@ struct PrestelCommands: Commands {
                 .keyboardShortcut(.tab, modifiers: [.control]).disabled((window?.model.tabs.count ?? 0) < 2)
             Button("Previous Tab") { app.keyController?.previousTab(nil) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift]).disabled((window?.model.tabs.count ?? 0) < 2)
+            ForEach(1...9, id: \.self) { number in
+                Button(number == 9 ? "Select Last Tab" : "Select Tab \(number)") {
+                    app.keyController?.model.selectTab(number: number)
+                }
+                .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
+                .disabled((window?.model.tabs.count ?? 0) < (number == 9 ? 1 : number))
+            }
             Button("Clear Scrollback") { app.keyController?.clearScrollback(nil) }
                 .keyboardShortcut("k").disabled(window?.model.selectedTab?.kind != .terminal)
             Button("Jump to Previous Prompt") { window?.model.selectedTab?.jumpToPrompt(previous: true) }
@@ -92,6 +99,7 @@ enum CloseConfirmation {
 
 struct NavigationCapsule: View {
     @ObservedObject var model: TerminalModel
+    var compact = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -104,19 +112,22 @@ struct NavigationCapsule: View {
                 }
             }
 
-            ChromeDivider()
+            if !compact {
+                ChromeDivider()
 
-            ChromeButton(symbol: "chevron.left", help: "Back", isEnabled: model.canGoBack) {
-                model.navigate(-1)
-            }
+                ChromeButton(symbol: "chevron.left", help: "Back", isEnabled: model.canGoBack) {
+                    model.navigate(-1)
+                }
 
-            ChromeDivider()
+                ChromeDivider()
 
-            ChromeButton(symbol: "chevron.right", help: "Forward", isEnabled: model.canGoForward) {
-                model.navigate(1)
+                ChromeButton(symbol: "chevron.right", help: "Forward", isEnabled: model.canGoForward) {
+                    model.navigate(1)
+                }
             }
         }
-        .frame(width: ShellMetrics.navigationWidth, height: ShellMetrics.navigationHeight)
+        .frame(width: compact ? ShellMetrics.navigationHeight : ShellMetrics.navigationWidth,
+               height: ShellMetrics.navigationHeight)
         .chromeGlass()
         .accessibilityElement(children: .contain)
     }

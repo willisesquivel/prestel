@@ -469,6 +469,18 @@ final class TerminalModel: ObservableObject {
         select(order[next])
     }
 
+    /// Browser shortcuts use the full open-tab order, even during a search.
+    func selectTab(number: Int) {
+        guard (1...9).contains(number) else { return }
+        let sections = SidebarOutline.sections(
+            tabs: tabs, splits: splits, folders: folders, selectedID: selectedID, query: ""
+        )
+        let order = SidebarOutline.tabOrder(in: sections)
+        let index = number == 9 ? order.count - 1 : number - 1
+        guard order.indices.contains(index) else { return }
+        select(order[index])
+    }
+
     func navigate(_ offset: Int) {
         let target = historyIndex + offset
         guard history.indices.contains(target) else { return }

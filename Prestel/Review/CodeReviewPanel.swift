@@ -149,7 +149,9 @@ struct CodeReviewPanel: View {
     private func fileListScroll(_ snapshot: ReviewSnapshot) -> some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(spacing: ShellMetrics.sidebarInset) {
+                // Lazy height estimates change the scroll document mid-gesture
+                // and cancel AppKit's bounce. Diff painting stays viewport-sized.
+                VStack(spacing: ShellMetrics.sidebarInset) {
                     ForEach(model.visibleFiles(in: snapshot)) { file in
                         ReviewFileCard(
                             model: model,

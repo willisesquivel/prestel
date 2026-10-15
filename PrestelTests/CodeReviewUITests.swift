@@ -491,6 +491,86 @@ struct CodeReviewUITests {
         #expect(pane.stickyGutterFrame.minX == 0)
     }
 
+    @Test func reviewListPreservesTopOverscrollDuringLayout() async throws {
+        let repo = try makeTemporaryGitRepository()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        for index in 0..<24 {
+            let lines = (0..<(8 + index * 73 % 240)).map { "let line\($0) = \($0)" }
+            try (lines.joined(separator: "\n") + "\n").write(
+                to: repo.appendingPathComponent(String(format: "File%02d.swift", index)),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        let session = TerminalSession(descriptor: TabDescriptor(directory: repo.path))
+        let model = CodeReviewModel(expandByDefault: true)
+        model.bind(visible: true, windowID: UUID(), session: session)
+        defer { model.bind(visible: false, windowID: UUID(), session: session) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while (model.loadState != .ready || model.diffs.count != 24), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.loadState == .ready)
+        #expect(model.diffs.count == 24)
+
+        let host = NSHostingView(rootView: CodeReviewPanel(model: model, visible: true))
+        let window = NSWindow(
+            contentRect: NSRect(x: 80, y: 80, width: 420, height: 480),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        host.layoutSubtreeIfNeeded()
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+        }
+        func diffPanes(in view: NSView) -> [ReviewDiffPane] {
+            (view as? ReviewDiffPane).map { [$0] } ?? view.subviews.flatMap { diffPanes(in: $0) }
+        }
+        let list = try #require(scrollViews(in: host).first)
+        #expect((list.documentView?.frame.height ?? 0) > list.bounds.height * 3)
+        var heights = [list.documentView?.frame.height ?? 0]
+        for y: CGFloat in [2_000, 12_000, 24_000, 1_000_000, 0] {
+            var bounds = list.contentView.bounds
+            bounds.origin = NSPoint(x: 0, y: y)
+            list.contentView.scroll(to: list.contentView.constrainBoundsRect(bounds).origin)
+            list.reflectScrolledClipView(list.contentView)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(50))
+            heights.append(list.documentView?.frame.height ?? 0)
+            let document = try #require(list.documentView)
+            let visible = list.documentVisibleRect
+            let paneRects = diffPanes(in: host).map { $0.convert($0.bounds, to: document) }
+            #expect(paneRects.contains { $0.intersects(visible) }, "No diff at scroll offset \(y): \(paneRects)")
+            if y == 1_000_000 {
+                #expect(paneRects.contains { abs($0.maxY - document.bounds.maxY + ShellMetrics.sidebarInset) < 1 }, "The last diff must reach the bottom of the document")
+            }
+        }
+        var proposed = list.contentView.bounds
+        proposed.origin = NSPoint(x: 0, y: -1_000_000)
+        list.contentView.scroll(to: list.contentView.constrainBoundsRect(proposed).origin)
+        list.reflectScrolledClipView(list.contentView)
+        try await Task.sleep(for: .milliseconds(50))
+        let top = list.contentView.bounds.minY
+        var offsets: [CGFloat] = []
+        for step in 1...12 {
+            // AppKit's elastic scrolling moves the clip beyond its constrained
+            // top. The next SwiftUI layout must preserve that native offset.
+            list.contentView.scroll(to: NSPoint(x: 0, y: top - CGFloat(step) * 8))
+            list.reflectScrolledClipView(list.contentView)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(16))
+            offsets.append(list.contentView.bounds.minY - top)
+        }
+        let expected = (1...12).map { -CGFloat($0) * 8 }
+        print("REVIEW_TOP_BOUNCE heights=\(heights) offsets=\(offsets)")
+        #expect(heights.max()! - heights.min()! < 1, "Scrolling changed the document height: \(heights)")
+        #expect(zip(offsets, expected).allSatisfy { abs($0 - $1) < 1 }, "Layout cancelled the elastic offsets: \(offsets)")
+    }
+
     @Test func diffSliceFollowsListOverscrollOrigin() {
         let rows = (0..<80).map { index in
             ReviewDocumentRow.code(
