@@ -307,13 +307,14 @@ final class PrestelView: SwiftTerm.TerminalView {
     /// any `animator()`-driven geometry on this view instant.
     override func animation(forKey key: NSAnimatablePropertyKey) -> Any? { nil }
 
-    /// True when a TUI has enabled application cursor keys (DECCKM) or the
-    /// Kitty keyboard protocol. Shell-style Option remaps (ESC-b) must not
-    /// run in that state — the app needs one modified-arrow sequence.
+    /// True when the active screen wants modified arrow keys: application
+    /// cursor keys (DECCKM), or Kitty flags on that screen. Flags left on the
+    /// other screen do not count. Shell-style Option remaps (ESC-b) must not
+    /// run in that state. The app needs one modified-arrow sequence.
     var usesApplicationKeyboard: Bool {
         let snapshot = keyboardSnapshot()
         if snapshot.applicationCursor { return true }
-        return !snapshot.normalFlags.isEmpty || !snapshot.altFlags.isEmpty
+        return !activeKeyboardFlags(snapshot).isEmpty
     }
 
     /// True when the screen the user is looking at asked for Kitty key
@@ -322,8 +323,12 @@ final class PrestelView: SwiftTerm.TerminalView {
     /// protocol and never popped it.
     var usesKittyKeyboard: Bool {
         let snapshot = keyboardSnapshot()
-        let flags = snapshot.alternateScreen ? snapshot.altFlags : snapshot.normalFlags
+        let flags = activeKeyboardFlags(snapshot)
         return flags.contains(.disambiguate) || flags.contains(.reportAllKeys)
+    }
+
+    private func activeKeyboardFlags(_ snapshot: KeyboardSnapshot) -> KittyKeyboardFlags {
+        snapshot.alternateScreen ? snapshot.altFlags : snapshot.normalFlags
     }
 
     /// True when a full-screen app is up but has not asked for Kitty keys.

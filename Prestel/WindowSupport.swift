@@ -291,10 +291,13 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
 
     /// The terminal the user is typing in. A split pane can be first responder
     /// while `selectedTab` still points at the other one, and a Metal subview
-    /// can sit in front of the terminal in the responder chain.
+    /// can sit in front of the terminal in the responder chain. A text field
+    /// stops the walk: find, sidebar search, and the commit message sit inside
+    /// or beside the terminal, and Shift+Return there is not a shell newline.
     private func focusedTerminal(in window: NSWindow) -> PrestelView? {
         var responder = window.firstResponder
         while let current = responder {
+            if current is NSText { return nil }
             if let surface = current as? PrestelView, surface.window === window {
                 return surface
             }

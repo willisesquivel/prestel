@@ -1893,8 +1893,12 @@ struct PrestelTests {
         view.feed(byteArray: Array("\u{1b}[?1049h".utf8)[...])
         #expect(view.needsLegacyNewline)
         #expect(!view.usesKittyKeyboard)
+        // Option+Left on this screen must stay a shell chord. Kitty flags on
+        // the screen we left do not count.
+        #expect(!view.usesApplicationKeyboard)
         view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
         #expect(view.usesKittyKeyboard)
+        #expect(view.usesApplicationKeyboard)
         view.feed(byteArray: Array("\u{1b}[?1049l".utf8)[...])
         #expect(view.usesKittyKeyboard)
         #expect(!view.needsLegacyNewline)
