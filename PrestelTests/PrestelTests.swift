@@ -1831,6 +1831,7 @@ struct PrestelTests {
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 124, flags: .command, applicationKeyboard: false) == [0x05])
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: false) == nil)
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: false) == nil)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: false) == nil)
     }
 
     @Test func optionArrowInterceptSendsOneModifiedCSISequenceInATui() {
@@ -1841,21 +1842,66 @@ struct PrestelTests {
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 123, flags: .control, applicationKeyboard: true) == Array("\u{1b}[1;5D".utf8))
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 126, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3A".utf8))
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 125, flags: .option, applicationKeyboard: true) == Array("\u{1b}[1;3B".utf8))
-        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: true) == Array("\u{1b}[13;2u".utf8))
-        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: true) == Array("\u{1b}[13;3u".utf8))
-        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: true) == Array("\u{1b}[32;2u".utf8))
+        // Cursor-key mode is not the Kitty keyboard protocol. CSI-u here is
+        // ignored, so the newline chord has to wait for an explicit kitty flag.
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: true) == nil)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: true) == nil)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: true) == nil)
         #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: [], applicationKeyboard: true) == nil)
+    }
+
+    @Test func modifiedEnterInsertsANewline() {
+        let altReturn: [UInt8] = [0x1b, 0x0d]
+        // Full-screen app, no Kitty protocol: ESC CR is Alt+Return.
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: true, legacyNewline: true) == altReturn)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: false, legacyNewline: true) == altReturn)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 76, flags: [.shift, .option], applicationKeyboard: false, legacyNewline: true) == altReturn)
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: [.shift, .command], applicationKeyboard: false, legacyNewline: true) == nil)
+        // Kitty protocol on the active screen.
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .shift, applicationKeyboard: true, kittyKeyboard: true, legacyNewline: true) == Array("\u{1b}[13;2u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .option, applicationKeyboard: true, kittyKeyboard: true) == Array("\u{1b}[13;3u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 76, flags: [.shift, .option], applicationKeyboard: false, kittyKeyboard: true) == Array("\u{1b}[13;4u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 36, flags: .control, applicationKeyboard: true, kittyKeyboard: true) == Array("\u{1b}[13;5u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: .shift, applicationKeyboard: true, kittyKeyboard: true) == Array("\u{1b}[32;2u".utf8))
+        #expect(TerminalKeyIntercept.bytesToSend(keyCode: 49, flags: [], applicationKeyboard: true, kittyKeyboard: true) == nil)
     }
 
     @Test func applicationCursorAndKittyProtocolEnableTuiKeyMode() {
         let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
         #expect(!view.usesApplicationKeyboard)
+        #expect(!view.usesKittyKeyboard)
+        #expect(!view.needsLegacyNewline)
         view.feed(byteArray: Array("\u{1b}[?1h".utf8)[...])
         #expect(view.usesApplicationKeyboard)
+        #expect(!view.usesKittyKeyboard)
+        #expect(view.needsLegacyNewline)
         view.feed(byteArray: Array("\u{1b}[?1l".utf8)[...])
         #expect(!view.usesApplicationKeyboard)
+        #expect(!view.needsLegacyNewline)
         view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
         #expect(view.usesApplicationKeyboard)
+        #expect(view.usesKittyKeyboard)
+        view.feed(byteArray: Array("\u{1b}[<u".utf8)[...])
+        #expect(!view.usesKittyKeyboard)
+    }
+
+    @Test func newlineChordsFollowTheActiveScreen() {
+        let view = PrestelView(frame: NSRect(x: 0, y: 0, width: 640, height: 420), options: TerminalOptions(scrollback: 100))
+        view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
+        #expect(view.usesKittyKeyboard)
+        // The other screen does not inherit the protocol.
+        view.feed(byteArray: Array("\u{1b}[?1049h".utf8)[...])
+        #expect(view.needsLegacyNewline)
+        #expect(!view.usesKittyKeyboard)
+        view.feed(byteArray: Array("\u{1b}[>1u".utf8)[...])
+        #expect(view.usesKittyKeyboard)
+        view.feed(byteArray: Array("\u{1b}[?1049l".utf8)[...])
+        #expect(view.usesKittyKeyboard)
+        #expect(!view.needsLegacyNewline)
+        view.feed(byteArray: Array("\u{1b}=".utf8)[...])
+        #expect(view.needsLegacyNewline)
+        view.feed(byteArray: Array("\u{1b}>".utf8)[...])
+        #expect(!view.needsLegacyNewline)
     }
 
     @Test func renameChangesTheSidebarNameOnly() {

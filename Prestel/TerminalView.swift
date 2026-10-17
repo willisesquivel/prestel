@@ -311,44 +311,96 @@ final class PrestelView: SwiftTerm.TerminalView {
     /// Kitty keyboard protocol. Shell-style Option remaps (ESC-b) must not
     /// run in that state — the app needs one modified-arrow sequence.
     var usesApplicationKeyboard: Bool {
+        let snapshot = keyboardSnapshot()
+        if snapshot.applicationCursor { return true }
+        return !snapshot.normalFlags.isEmpty || !snapshot.altFlags.isEmpty
+    }
+
+    /// True when the screen the user is looking at asked for Kitty key
+    /// encoding. Flags left on the other screen do not count: a shell prompt
+    /// must not receive `CSI 13;2u` because a full-screen app pushed the
+    /// protocol and never popped it.
+    var usesKittyKeyboard: Bool {
+        let snapshot = keyboardSnapshot()
+        let flags = snapshot.alternateScreen ? snapshot.altFlags : snapshot.normalFlags
+        return flags.contains(.disambiguate) || flags.contains(.reportAllKeys)
+    }
+
+    /// True when a full-screen app is up but has not asked for Kitty keys.
+    /// Shift+Return and Option+Return then go out as ESC CR, which Grok and
+    /// the other composer TUIs treat as Alt+Return (insert a newline).
+    var needsLegacyNewline: Bool {
+        let snapshot = keyboardSnapshot()
+        return snapshot.alternateScreen || snapshot.applicationCursor || snapshot.applicationKeypad
+    }
+
+    private struct KeyboardSnapshot {
+        var applicationCursor = false
+        var applicationKeypad = false
+        var alternateScreen = false
+        var normalFlags: KittyKeyboardFlags = []
+        var altFlags: KittyKeyboardFlags = []
+    }
+
+    /// SwiftTerm keeps these on the terminal object, which is not visible
+    /// outside that module. `keyDown` is not `open`, so this is the read path.
+    private func keyboardSnapshot() -> KeyboardSnapshot {
+        guard let terminal = reflectedTerminal() else { return KeyboardSnapshot() }
+        var snapshot = KeyboardSnapshot()
+        var currentBuffer: AnyObject?
+        var alternateBuffer: AnyObject?
+        var mirror: Mirror? = Mirror(reflecting: terminal)
+        while let current = mirror {
+            for property in current.children {
+                switch property.label {
+                case "applicationCursor":
+                    if let flag = property.value as? Bool { snapshot.applicationCursor = flag }
+                case "applicationKeypad":
+                    if let flag = property.value as? Bool { snapshot.applicationKeypad = flag }
+                case "_buffer":
+                    if currentBuffer == nil { currentBuffer = property.value as AnyObject }
+                case "altBuffer":
+                    if alternateBuffer == nil { alternateBuffer = property.value as AnyObject }
+                case "keyboardModeNormal":
+                    if snapshot.normalFlags.isEmpty { snapshot.normalFlags = kittyFlags(property.value) }
+                case "keyboardModeAlt":
+                    if snapshot.altFlags.isEmpty { snapshot.altFlags = kittyFlags(property.value) }
+                default:
+                    break
+                }
+            }
+            mirror = current.superclassMirror
+        }
+        if let currentBuffer, let alternateBuffer {
+            snapshot.alternateScreen = currentBuffer === alternateBuffer
+        }
+        return snapshot
+    }
+
+    private func reflectedTerminal() -> Any? {
         var mirror: Mirror? = Mirror(reflecting: self)
-        while let m = mirror {
-            if let child = m.children.first(where: { $0.label == "terminal" }) {
+        while let current = mirror {
+            if let child = current.children.first(where: { $0.label == "terminal" }) {
                 var value: Any = child.value
                 var inner = Mirror(reflecting: value)
                 while inner.displayStyle == .optional {
-                    guard let first = inner.children.first else { return false }
+                    guard let first = inner.children.first else { return nil }
                     value = first.value
                     inner = Mirror(reflecting: value)
                 }
-                var terminalMirror: Mirror? = Mirror(reflecting: value)
-                while let tm = terminalMirror {
-                    for property in tm.children {
-                        if property.label == "applicationCursor",
-                           let flag = property.value as? Bool, flag {
-                            return true
-                        }
-                        if property.label == "keyboardModeAlt"
-                            || property.label == "keyboardModeNormal",
-                           kittyFlagsNonEmpty(property.value) {
-                            return true
-                        }
-                    }
-                    terminalMirror = tm.superclassMirror
-                }
-                return false
+                return value
             }
-            mirror = m.superclassMirror
+            mirror = current.superclassMirror
         }
-        return false
+        return nil
     }
 
-    private func kittyFlagsNonEmpty(_ value: Any) -> Bool {
+    private func kittyFlags(_ value: Any) -> KittyKeyboardFlags {
         for child in Mirror(reflecting: value).children where child.label == "flags" {
-            if let flags = child.value as? KittyKeyboardFlags { return !flags.isEmpty }
-            if let raw = child.value as? Int { return raw != 0 }
+            if let flags = child.value as? KittyKeyboardFlags { return flags }
+            if let raw = child.value as? Int { return KittyKeyboardFlags(rawValue: raw) }
         }
-        return false
+        return []
     }
 
     func applyPreferences() {

@@ -12,7 +12,9 @@ enum TerminalKeyIntercept {
     static func bytesToSend(
         keyCode: UInt16,
         flags: NSEvent.ModifierFlags,
-        applicationKeyboard: Bool
+        applicationKeyboard: Bool,
+        kittyKeyboard: Bool = false,
+        legacyNewline: Bool = false
     ) -> [UInt8]? {
         let hasControl = flags.contains(.control)
         let hasOption = flags.contains(.option)
@@ -51,15 +53,24 @@ enum TerminalKeyIntercept {
             return keyCode == 117 ? [0x1b, 0x64] : [0x1b, 0x7f]
         }
 
-        // TUIs need the shift/alt modifier on Enter and Space. Without Kitty
-        // encoding, AppKit delivers a plain CR or space and newline chords die.
-        if applicationKeyboard, !hasCommand {
-            if isReturn, hasShift, !hasOption, !hasControl {
-                return Array("\u{1b}[13;2u".utf8)
+        // AppKit delivers Shift+Return and Option+Return as a plain Return.
+        // Option+Return is `insertNewlineIgnoringFieldEditor:`, which SwiftTerm
+        // drops, so the key does nothing. Grok reads Kitty `CSI 13;2u` /
+        // `CSI 13;3u` after it enables that protocol, and ESC CR (Alt+Return)
+        // otherwise. DECCKM alone is not that protocol: sending CSI-u then
+        // shows up as junk or gets ignored, and the newline never lands.
+        if isReturn, !hasCommand, !hasControl, hasShift || hasOption {
+            if kittyKeyboard {
+                var modifier = 1
+                if hasShift { modifier += 1 }
+                if hasOption { modifier += 2 }
+                return Array("\u{1b}[13;\(modifier)u".utf8)
             }
-            if isReturn, hasOption, !hasShift, !hasControl {
-                return Array("\u{1b}[13;3u".utf8)
+            if legacyNewline {
+                return [0x1b, 0x0d]
             }
+        }
+        if kittyKeyboard, !hasCommand {
             if isReturn, hasControl, !hasShift, !hasOption {
                 return Array("\u{1b}[13;5u".utf8)
             }
@@ -235,8 +246,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             TerminalFontSize.perform(shortcut)
             return nil
         }
-        guard let surface = model.selectedTab?.surface,
-              window.firstResponder === surface else { return event }
+        guard let surface = focusedTerminal(in: window) else { return event }
         let flags = event.modifierFlags
         let hasControl = flags.contains(.control)
         let hasOption = flags.contains(.option)
@@ -269,12 +279,28 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         if let bytes = TerminalKeyIntercept.bytesToSend(
             keyCode: code,
             flags: flags,
-            applicationKeyboard: surface.usesApplicationKeyboard
+            applicationKeyboard: surface.usesApplicationKeyboard,
+            kittyKeyboard: surface.usesKittyKeyboard,
+            legacyNewline: surface.needsLegacyNewline
         ) {
             surface.send(bytes)
             return nil
         }
         return event
+    }
+
+    /// The terminal the user is typing in. A split pane can be first responder
+    /// while `selectedTab` still points at the other one, and a Metal subview
+    /// can sit in front of the terminal in the responder chain.
+    private func focusedTerminal(in window: NSWindow) -> PrestelView? {
+        var responder = window.firstResponder
+        while let current = responder {
+            if let surface = current as? PrestelView, surface.window === window {
+                return surface
+            }
+            responder = current.nextResponder
+        }
+        return nil
     }
     @objc func newTab(_ sender: Any?) { model.newTab() }
     @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
