@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 
 extension NSPasteboard.PasteboardType {
@@ -128,6 +129,10 @@ final class TabDragCoordinator: ObservableObject {
     @Published private(set) var splitPreview: TabSplitPreview?
     /// The one row under the pointer. Rows read this instead of keeping their own hover flag.
     @Published private(set) var hoveredRowKey: UUID?
+    /// Set only while the pointer is inside that row's close button.
+    @Published private(set) var closeHoverKey: UUID?
+    /// Set while the close button is pressed and the pointer is still inside it.
+    @Published private(set) var closePressKey: UUID?
 
     private var payload: TabDragPayload?
     private var destination: TabDragDestination?
@@ -180,13 +185,29 @@ final class TabDragCoordinator: ObservableObject {
     }
 
     func setHoveredRow(_ key: UUID?) {
-        guard hoveredRowKey != key else { return }
-        hoveredRowKey = key
+        if hoveredRowKey != key {
+            hoveredRowKey = key
+        }
+        if key == nil {
+            setCloseHover(nil)
+            setClosePress(nil)
+        }
+        refreshCloseChrome()
+    }
+
+    func setCloseHover(_ key: UUID?) {
+        guard closeHoverKey != key else { return }
+        closeHoverKey = key
+    }
+
+    func setClosePress(_ key: UUID?) {
+        guard closePressKey != key else { return }
+        closePressKey = key
     }
 
     /// One row owns the hover. Overlapping or stale tracking rects cannot light up a second row.
     func syncHoveredRow(at windowPoint: NSPoint, in window: NSWindow) {
-        var best: (key: UUID, distance: CGFloat)?
+        var best: (key: UUID, distance: CGFloat, view: TabRowHitNSView, local: NSPoint)?
         for row in rows.values {
             guard let view = row.view, view.window === window,
                   view.bounds.width > 1, view.bounds.height > 1 else { continue }
@@ -195,10 +216,23 @@ final class TabDragCoordinator: ObservableObject {
             guard let key = view.tabID ?? view.listRowID else { continue }
             let distance = abs(local.y - view.bounds.midY)
             if best == nil || distance < best!.distance {
-                best = (key, distance)
+                best = (key, distance, view, local)
             }
         }
         setHoveredRow(best?.key)
+        if let best, best.view.showsTabCloseButton,
+           TabCloseMetrics.frame(in: best.view.bounds).contains(best.local) {
+            setCloseHover(best.key)
+        } else {
+            setCloseHover(nil)
+        }
+        refreshCloseChrome()
+    }
+
+    private func refreshCloseChrome() {
+        for row in rows.values {
+            row.view?.updateCloseChrome()
+        }
     }
 
     func syncHoveredRowToCursor() {
@@ -1004,6 +1038,84 @@ struct TabInsertionPin: View {
     }
 }
 
+/// Hover-only tab close control. The rect is painted over the row, so the title stays put.
+enum TabCloseMetrics {
+    static let side: CGFloat = 16
+    static let trailingInset: CGFloat = 4
+    /// 16×16 in a 28pt row keeps the same proportion as a 24×24 control with an 8pt radius.
+    static let cornerRadius: CGFloat = 5
+    /// Matches the sidebar row hover fill: ease-in-out over 0.14s.
+    static let fadeDuration: TimeInterval = 0.14
+
+    static func frame(in bounds: CGRect) -> CGRect {
+        CGRect(
+            x: bounds.maxX - trailingInset - side,
+            y: bounds.midY - side / 2,
+            width: side,
+            height: side
+        )
+    }
+}
+
+/// Painted inside the tab hit view. `hitTest` returns nil so the row keeps the click.
+final class TabCloseChromeView: NSView {
+    var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
+    var isPressed = false { didSet { if isPressed != oldValue { needsDisplay = true } } }
+    var onPress: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        alphaValue = 0
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Close Tab")
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func accessibilityPerformPress() -> Bool {
+        onPress?()
+        return true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if isPressed || isHot {
+            NSColor.labelColor.withAlphaComponent(isPressed ? 0.20 : 0.10).setFill()
+            NSBezierPath(
+                roundedRect: bounds,
+                xRadius: TabCloseMetrics.cornerRadius,
+                yRadius: TabCloseMetrics.cornerRadius
+            ).fill()
+        }
+        let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+        guard let image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return }
+        let side: CGFloat = 9
+        image.draw(
+            in: NSRect(
+                x: (bounds.width - side) / 2,
+                y: (bounds.height - side) / 2,
+                width: side,
+                height: side
+            ),
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: nil
+        )
+    }
+}
+
 // MARK: - Row hit target / drag source / middle-click
 
 struct TabRowHitRepresentable: NSViewRepresentable {
@@ -1091,8 +1203,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     private var mouseDownEvent: NSEvent?
     private var didStartDrag = false
     private var suppressMouseUpSelection = false
+    private var closeArmed = false
     private var hovering = false
     private var registered = false
+    private var showsCloseButton = false
+    private var closeFadeToken = 0
+    private let closeChrome = TabCloseChromeView(frame: .zero)
     private var hoverSync: DispatchWorkItem?
     private var activePayload: TabDragPayload?
 
@@ -1104,6 +1220,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         setAccessibilityElement(false)
         setAccessibilityHidden(true)
         postsFrameChangedNotifications = true
+        installCloseChrome()
     }
 
     required init?(coder: NSCoder) {
@@ -1111,7 +1228,53 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         setAccessibilityElement(false)
         setAccessibilityHidden(true)
         postsFrameChangedNotifications = true
+        installCloseChrome()
     }
+
+    private func installCloseChrome() {
+        closeChrome.alphaValue = 0
+        closeChrome.isHidden = true
+        closeChrome.onPress = { [weak self] in self?.onClose?() }
+        addSubview(closeChrome)
+    }
+
+    func updateCloseChrome() {
+        positionCloseChrome()
+        let show = showsTabCloseButton && TabDragCoordinator.shared.hoveredRowKey == tabID
+        closeChrome.isHot = TabDragCoordinator.shared.closeHoverKey == tabID
+        closeChrome.isPressed = TabDragCoordinator.shared.closePressKey == tabID
+        fadeCloseButton(toVisible: show)
+    }
+
+    /// Fades with the row hover fill. The title is not in this view, so opacity cannot shift it.
+    private func fadeCloseButton(toVisible show: Bool) {
+        guard show != showsCloseButton else { return }
+        showsCloseButton = show
+        closeFadeToken += 1
+        let token = closeFadeToken
+        let target: CGFloat = show ? 1 : 0
+        closeChrome.isHidden = false
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = TabCloseMetrics.fadeDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.closeChrome.animator().alphaValue = target
+        } completionHandler: { [weak self] in
+            guard let self, self.closeFadeToken == token, !self.showsCloseButton else { return }
+            self.closeChrome.alphaValue = 0
+            self.closeChrome.isHidden = true
+        }
+    }
+
+    private func positionCloseChrome() {
+        closeChrome.frame = TabCloseMetrics.frame(in: bounds)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        positionCloseChrome()
+    }
+
+    var isShowingCloseButton: Bool { showsCloseButton }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -1165,12 +1328,23 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if let window = event.window {
+            TabDragCoordinator.shared.syncHoveredRow(at: event.locationInWindow, in: window)
+        }
         mouseDownEvent = event
         didStartDrag = false
         suppressMouseUpSelection = false
+        closeArmed = showsTabCloseButton
+            && TabDragCoordinator.shared.hoveredRowKey == tabID
+            && closeButtonContains(event)
+        TabDragCoordinator.shared.setClosePress(closeArmed ? tabID : nil)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if closeArmed {
+            TabDragCoordinator.shared.setClosePress(closeButtonContains(event) ? tabID : nil)
+            return
+        }
         guard allowsDrag, !didStartDrag, let mouseDownEvent else { return }
         let start = mouseDownEvent.locationInWindow
         let current = event.locationInWindow
@@ -1179,10 +1353,18 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let armedClose = closeArmed
+        let shouldClose = armedClose && closeButtonContains(event)
+        closeArmed = false
+        TabDragCoordinator.shared.setClosePress(nil)
         defer {
             mouseDownEvent = nil
             suppressMouseUpSelection = false
             activePayload = nil
+        }
+        if armedClose {
+            if shouldClose { onClose?() }
+            return
         }
         if suppressMouseUpSelection { return }
         if event.clickCount >= 2, clickIsOnTitle(event) {
@@ -1282,8 +1464,15 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         menu.addItem(renameItem)
     }
 
+    var showsTabCloseButton: Bool { tabID != nil && !isFolder }
+
+    private func closeButtonContains(_ event: NSEvent) -> Bool {
+        TabCloseMetrics.frame(in: bounds).contains(convert(event.locationInWindow, from: nil))
+    }
+
     private func clickIsOnTitle(_ event: NSEvent) -> Bool {
-        convert(event.locationInWindow, from: nil).x >= 36
+        let local = convert(event.locationInWindow, from: nil)
+        return local.x >= 36 && !TabCloseMetrics.frame(in: bounds).contains(local)
     }
 
     @objc private func closeFromMenu(_ sender: Any?) {

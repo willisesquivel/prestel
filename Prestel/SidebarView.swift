@@ -472,6 +472,8 @@ private struct SidebarRow: View {
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(backgroundColor)
+                    .animation(.easeInOut(duration: 0.14), value: isHovered)
+                    .animation(.easeInOut(duration: 0.16), value: isSelected)
             }
             .overlay {
                 if !isRenaming, acceptsPointer {
@@ -496,7 +498,6 @@ private struct SidebarRow: View {
                     )
                 }
             }
-            .animation(.easeInOut(duration: 0.14), value: hover.hoveredRowKey)
             .animation(.easeInOut(duration: 0.16), value: isSelected)
             .frame(width: width)
             .contentShape(
@@ -590,11 +591,11 @@ private struct CombinedSidebarRow: View {
                 isHovered: hoveringLeading
             )
             ZStack {
-                if showsDivider {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.14))
-                        .padding(.vertical, 6)
-                }
+                Rectangle()
+                    .fill(Color.primary.opacity(0.14))
+                    .padding(.vertical, 6)
+                    .opacity(showsDivider ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.14), value: showsDivider)
             }
             .frame(width: ShellMetrics.sidebarRowSpacing)
             segment(
@@ -604,7 +605,6 @@ private struct CombinedSidebarRow: View {
             )
         }
         .frame(height: ShellMetrics.sidebarRowHeight)
-        .animation(.easeInOut(duration: 0.14), value: hover.hoveredRowKey)
         .animation(.easeInOut(duration: 0.16), value: selectedTabIDs)
         .frame(width: width)
         .help("\(leading.displayTitle) / \(trailing.displayTitle)")
@@ -679,6 +679,8 @@ private struct CombinedSidebarRow: View {
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(segmentBackground(isSelected: isSelected, isHovered: isHovered))
+                .animation(.easeInOut(duration: 0.14), value: isHovered)
+                .animation(.easeInOut(duration: 0.16), value: isSelected)
         }
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
@@ -769,9 +771,18 @@ private struct ArchivedTabRow: View {
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(backgroundColor)
+                    .animation(.easeInOut(duration: 0.14), value: isHovered)
+                    .animation(.easeInOut(duration: 0.16), value: isSelected)
+            }
+            .overlay(alignment: .trailing) {
+                SidebarTabCloseHitButton(action: onClose)
+                    .padding(.trailing, TabCloseMetrics.trailingInset)
+                    .opacity(isHovered && !isRenaming ? 1 : 0)
+                    .animation(.easeInOut(duration: TabCloseMetrics.fadeDuration), value: isHovered)
+                    .allowsHitTesting(isHovered && !isRenaming)
+                    .accessibilityHidden(!isHovered || isRenaming)
             }
             .onHover { isHovered = $0 }
-            .animation(.easeInOut(duration: 0.14), value: isHovered)
             .animation(.easeInOut(duration: 0.16), value: isSelected)
             .frame(width: width)
             .help("\(session.displayTitle) — \(session.directory)")
@@ -1246,6 +1257,54 @@ final class SidebarInlineNameView: NSTextView {
 
     isolated deinit {
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
+    }
+}
+
+// MARK: - Hover close button
+
+/// Drawn over the row. It is not in the title stack, so hover does not move the label.
+private struct TabCloseButtonChrome: View {
+    var isHot: Bool
+    var isPressed: Bool
+
+    var body: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.primary)
+            .frame(width: TabCloseMetrics.side, height: TabCloseMetrics.side)
+            .background {
+                RoundedRectangle(cornerRadius: TabCloseMetrics.cornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(isPressed ? 0.20 : (isHot ? 0.10 : 0)))
+            }
+    }
+}
+
+/// Archived rows have no row hit view, so the button takes the click itself.
+private struct SidebarTabCloseHitButton: View {
+    let action: () -> Void
+    @State private var isHot = false
+
+    var body: some View {
+        Button(action: action) {
+            Color.clear
+                .frame(width: TabCloseMetrics.side, height: TabCloseMetrics.side)
+        }
+        .buttonStyle(SidebarTabCloseStyle(isHot: isHot))
+        .onHover { isHot = $0 }
+        .focusable(false)
+        .help("Close Tab")
+        .accessibilityLabel("Close Tab")
+    }
+}
+
+private struct SidebarTabCloseStyle: ButtonStyle {
+    var isHot: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        TabCloseButtonChrome(isHot: isHot, isPressed: configuration.isPressed)
+            .contentShape(
+                RoundedRectangle(cornerRadius: TabCloseMetrics.cornerRadius, style: .continuous)
+            )
     }
 }
 

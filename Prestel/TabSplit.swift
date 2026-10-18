@@ -613,6 +613,20 @@ enum TabDragDestination: Equatable {
     case windowNoOp(UUID)
 }
 
+/// Which split pane owns the Code Review control.
+enum SplitChromePlacement {
+    /// The topmost pane. When more than one pane shares that top edge, the rightmost of them.
+    static func showsReviewToggle(frame: CGRect, among frames: [CGRect]) -> Bool {
+        let candidates = frames.filter { $0.width > 0 && $0.height > 0 }
+        guard let top = candidates.map(\.minY).min() else { return false }
+        let topmost = candidates.filter { $0.minY <= top + 0.5 }
+        guard let right = topmost.map(\.maxX).max() else { return false }
+        return frame.width > 0 && frame.height > 0
+            && frame.minY <= top + 0.5
+            && frame.maxX >= right - 0.5
+    }
+}
+
 struct SplitCardLayout: Equatable {
     var primary: CGRect
     var secondary: CGRect

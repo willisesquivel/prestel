@@ -1118,6 +1118,123 @@ struct PrestelTests {
         #expect(!TabInsertionGeometry.isNoOpInsertion(movingID: moving, visibleInsertion: 3, visibleIDs: visible))
     }
 
+    @Test func codeReviewToggleStaysOnTheTopRightSplitPane() {
+        let size = CGSize(width: 800, height: 600)
+        for axis in [SplitAxis.horizontal, SplitAxis.vertical] {
+            let layout = SplitCardLayout.cards(in: size, axis: axis, fraction: 0.35, gap: 8)
+            let frames = [layout.primary, layout.secondary]
+            let primary = SplitChromePlacement.showsReviewToggle(frame: layout.primary, among: frames)
+            let secondary = SplitChromePlacement.showsReviewToggle(frame: layout.secondary, among: frames)
+            switch axis {
+            case .horizontal:
+                #expect(!primary)
+                #expect(secondary)
+            case .vertical:
+                #expect(primary)
+                #expect(!secondary)
+            }
+        }
+    }
+
+    @Test func tabCloseButtonSitsInsideTheRow() {
+        let row = CGRect(x: 0, y: 0, width: 160, height: ShellMetrics.sidebarRowHeight)
+        let button = TabCloseMetrics.frame(in: row)
+        #expect(row.contains(button))
+        #expect(button.width == TabCloseMetrics.side)
+        #expect(button.height == TabCloseMetrics.side)
+        #expect(button.maxX == row.maxX - TabCloseMetrics.trailingInset)
+        #expect(button.midY == row.midY)
+        let narrow = CGRect(x: 0, y: 0, width: 64, height: ShellMetrics.sidebarRowHeight)
+        #expect(narrow.contains(TabCloseMetrics.frame(in: narrow)))
+    }
+
+    @Test func closeButtonStaysHiddenUntilTheRowIsHovered() async throws {
+        let model = TerminalModel()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 172, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSHostingView(rootView: SidebarView(model: model, width: 172, closeTab: { _ in }).ignoresSafeArea())
+        window.contentView = host
+        host.frame = NSRect(x: 0, y: 0, width: 172, height: 400)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded()
+        defer {
+            host.removeFromSuperview()
+            TabDragCoordinator.shared.setHoveredRow(nil)
+        }
+
+        func hitRows(in view: NSView) -> [TabRowHitNSView] {
+            if let row = view as? TabRowHitNSView { return [row] }
+            return view.subviews.flatMap { hitRows(in: $0) }
+        }
+        let row = try #require(hitRows(in: host).first { $0.tabID != nil })
+        #expect(!row.isShowingCloseButton)
+        TabDragCoordinator.shared.setHoveredRow(row.tabID)
+        #expect(row.isShowingCloseButton)
+        TabDragCoordinator.shared.setHoveredRow(nil)
+        #expect(!row.isShowingCloseButton)
+    }
+
+    @Test func closeButtonClickClosesAndDoesNotSelect() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let hit = TabRowHitNSView(frame: NSRect(x: 0, y: 0, width: 160, height: ShellMetrics.sidebarRowHeight))
+        hit.tabID = UUID()
+        window.contentView?.addSubview(hit)
+        defer {
+            hit.removeFromSuperview()
+            TabDragCoordinator.shared.setHoveredRow(nil)
+        }
+        var closed = 0
+        var selected = 0
+        hit.onClose = { closed += 1 }
+        hit.onSelect = { selected += 1 }
+
+        func click(_ local: CGPoint) {
+            let point = hit.convert(local, to: nil)
+            let down = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+            )!
+            let up = NSEvent.mouseEvent(
+                with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+            )!
+            hit.mouseDown(with: down)
+            hit.mouseUp(with: up)
+        }
+
+        let closeFrame = TabCloseMetrics.frame(in: hit.bounds)
+        click(CGPoint(x: closeFrame.midX, y: closeFrame.midY))
+        #expect(closed == 1)
+        #expect(selected == 0)
+
+        click(CGPoint(x: 50, y: hit.bounds.midY))
+        #expect(closed == 1)
+        #expect(selected == 1)
+
+        let downPoint = hit.convert(CGPoint(x: closeFrame.midX, y: closeFrame.midY), to: nil)
+        let upPoint = hit.convert(CGPoint(x: 50, y: hit.bounds.midY), to: nil)
+        hit.mouseDown(with: NSEvent.mouseEvent(
+            with: .leftMouseDown, location: downPoint, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1
+        )!)
+        hit.mouseUp(with: NSEvent.mouseEvent(
+            with: .leftMouseUp, location: upPoint, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1
+        )!)
+        #expect(closed == 1)
+        #expect(selected == 1)
+    }
+
     @Test func splitPairsASecondTabAndCapsAtTwoPanes() {
         let model = TerminalModel()
         let current = model.selectedID!

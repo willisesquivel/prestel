@@ -400,8 +400,21 @@ private struct TerminalDetailSurface: View {
                 gap: ShellMetrics.splitCardGap
             )
             ZStack(alignment: .topLeading) {
-                paneCard(session: leading, isFocused: model.selectedID == leading.id, frame: layout.primary, split: split, isPrimary: true)
-                paneCard(session: trailing, isFocused: model.selectedID == trailing.id, frame: layout.secondary, split: split, isPrimary: false)
+                let panes = [layout.primary, layout.secondary]
+                paneCard(
+                    session: leading,
+                    isFocused: model.selectedID == leading.id,
+                    frame: layout.primary,
+                    isPrimary: true,
+                    showsReviewToggle: SplitChromePlacement.showsReviewToggle(frame: layout.primary, among: panes)
+                )
+                paneCard(
+                    session: trailing,
+                    isFocused: model.selectedID == trailing.id,
+                    frame: layout.secondary,
+                    isPrimary: false,
+                    showsReviewToggle: SplitChromePlacement.showsReviewToggle(frame: layout.secondary, among: panes)
+                )
 
                 SplitResizeHandle(
                     axis: split.axis,
@@ -442,14 +455,20 @@ private struct TerminalDetailSurface: View {
         }
     }
 
-    private func paneCard(session: TerminalSession, isFocused: Bool, frame: CGRect, split: SplitState, isPrimary: Bool) -> some View {
+    private func paneCard(
+        session: TerminalSession,
+        isFocused: Bool,
+        frame: CGRect,
+        isPrimary: Bool,
+        showsReviewToggle: Bool
+    ) -> some View {
         DetailCard(isFocused: isFocused) {
             VStack(spacing: 0) {
                 TerminalToolbar(
                     model: model,
                     session: session,
                     showsNavigation: isPrimary,
-                    showsReviewToggle: !isPrimary
+                    showsReviewToggle: showsReviewToggle
                 )
                 TerminalPane(session: session, isFocused: isFocused) {
                     model.select(session.id)
