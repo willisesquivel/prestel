@@ -100,6 +100,7 @@ def main():
     startup.mkdir()
     (startup / ".zshrc").write_text("PS1='stress % '\nHISTFILE=/dev/null\n")
     test_run["PrestelTests"]["EnvironmentVariables"]["ZDOTDIR"] = str(startup)
+    test_run["PrestelTests"]["EnvironmentVariables"]["PRESTEL_RELIABILITY"] = "1"
     isolated = products / f"Reliability-{stamp}.xctestrun"
     isolated.write_bytes(plistlib.dumps(test_run))
 

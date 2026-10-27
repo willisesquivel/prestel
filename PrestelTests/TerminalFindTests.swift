@@ -173,6 +173,7 @@ struct TerminalFindCaretTests {
         let window = CaretKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 160),
             styleMask: [.titled], backing: .buffered, defer: false)
+        defer { window.close() }
         window.contentView?.addSubview(field)
         window.makeKeyAndOrderFront(nil)
         field.layoutSubtreeIfNeeded()
@@ -318,6 +319,8 @@ private func caretStroke(in field: FindEditorView) throws -> CaretStroke {
         let r = Int(data[o]), b = Int(data[o + 2]), a = Int(data[o + 3])
         if b > 120, b > r + 30, a > 60 { columns.insert(x) }
     }
+    // The placeholder is the label color at partial alpha on a clear backdrop, so it
+    // can read as black or white rather than mid-gray. Any neutral ink counts.
     var gray = false
     let start = (columns.max() ?? 0) + 1
     if start < width {
@@ -325,7 +328,7 @@ private func caretStroke(in field: FindEditorView) throws -> CaretStroke {
             for x in start..<min(width, start + 80) {
                 let o = (y * width + x) * 4
                 let r = Int(data[o]), g = Int(data[o + 1]), b = Int(data[o + 2]), a = Int(data[o + 3])
-                if a > 40, abs(r - g) < 24, abs(g - b) < 24, r > 70, r < 210 { gray = true }
+                if a > 40, abs(r - g) < 24, abs(g - b) < 24 { gray = true }
             }
         }
     }

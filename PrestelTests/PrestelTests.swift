@@ -624,7 +624,9 @@ struct PrestelTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(3))) func sustainedOutputSurvivesLayoutAndSessionChanges() async throws {
+    /// Only scripts/check-reliability.py runs this, and it sets PRESTEL_RELIABILITY.
+    @Test(.timeLimit(.minutes(3)), .enabled(if: ProcessInfo.processInfo.environment["PRESTEL_RELIABILITY"] != nil))
+    func sustainedOutputSurvivesLayoutAndSessionChanges() async throws {
         try await withTerminalFontSize(13) {
             let model = TerminalModel(directory: "/private/tmp")
             let controller = TerminalWindowController(model: model)

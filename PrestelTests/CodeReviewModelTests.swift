@@ -63,7 +63,7 @@ struct CodeReviewModelTests {
         await runner.release("a")
         try? await Task.sleep(for: .milliseconds(50))
         await runner.release("b")
-        try? await Task.sleep(for: .milliseconds(80))
+        await waitUntilReady(model)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
         #expect(model.loadState == .ready)
     }
@@ -118,7 +118,7 @@ struct CodeReviewModelTests {
         model.bind(visible: false, windowID: UUID(), session: session)
         await runner.release("b")
         model.bind(visible: true, windowID: UUID(), session: session)
-        try? await Task.sleep(for: .milliseconds(80))
+        await waitUntilReady(model)
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
