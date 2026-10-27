@@ -125,6 +125,15 @@ The window title comes from the shell (OSC title) and the working directory
 from OSC 7. File drops insert shell-quoted paths. Only http(s), mailto, and
 file links open.
 
+## Privacy
+
+Prestel has no accounts, analytics, crash reporting, or telemetry. It does not
+send your terminal output, files, or repository contents anywhere on its own.
+Its only network request is the commit draft: when Ollama is running on your
+Mac, Draft asks it at `127.0.0.1`. Otherwise it uses Apple's on-device model.
+Git commands you run from the Code Review panel, such as push, talk to your
+remote the same way they do in any terminal.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). Bundled third-party notices are in
