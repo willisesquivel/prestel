@@ -1235,6 +1235,55 @@ struct PrestelTests {
         #expect(selected == 1)
     }
 
+    @Test func giganticTabNameDragPreviewDoesNotShrink() {
+        let appearance = NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()
+        let normal = TabDragPreview.image(
+            items: [.init(title: "Local", symbol: "terminal")],
+            totalCount: 1,
+            appearance: appearance
+        )
+        let giganticTitle = String(repeating: "Gigantic Tab Name That Is Extremely Long ", count: 10)
+        let gigantic = TabDragPreview.image(
+            items: [.init(title: giganticTitle, symbol: "terminal")],
+            totalCount: 1,
+            appearance: appearance
+        )
+        #expect(gigantic.size.height == normal.size.height)
+        #expect(gigantic.size.width >= normal.size.width)
+    }
+
+    @Test func tabDragSessionDoesNotFanOutItsPreview() {
+        let preview = TabDragPreview.image(
+            items: [.init(title: "Local", symbol: "terminal")],
+            totalCount: 1,
+            appearance: NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()
+        )
+        let hit = TabRowHitNSView(frame: NSRect(x: 0, y: 0, width: 160, height: ShellMetrics.sidebarRowHeight))
+        // A pasteboard item needs a type, or AppKit raises before the session exists.
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString("tab", forType: .string)
+        let dragItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        dragItem.setDraggingFrame(NSRect(origin: .zero, size: preview.size), contents: preview)
+        let session = hit.beginDraggingSession(
+            with: [dragItem],
+            event: NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )!,
+            source: hit
+        )
+        session.draggingFormation = .default
+        hit.draggingSession(session, willBeginAt: .zero)
+        #expect(session.draggingFormation == .none)
+    }
+
     @Test func splitPairsASecondTabAndCapsAtTwoPanes() {
         let model = TerminalModel()
         let current = model.selectedID!

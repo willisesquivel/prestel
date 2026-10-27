@@ -1555,7 +1555,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         item.setDraggingFrame(rest, contents: preview)
         let session = beginDraggingSession(with: [item], event: current, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = true
-        session.draggingFormation = .default
+        session.draggingFormation = .none
     }
 
     private func dragPreviewItems(for payload: TabDragPayload) -> [TabDragPreview.Item] {
@@ -1582,6 +1582,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        session.draggingFormation = .none
         didStartDrag = true
         suppressMouseUpSelection = true
         guard let payload = activePayload ?? tabID.map({ tabID in
