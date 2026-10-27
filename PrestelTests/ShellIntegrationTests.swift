@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import SwiftTerm
@@ -11,6 +12,7 @@ struct ShellIntegrationTests {
     @Test func parsesOSC133Marks() {
         #expect(ShellMark(payload: Array("A".utf8)) == .promptStart)
         #expect(ShellMark(payload: Array("A;k=s".utf8)) == .promptStart)
+        #expect(ShellMark(payload: Array("A;cl=m".utf8)) == .promptStart)
         #expect(ShellMark(payload: Array("B".utf8)) == .promptEnd)
         #expect(ShellMark(payload: Array("C".utf8)) == .commandStart)
         #expect(ShellMark(payload: Array("D;0".utf8)) == .commandEnd(exitCode: 0))
@@ -93,18 +95,22 @@ struct ShellIntegrationTests {
             #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(path).path))
         }
         let zsh = try String(contentsOf: dir.appendingPathComponent("zsh/prestel-integration.zsh"), encoding: .utf8)
-        #expect(zsh.contains("133;A") && zsh.contains("133;C") && zsh.contains("133;D") && zsh.contains("]7;file://"))
+        #expect(zsh.contains("133;A;cl=m") && zsh.contains("133;C") && zsh.contains("133;D") && zsh.contains("]7;file://"))
+        let bash = try String(contentsOf: dir.appendingPathComponent("bash/prestel.bash"), encoding: .utf8)
+        #expect(bash.contains("133;A;cl=m"))
+        let fish = try String(contentsOf: dir.appendingPathComponent("fish-data/fish/vendor_conf.d/prestel.fish"), encoding: .utf8)
+        #expect(fish.contains("133;A;cl=m"))
     }
 
     // MARK: Live PTY
 
     /// Runs `commands` in an interactive shell under a scratch HOME and
     /// returns the raw bytes the terminal would receive.
-    private func captureZsh(userZshrc: String, commands: [String], workingDirectory: String) async throws -> String {
-        try await capture(shell: "/bin/zsh", userRC: userZshrc, commands: commands, workingDirectory: workingDirectory)
+    private func captureZsh(userZshrc: String, commands: [String], workingDirectory: String, typed: String? = nil) async throws -> String {
+        try await capture(shell: "/bin/zsh", userRC: userZshrc, commands: commands, workingDirectory: workingDirectory, typed: typed)
     }
 
-    private func capture(shell: String, userRC: String, commands: [String], workingDirectory: String) async throws -> String {
+    private func capture(shell: String, userRC: String, commands: [String], workingDirectory: String, typed: String? = nil) async throws -> String {
         let isZsh = shell.hasSuffix("zsh")
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("prestel-zsh-\(UUID().uuidString)")
         let home = scratch.appendingPathComponent("home")
@@ -129,6 +135,10 @@ struct ShellIntegrationTests {
             process.send(data: Array((command + "\r").utf8)[...])
             try await Task.sleep(for: .milliseconds(300))
         }
+        if let typed {
+            process.send(data: Array(typed.utf8)[...])
+            try await wait { collector.text.contains(typed) }
+        }
         try await Task.sleep(for: .milliseconds(400))
         return collector.text
     }
@@ -141,7 +151,7 @@ struct ShellIntegrationTests {
             userZshrc: "PS1='%# '\n",
             commands: ["cd '\(dir.path)'", "false", "echo $PRESTEL_TEST_ZSHENV"],
             workingDirectory: "/private/tmp")
-        #expect(output.contains("\u{1b}]133;A\u{7}"))
+        #expect(output.contains("\u{1b}]133;A;cl=m\u{7}"))
         #expect(output.contains("\u{1b}]133;B\u{7}"))
         #expect(output.contains("\u{1b}]133;C\u{7}"))
         #expect(output.contains("\u{1b}]133;D;0\u{7}"))
@@ -160,7 +170,7 @@ struct ShellIntegrationTests {
         let output = try await capture(shell: "/bin/bash", userRC: "PS1='b$ '\n",
                                        commands: ["cd /private/var", "false", "echo $PRESTEL_TEST_ZSHENV"],
                                        workingDirectory: "/private/tmp")
-        #expect(output.contains("\u{1b}]133;A\u{7}b$ \u{1b}]133;B\u{7}"))
+        #expect(output.contains("\u{1b}]133;A;cl=m\u{7}b$ \u{1b}]133;B\u{7}"))
         #expect(output.contains("\u{1b}]133;C\u{7}"))
         #expect(output.contains("\u{1b}]133;D;0\u{7}"))
         #expect(output.contains("\u{1b}]133;D;1\u{7}"))
@@ -185,6 +195,102 @@ struct ShellIntegrationTests {
         headless.terminal.feed(text: output)
         let marks = (0..<60).filter { !headless.terminal.semanticPromptMarks(at: $0).isEmpty }
         #expect(marks.count >= 3)
+        #expect(headless.terminal.semanticPromptClickMode == .cursorKeys(.multiple))
+    }
+
+    @Test func promptClickMarksAddsClickModeWithoutTouchingOtherSequences() {
+        func text(_ bytes: [UInt8]) -> String { String(decoding: bytes, as: UTF8.self) }
+        func once(_ input: String) -> String {
+            var marks = PromptClickMarks()
+            return text(marks.consume(Array(input.utf8)[...]))
+        }
+
+        #expect(once("\u{1b}]133;A\u{7}") == "\u{1b}]133;A;cl=m\u{7}")
+        #expect(once("\u{1b}]133;A;k=i\u{7}") == "\u{1b}]133;A;k=i;cl=m\u{7}")
+        #expect(once("\u{1b}]133;P\u{1b}\\") == "\u{1b}]133;P;cl=m\u{1b}\\")
+        #expect(once("\u{1b}]133;A;cl=m\u{7}") == "\u{1b}]133;A;cl=m\u{7}")
+        #expect(once("\u{1b}]133;A;cl=line\u{7}") == "\u{1b}]133;A;cl=line\u{7}")
+        #expect(once("\u{1b}]133;A;click_events=1\u{7}") == "\u{1b}]133;A;click_events=1\u{7}")
+        #expect(once("\u{1b}]133;A;click_events=2\u{7}") == "\u{1b}]133;A;click_events=2\u{7}")
+        #expect(once("\u{1b}]133;B\u{7}\u{1b}]133;C\u{7}\u{1b}]133;D;0\u{7}") == "\u{1b}]133;B\u{7}\u{1b}]133;C\u{7}\u{1b}]133;D;0\u{7}")
+        #expect(once("\u{1b}]7;file://localhost/tmp\u{7}") == "\u{1b}]7;file://localhost/tmp\u{7}")
+        #expect(once("\u{1b}]1337;File=name=a\u{7}") == "\u{1b}]1337;File=name=a\u{7}")
+        #expect(once("\u{1b}[31mred\u{1b}[0m") == "\u{1b}[31mred\u{1b}[0m")
+
+        var split = PromptClickMarks()
+        #expect(split.consume(Array("\u{1b}".utf8)[...]).isEmpty)
+        #expect(text(split.consume(Array("]133;A\u{7}> ".utf8)[...])) == "\u{1b}]133;A;cl=m\u{7}> ")
+    }
+
+    @Test func plainPromptMarkBecomesACaretMove() {
+        var marks = PromptClickMarks()
+        let raw = Array("\u{1b}]133;A\u{7}> \u{1b}]133;B\u{7}hi".utf8)
+        let rewritten = marks.consume(raw[...])
+        let delegate = ClickRecorder()
+        let terminal = Terminal(delegate: delegate, options: TerminalOptions(cols: 80, rows: 24))
+        terminal.feed(buffer: rewritten[...])
+        #expect(terminal.semanticPromptClickMode == .cursorKeys(.multiple))
+        #expect(terminal.semanticContent(at: Position(col: 2, row: 0)) == .input)
+        #expect(terminal.handleSemanticPromptClick(at: Position(col: 2, row: 0)))
+        #expect(delegate.sent == [Array(repeating: leftArrow, count: 2).flatMap { $0 }])
+    }
+
+    @Test func zshTypedCommandAcceptsACaretClick() async throws {
+        let output = try await captureZsh(userZshrc: "PS1='%# '\n", commands: [], workingDirectory: "/private/tmp", typed: "hello")
+        let delegate = ClickRecorder()
+        let terminal = Terminal(delegate: delegate, options: TerminalOptions(cols: 80, rows: 40))
+        terminal.feed(text: output)
+        let inputs = inputCells(in: terminal)
+        let cursor = terminal.getCursorLocation()
+        let cursorRow = terminal.getTopVisibleRow() + cursor.y
+        guard let target = inputs.first(where: { $0.row == cursorRow && $0.col != cursor.x }) ?? inputs.first else {
+            Issue.record("zsh did not tag the typed command as input. \(oscDump(output))")
+            return
+        }
+        let moved = terminal.handleSemanticPromptClick(at: target)
+        #expect(moved, "click at \(target.col),\(target.row) cursor \(cursor.x),\(cursorRow) mode \(terminal.semanticPromptClickMode) \(oscDump(output))")
+        #expect(delegate.sent.contains { $0.contains(0x44) || $0.contains(0x43) })
+    }
+
+    @MainActor
+    @Test func clickInTheCurrentCommandMovesTheCaret() async throws {
+        let harness = try CaretClickHarness()
+        defer { harness.close() }
+        harness.feed("\u{1b}]133;A;cl=m\u{7}> \u{1b}]133;B\u{7}hi")
+        harness.click(column: 2, row: 0)
+        try await harness.waitForSend()
+        #expect(harness.delegate.sent == [Array(repeating: leftArrow, count: 2).flatMap { $0 }])
+        #expect(!harness.selectionIsActive)
+        try await Task.sleep(for: .seconds(NSEvent.doubleClickInterval + 0.2))
+        #expect(harness.delegate.sent.count == 1)
+    }
+
+    @MainActor
+    @Test func tinyDragStillMovesTheCaretAndARealDragSelects() async throws {
+        let harness = try CaretClickHarness()
+        defer { harness.close() }
+        harness.feed("\u{1b}]133;A;cl=m\u{7}> \u{1b}]133;B\u{7}hi")
+        harness.click(column: 2, row: 0, drag: 2)
+        try await harness.waitForSend()
+        #expect(harness.delegate.sent.count == 1)
+        #expect(!harness.selectionIsActive)
+
+        harness.delegate.sent.removeAll()
+        harness.click(column: 2, row: 0, drag: 40)
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(harness.delegate.sent.isEmpty)
+        #expect(harness.selectionIsActive)
+    }
+
+    @MainActor
+    @Test func fullScreenAppKeepsTheClick() async throws {
+        let harness = try CaretClickHarness()
+        defer { harness.close() }
+        harness.feed("\u{1b}[?1049h")
+        harness.click(column: 2, row: 0, drag: 2)
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(harness.delegate.sent.isEmpty)
+        #expect(harness.selectionIsActive)
     }
 
     private func wait(_ predicate: () -> Bool) async throws {
@@ -192,7 +298,126 @@ struct ShellIntegrationTests {
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }
         #expect(predicate())
     }
+
+    private func inputCells(in terminal: Terminal) -> [Position] {
+        var found: [Position] = []
+        var row = 0
+        while terminal.semanticContent(at: Position(col: 0, row: row)) != nil, row < 400 {
+            for col in 0..<terminal.cols where terminal.semanticContent(at: Position(col: col, row: row)) == .input {
+                found.append(Position(col: col, row: row))
+            }
+            row += 1
+        }
+        return found
+    }
+
+    private func oscDump(_ text: String) -> String {
+        String(text.suffix(400)).replacingOccurrences(of: "\u{1b}", with: "\\e")
+    }
 }
+
+private let leftArrow: [UInt8] = [0x1b, 0x5b, 0x44]
+
+private final class ClickRecorder: TerminalDelegate {
+    var sent: [[UInt8]] = []
+    func send(source: Terminal, data: ArraySlice<UInt8>) {
+        sent.append(Array(data))
+    }
+}
+
+@MainActor
+private final class ViewClickRecorder: TerminalViewDelegate {
+    var sent: [[UInt8]] = []
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { sent.append(Array(data)) }
+    func scrolled(source: TerminalView, position: Double) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
+}
+
+@MainActor
+private final class CaretClickHarness {
+    let view: PrestelView
+    let window: NSWindow
+    let delegate: ViewClickRecorder
+    private let cell: CGSize
+
+    init() throws {
+        let frame = CGRect(x: 0, y: 0, width: 640, height: 400)
+        let view = PrestelView(frame: frame, font: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        let delegate = ViewClickRecorder()
+        view.claimsFocus = false
+        let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = view
+        view.terminalDelegate = delegate
+        guard let cell = TerminalFontSize.cellSize(of: view), cell.width > 0, cell.height > 0 else {
+            window.close()
+            throw CaretHarnessError.missingCell
+        }
+        self.view = view
+        self.window = window
+        self.delegate = delegate
+        self.cell = cell
+    }
+
+    func close() { window.close() }
+
+    func feed(_ text: String) { view.feed(text: text) }
+
+    func click(column: Int, row: Int, drag: CGFloat = 0) {
+        let origin = CGPoint(
+            x: (CGFloat(column) + 0.5) * cell.width,
+            y: view.frame.height - (CGFloat(row) + 0.5) * cell.height)
+        let end = CGPoint(x: origin.x + drag, y: origin.y)
+        view.mouseDown(with: mouse(.leftMouseDown, at: origin, pressure: 1))
+        if drag != 0 {
+            view.mouseDragged(with: mouse(.leftMouseDragged, at: end, pressure: 1))
+        }
+        view.mouseUp(with: mouse(.leftMouseUp, at: end, pressure: 0))
+    }
+
+    func waitForSend() async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while delegate.sent.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    var selectionIsActive: Bool {
+        var mirror: Mirror? = Mirror(reflecting: view)
+        while let current = mirror {
+            if let child = current.children.first(where: { $0.label == "selection" }) {
+                var value: Any = child.value
+                var inner = Mirror(reflecting: value)
+                while inner.displayStyle == .optional {
+                    guard let first = inner.children.first else { return true }
+                    value = first.value
+                    inner = Mirror(reflecting: value)
+                }
+                return (value as? SelectionService)?.active ?? true
+            }
+            mirror = current.superclassMirror
+        }
+        return true
+    }
+
+    private func mouse(_ type: NSEvent.EventType, at point: CGPoint, pressure: Float) -> NSEvent {
+        NSEvent.mouseEvent(
+            with: type,
+            location: point,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: pressure)!
+    }
+}
+
+private enum CaretHarnessError: Error { case missingCell }
 
 private final class ByteCollector: LocalProcessDelegate, @unchecked Sendable {
     private let lock = NSLock()

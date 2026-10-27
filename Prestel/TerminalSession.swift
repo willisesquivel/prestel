@@ -66,6 +66,7 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
     var onActivity: (@MainActor @Sendable () -> Void)?
     private let activityLock = NSLock()
     private var lastActivityForward = Date.distantPast
+    private var clickMarks = PromptClickMarks()
     func updateSize(columns: Int, rows: Int) -> winsize {
         lock.lock()
         defer { lock.unlock() }
@@ -75,7 +76,8 @@ private final class ProcessAdapter: LocalProcessDelegate, @unchecked Sendable {
     }
     func getWindowSize() -> winsize { lock.lock(); defer { lock.unlock() }; return size }
     func dataReceived(slice: ArraySlice<UInt8>) {
-        surface?.feed(byteArray: slice)
+        let bytes = clickMarks.consume(slice)
+        if !bytes.isEmpty { surface?.feed(byteArray: bytes[...]) }
         // Throttled leading edge (at most one hop per 200ms): the session
         // debounces these into a trailing cwd refresh, so `cd` shows up in
         // ~150ms instead of waiting for the backup poll.

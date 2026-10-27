@@ -30,7 +30,7 @@ enum ShellIntegration {
     }
 
     /// Bump when a script changes so stale copies are rewritten.
-    static let version = 1
+    static let version = 2
 
     static var defaultRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -158,7 +158,8 @@ enum ShellIntegration {
           return $ret
         fi
       fi
-      [[ $PS1 == *'133;A'* ]] || PS1=$'%{\e]133;A\a%}'$PS1
+      # cl=m: a click in the current command moves the caret with cursor keys.
+      [[ $PS1 == *'133;A'* ]] || PS1=$'%{\e]133;A;cl=m\a%}'$PS1
       [[ $PS1 == *'133;B'* ]] || PS1=$PS1$'%{\e]133;B\a%}'
       precmd_functions=(${precmd_functions:#_prestel_post} _prestel_post)
       return $ret
@@ -218,7 +219,8 @@ enum ShellIntegration {
 
       # Last, so prompts rebuilt by the user's PROMPT_COMMAND still get marks.
       __prestel_post() {
-        [[ $PS1 == *'133;A'* ]] || PS1='\[\e]133;A\a\]'$PS1
+        # cl=m: a click in the current command moves the caret with cursor keys.
+        [[ $PS1 == *'133;A'* ]] || PS1='\[\e]133;A;cl=m\a\]'$PS1
         [[ $PS1 == *'133;B'* ]] || PS1=$PS1'\[\e]133;B\a\]'
         __prestel_busy=
         return $__prestel_status
@@ -265,7 +267,8 @@ enum ShellIntegration {
     # fish 4 marks prompts natively.
     if test (string split . -- $version)[1] -lt 4
         function __prestel_mark_prompt --on-event fish_prompt
-            printf '\e]133;A\a'
+            # cl=m: a click in the current command moves the caret with cursor keys.
+            printf '\e]133;A;cl=m\a'
         end
         function __prestel_mark_preexec --on-event fish_preexec
             printf '\e]133;C\a'
@@ -275,4 +278,137 @@ enum ShellIntegration {
         end
     end
     """#
+}
+
+/// Adds `cl=m` to an OSC 133 prompt-start that did not ask for a click mode.
+///
+/// A shell that is already running keeps the script it sourced at startup.
+/// That script emits `OSC 133 ; A` with no `cl=`, so a click never moves the
+/// caret. Rewriting the mark as it arrives turns the click on for that shell
+/// too. Marks that already name `cl=` or `click_events=1/2` are left alone.
+struct PromptClickMarks {
+    private enum Phase {
+        case ground
+        case esc
+        case intro
+        case code(Int)
+        case body
+        case bodyEsc
+        case skip
+        case skipEsc
+    }
+
+    private var phase = Phase.ground
+    private var body: [UInt8] = []
+
+    mutating func consume(_ input: ArraySlice<UInt8>) -> [UInt8] {
+        var output: [UInt8] = []
+        output.reserveCapacity(input.count + 8)
+        for byte in input {
+            consume(byte, into: &output)
+        }
+        return output
+    }
+
+    private mutating func consume(_ byte: UInt8, into output: inout [UInt8]) {
+        switch phase {
+        case .ground:
+            if byte == 0x1b { phase = .esc }
+            else { output.append(byte) }
+        case .esc:
+            if byte == 0x5d { phase = .intro }
+            else {
+                output.append(0x1b)
+                output.append(byte)
+                phase = .ground
+            }
+        case .intro:
+            if let digit = Self.digit(byte) {
+                phase = .code(digit)
+            } else {
+                output.append(contentsOf: [0x1b, 0x5d, byte])
+                phase = Self.phase(afterPayloadByte: byte)
+            }
+        case .code(let code):
+            if let digit = Self.digit(byte), code <= 100_000 {
+                phase = .code(code * 10 + digit)
+            } else if byte == 0x3b, code == 133 {
+                body.removeAll(keepingCapacity: true)
+                phase = .body
+            } else if byte == 0x1b {
+                emitIntro(code, into: &output)
+                output.append(byte)
+                phase = .skipEsc
+            } else {
+                emitIntro(code, into: &output)
+                output.append(byte)
+                phase = Self.phase(afterPayloadByte: byte)
+            }
+        case .body:
+            if byte == 0x07 {
+                emitPromptStart(body, terminator: [0x07], into: &output)
+                phase = .ground
+            } else if byte == 0x1b {
+                phase = .bodyEsc
+            } else if body.count >= 256 {
+                emitPromptStart(body + [byte], terminator: [], into: &output)
+                phase = .skip
+            } else {
+                body.append(byte)
+            }
+        case .bodyEsc:
+            if byte == 0x5c {
+                emitPromptStart(body, terminator: [0x1b, 0x5c], into: &output)
+                phase = .ground
+            } else {
+                body.append(0x1b)
+                phase = .body
+                consume(byte, into: &output)
+            }
+        case .skip:
+            output.append(byte)
+            phase = Self.phase(afterPayloadByte: byte)
+        case .skipEsc:
+            output.append(byte)
+            phase = byte == 0x5c ? .ground : .skip
+        }
+    }
+
+    private func emitIntro(_ code: Int, into output: inout [UInt8]) {
+        output.append(contentsOf: [0x1b, 0x5d])
+        output.append(contentsOf: Array(String(code).utf8))
+    }
+
+    private func emitPromptStart(_ body: [UInt8], terminator: [UInt8], into output: inout [UInt8]) {
+        output.append(contentsOf: [0x1b, 0x5d])
+        output.append(contentsOf: Array("133;".utf8))
+        output.append(contentsOf: clickable(body))
+        output.append(contentsOf: terminator)
+    }
+
+    /// `A`, `N`, and `P` are the actions that install the click mode. A later
+    /// prompt without `cl=` would clear a mode an earlier mark had set.
+    private func clickable(_ body: [UInt8]) -> [UInt8] {
+        guard let text = String(bytes: body, encoding: .utf8) else { return body }
+        let fields = text.split(separator: ";", omittingEmptySubsequences: false)
+        guard let action = fields.first, action.count == 1,
+              action == "A" || action == "N" || action == "P" else { return body }
+        let options = fields.dropFirst()
+        if options.contains(where: { $0.hasPrefix("cl=") }) { return body }
+        if options.contains(where: { $0 == "click_events=1" || $0 == "click_events=2" }) { return body }
+        var updated = body
+        updated.append(contentsOf: Array(";cl=m".utf8))
+        return updated
+    }
+
+    private static func phase(afterPayloadByte byte: UInt8) -> Phase {
+        if byte == 0x07 { return .ground }
+        if byte == 0x1b { return .skipEsc }
+        return .skip
+    }
+
+    private static func digit(_ byte: UInt8) -> Int? {
+        guard byte >= 0x30, byte <= 0x39 else { return nil }
+        return Int(byte - 0x30)
+    }
 }

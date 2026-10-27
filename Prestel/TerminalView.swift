@@ -464,9 +464,123 @@ final class PrestelView: SwiftTerm.TerminalView {
         guard selectionActive else { return }
         super.copy(sender)
     }
+    /// A press that has not yet moved far enough to be a selection drag.
+    private var caretPress: NSPoint?
+    private var caretPressDragged = false
+    /// Smaller than a cell, so a trackpad click still lands the caret.
+    private let caretPressSlop: CGFloat = 5
+
     override func mouseDown(with event: NSEvent) {
         onFocus?()
+        if event.buttonNumber == 0, event.clickCount == 1, acceptsCaretClick {
+            caretPress = convert(event.locationInWindow, from: nil)
+            caretPressDragged = false
+        } else {
+            caretPress = nil
+        }
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = caretPress, !caretPressDragged else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let dx = point.x - origin.x
+        let dy = point.y - origin.y
+        guard dx * dx + dy * dy >= caretPressSlop * caretPressSlop else { return }
+        caretPressDragged = true
+        if let start = draggedEvent(like: event, at: origin) {
+            super.mouseDragged(with: start)
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let placeCaret = shouldPlaceCaret(for: event)
+        // SwiftTerm moves the caret only after the double-click wait, and any
+        // drag cancels that. When this click did move the caret, mark the
+        // press as a drag so that second move does not also fire. The
+        // highlight that mark creates is dropped below. A click that did not
+        // move anything is left for SwiftTerm.
+        let moved = placeCaret && moveCaret(to: event)
+        if moved, let caretPress, let drag = draggedEvent(like: event, at: caretPress) {
+            super.mouseDragged(with: drag)
+        }
+        super.mouseUp(with: event)
+        if moved {
+            clearSelectionHighlight()
+            setNeedsDisplay(bounds)
+        }
+        caretPress = nil
+        caretPressDragged = false
+    }
+
+    /// The shell prompt can take the click. A full-screen app, or a program
+    /// that asked for mouse reporting, keeps the click for itself.
+    private var acceptsCaretClick: Bool {
+        guard let terminal = reflectedTerminal() as? Terminal else { return false }
+        return terminal.terminalLock.withLock {
+            terminal.mouseMode == .off && !terminal.isCurrentBufferAlternate
+        }
+    }
+
+    private func shouldPlaceCaret(for event: NSEvent) -> Bool {
+        guard event.buttonNumber == 0, event.clickCount == 1,
+              caretPress != nil, !caretPressDragged, acceptsCaretClick else { return false }
+        let blocked: NSEvent.ModifierFlags = [.shift, .control, .option, .command]
+        return event.modifierFlags.intersection(.deviceIndependentFlagsMask).isDisjoint(with: blocked)
+    }
+
+    /// Sends the cursor-key sequence for a click in the current command.
+    /// Returns whether the shell was asked to move.
+    private func moveCaret(to event: NSEvent) -> Bool {
+        guard let cell = TerminalFontSize.cellSize(of: self),
+              cell.width > 0, cell.height > 0,
+              let terminal = reflectedTerminal() as? Terminal else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        let column = Int(point.x / cell.width)
+        let screenRow = Int((frame.height - point.y) / cell.height)
+        return terminal.terminalLock.withLock {
+            let row = screenRow + terminal.buffer.yDisp
+            let position = Position(
+                col: min(max(0, column), max(0, terminal.cols - 1)),
+                row: max(0, row))
+            return terminal.handleSemanticPromptClick(at: position)
+        }
+    }
+
+    private func draggedEvent(like event: NSEvent, at viewPoint: NSPoint) -> NSEvent? {
+        guard let window else { return nil }
+        return NSEvent.mouseEvent(
+            with: .leftMouseDragged,
+            location: convert(viewPoint, to: nil),
+            modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: event.eventNumber,
+            clickCount: event.clickCount,
+            pressure: event.pressure)
+    }
+
+    private func clearSelectionHighlight() {
+        var mirror: Mirror? = Mirror(reflecting: self)
+        while let current = mirror {
+            if let child = current.children.first(where: { $0.label == "selection" }) {
+                var value: Any = child.value
+                var inner = Mirror(reflecting: value)
+                while inner.displayStyle == .optional {
+                    guard let first = inner.children.first else { return }
+                    value = first.value
+                    inner = Mirror(reflecting: value)
+                }
+                (value as? SelectionService)?.active = false
+                return
+            }
+            mirror = current.superclassMirror
+        }
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
