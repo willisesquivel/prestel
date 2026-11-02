@@ -482,7 +482,7 @@ private struct TerminalDetailSurface: View {
 }
 
 private struct DetailCard<Content: View>: View {
-    var isFocused = false
+    var isFocused = true
     @Environment(\.colorScheme) private var colorScheme
     @ViewBuilder var content: Content
 
@@ -510,13 +510,13 @@ private struct DetailCard<Content: View>: View {
                 .clipShape(RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous)
-                .strokeBorder(
-                    isFocused
-                        ? Color.white.opacity(colorScheme == .dark ? 0.12 : 0.18)
-                        : Color.white.opacity(colorScheme == .dark ? 0.045 : 0.10),
-                    lineWidth: 0.5
-                )
+            if isFocused {
+                RoundedRectangle(cornerRadius: ShellMetrics.detailCornerRadius, style: .continuous)
+                    .strokeBorder(
+                        colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.05),
+                        lineWidth: 1
+                    )
+            }
         }
     }
 }
