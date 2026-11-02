@@ -314,6 +314,7 @@ private struct SidebarItemRow: View {
                 onUnsplit: { model.unsplit(tabID: leading.id) },
                 onArchive: { model.archiveTab($0) },
                 onBeginRename: { beginRename(.tab($0)) },
+                onDoubleClick: { model.focusTab($0) },
                 onCommitRename: { commitRename(.tab($0), $1) },
                 onCancelRename: cancelRename,
                 onNewFolder: { _ = model.makeFolder(containing: $0) },
@@ -342,6 +343,7 @@ private struct SidebarItemRow: View {
                 onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) },
                 onArchive: { model.archiveTab(session.id) },
                 onBeginRename: { beginRename(.tab(session.id)) },
+                onDoubleClick: { model.focusTab(session.id) },
                 onCommitRename: { commitRename(.tab(session.id), $0) },
                 onCancelRename: cancelRename,
                 onNewFolder: { _ = model.makeFolder(containing: session.id) },
@@ -375,43 +377,68 @@ private struct SidebarSelectionChrome: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let dividerWidth = item.members.count > 1 ? ShellMetrics.sidebarRowSpacing : 0
+            let spacing = ShellMetrics.sidebarRowSpacing
+            let dividerWidth = item.members.count > 1 ? spacing : 0
             let halfWidth = (geometry.size.width - dividerWidth) / 2
             ZStack(alignment: .topLeading) {
-                if current.leading {
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: previous.leading ? 0 : cornerRadius,
-                        bottomLeadingRadius: next.leading ? 0 : cornerRadius,
-                        bottomTrailingRadius: next.leading || current.trailing ? 0 : cornerRadius,
-                        topTrailingRadius: previous.leading || current.trailing ? 0 : cornerRadius,
-                        style: .continuous
-                    )
-                    .fill(selectionColor)
-                    .frame(
-                        width: halfWidth,
-                        height: geometry.size.height + (next.leading ? ShellMetrics.sidebarRowSpacing : 0)
-                    )
-                }
-
-                if current.trailing {
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: previous.trailing || current.leading ? 0 : cornerRadius,
-                        bottomLeadingRadius: next.trailing || current.leading ? 0 : cornerRadius,
-                        bottomTrailingRadius: next.trailing ? 0 : cornerRadius,
-                        topTrailingRadius: previous.trailing ? 0 : cornerRadius,
-                        style: .continuous
-                    )
-                    .fill(selectionColor)
-                    .frame(
-                        width: halfWidth,
-                        height: geometry.size.height + (next.trailing ? ShellMetrics.sidebarRowSpacing : 0)
-                    )
-                    .offset(x: halfWidth + dividerWidth)
+                // One fill. Two translucent rects stacked on the seam read as a lighter line.
+                if current.leading && current.trailing {
+                    joinedBand(width: geometry.size.width, height: geometry.size.height, spacing: spacing)
+                    if next.leading && !next.trailing {
+                        gapBridge(width: halfWidth, spacing: spacing)
+                            .offset(y: geometry.size.height)
+                    }
+                    if next.trailing && !next.leading {
+                        gapBridge(width: halfWidth, spacing: spacing)
+                            .offset(x: halfWidth + dividerWidth, y: geometry.size.height)
+                    }
+                } else {
+                    if current.leading {
+                        halfBand(leading: true, width: halfWidth, height: geometry.size.height, spacing: spacing)
+                    }
+                    if current.trailing {
+                        halfBand(leading: false, width: halfWidth, height: geometry.size.height, spacing: spacing)
+                            .offset(x: halfWidth + dividerWidth)
+                    }
                 }
             }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    private func joinedBand(width: CGFloat, height: CGFloat, spacing: CGFloat) -> some View {
+        let extend = next.leading && next.trailing
+        return UnevenRoundedRectangle(
+            topLeadingRadius: previous.leading ? 0 : cornerRadius,
+            bottomLeadingRadius: next.leading ? 0 : cornerRadius,
+            bottomTrailingRadius: next.trailing ? 0 : cornerRadius,
+            topTrailingRadius: previous.trailing ? 0 : cornerRadius,
+            style: .continuous
+        )
+        .fill(selectionColor)
+        .frame(width: width, height: height + (extend ? spacing : 0))
+    }
+
+    private func gapBridge(width: CGFloat, spacing: CGFloat) -> some View {
+        Rectangle()
+            .fill(selectionColor)
+            .frame(width: width, height: spacing)
+    }
+
+    private func halfBand(leading: Bool, width: CGFloat, height: CGFloat, spacing: CGFloat) -> some View {
+        UnevenRoundedRectangle(
+            topLeadingRadius: (leading ? previous.leading : previous.trailing || current.leading) ? 0 : cornerRadius,
+            bottomLeadingRadius: (leading ? next.leading : next.trailing || current.leading) ? 0 : cornerRadius,
+            bottomTrailingRadius: (leading ? next.leading || current.trailing : next.trailing) ? 0 : cornerRadius,
+            topTrailingRadius: (leading ? previous.leading || current.trailing : previous.trailing) ? 0 : cornerRadius,
+            style: .continuous
+        )
+        .fill(selectionColor)
+        .frame(
+            width: width,
+            height: height + ((leading ? next.leading : next.trailing) ? spacing : 0)
+        )
     }
 
     private var selectionColor: Color {
@@ -457,6 +484,7 @@ private struct SidebarRow: View {
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
     var onBeginRename: () -> Void = {}
+    var onDoubleClick: () -> Void = {}
     var onCommitRename: (String) -> Void = { _ in }
     var onCancelRename: () -> Void = {}
     var onNewFolder: (() -> Void)?
@@ -492,6 +520,7 @@ private struct SidebarRow: View {
                         onUnsplit: onUnsplit,
                         onArchive: onArchive,
                         onRename: onBeginRename,
+                        onDoubleClick: onDoubleClick,
                         onNewFolder: onNewFolder,
                         onRemoveFromFolder: onRemoveFromFolder,
                         folderDestinations: folderDestinations
@@ -567,6 +596,7 @@ private struct CombinedSidebarRow: View {
     let onUnsplit: () -> Void
     let onArchive: (UUID) -> Void
     let onBeginRename: (UUID) -> Void
+    let onDoubleClick: (UUID) -> Void
     let onCommitRename: (UUID, String) -> Void
     let onCancelRename: () -> Void
     let onNewFolder: (UUID) -> Void
@@ -646,6 +676,7 @@ private struct CombinedSidebarRow: View {
                     onUnsplit: onUnsplit,
                     onArchive: { onArchive(session.id) },
                     onRename: { onBeginRename(session.id) },
+                    onDoubleClick: { onDoubleClick(session.id) },
                     onNewFolder: { onNewFolder(session.id) },
                     onRemoveFromFolder: onRemoveFromFolder.map { remove in { remove(session.id) } },
                     folderDestinations: folderDestinations
@@ -816,7 +847,6 @@ private struct ArchivedTabRow: View {
                 onCancel: onCancelRename
             )
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onTapGesture(count: 2) { onBeginRename() }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)

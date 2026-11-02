@@ -1498,6 +1498,82 @@ struct PrestelTests {
         #expect(model.sidebarItems.map(\.id) == [first, second, third])
     }
 
+    @Test func droppingAboveASplitPairLandsBeforeBothMembers() {
+        let model = TerminalModel()
+        let trailing = model.selectedID!
+        let leading = model.newTab().id
+        let other = model.newTab().id
+        model.select(trailing)
+        // The dragged tab becomes leading and stays later in the list than its partner.
+        model.split(with: leading, on: .leading)
+        #expect(model.tabs.map(\.id) == [trailing, leading, other])
+        let visible = model.sidebarVisualIDs
+        #expect(visible == [leading, other])
+
+        let above = model.dropTarget(visibleInsertion: 0, visibleIDs: visible)
+        #expect(above.index == 0)
+        #expect(above.folderID == nil)
+        model.moveTab(other, to: above.index)
+        #expect(model.tabs.map(\.id) == [other, trailing, leading])
+        #expect(model.sidebarVisualIDs == [other, leading])
+
+        // The same gap has to stay above the pair when the window also has a folder,
+        // because that takes the other drop-target path.
+        let parked = model.newTab().id
+        _ = model.makeFolder(containing: parked)
+        model.select(trailing)
+        model.split(with: leading, on: .leading)
+        let withFolder = model.sidebarVisualIDs
+        let pairRow = withFolder.firstIndex(of: leading)!
+        let abovePair = model.dropTarget(visibleInsertion: pairRow, visibleIDs: withFolder)
+        #expect(abovePair.index == model.tabs.firstIndex(where: { $0.id == trailing }))
+        #expect(abovePair.folderID == nil)
+    }
+
+    @Test func droppingBelowASplitPairLandsAfterBothMembers() {
+        let model = TerminalModel()
+        let leading = model.selectedID!
+        let trailing = model.newTab().id
+        let above = model.newTab().id
+        model.select(leading)
+        model.split(with: trailing, on: .trailing)
+        model.moveTab(above, to: 0)
+        #expect(model.tabs.map(\.id) == [above, leading, trailing])
+        let visible = model.sidebarVisualIDs
+        #expect(visible == [above, leading])
+
+        let below = model.dropTarget(visibleInsertion: visible.count, visibleIDs: visible)
+        #expect(below.index == model.tabs.count)
+        model.moveTab(above, to: below.index)
+        #expect(model.tabs.map(\.id) == [leading, trailing, above])
+        #expect(model.sidebarVisualIDs == [leading, above])
+    }
+
+    @Test func focusingASplitTabShowsOnlyThatTab() {
+        let model = TerminalModel()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        model.split(with: second, on: .trailing)
+
+        model.focusTab(first)
+        #expect(model.splits.isEmpty)
+        #expect(model.selectedID == first)
+        #expect(model.selectedTabIDs == [first])
+
+        model.select(first)
+        model.split(with: second, on: .trailing)
+        model.focusTab(second)
+        #expect(model.splits.isEmpty)
+        #expect(model.selectedID == second)
+        #expect(model.selectedTabIDs == [second])
+
+        let third = model.newTab().id
+        model.focusTab(third)
+        #expect(model.selectedID == third)
+        #expect(model.splits.isEmpty)
+    }
+
     @Test func splitCycleForwardFollowsVisualOrder() {
         let model = TerminalModel()
         let first = model.selectedID!

@@ -1134,6 +1134,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
     var onRename: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
     var onNewFolder: (() -> Void)?
     var onRemoveFromFolder: (() -> Void)?
     var onDeleteFolder: (() -> Void)?
@@ -1161,6 +1162,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.onUnsplit = onUnsplit
         nsView.onArchive = onArchive
         nsView.onRename = onRename
+        nsView.onDoubleClick = onDoubleClick
         nsView.onNewFolder = onNewFolder
         nsView.onRemoveFromFolder = onRemoveFromFolder
         nsView.onDeleteFolder = onDeleteFolder
@@ -1193,6 +1195,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
     var onRename: (() -> Void)?
+    var onDoubleClick: (() -> Void)?
     var onNewFolder: (() -> Void)?
     var onRemoveFromFolder: (() -> Void)?
     var onDeleteFolder: (() -> Void)?
@@ -1367,11 +1370,15 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             return
         }
         if suppressMouseUpSelection { return }
-        if event.clickCount >= 2, clickIsOnTitle(event) {
-            onRename?()
+        if event.clickCount >= 2 {
+            // Folders still rename from a double-click on the name. Tabs focus instead.
+            if isFolder {
+                if clickIsOnTitle(event) { onRename?() }
+            } else if !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) {
+                onDoubleClick?()
+            }
             return
         }
-        if event.clickCount >= 2 { return }
         let shift = event.modifierFlags.contains(.shift)
         let command = event.modifierFlags.contains(.command)
         if let onModifiedSelect {

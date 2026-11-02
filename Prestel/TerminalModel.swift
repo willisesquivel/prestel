@@ -788,8 +788,34 @@ final class TerminalModel: ObservableObject {
             visibleIDs: visibleIDs,
             tabIDs: tabs.map(\.id),
             folders: folders,
-            probe: probe
+            probe: probe,
+            splitPairs: splitPairMembersByRow()
         )
+    }
+
+    /// Sidebar double-click. Selects the tab and, when it is in a split, leaves only that tab on screen.
+    func focusTab(_ id: UUID) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        select(id)
+        if split(containing: id) != nil {
+            unsplit(tabID: id)
+        }
+    }
+
+    /// On-screen split rows, keyed by the row id (the leading tab).
+    private func splitPairMembersByRow() -> [UUID: [UUID]] {
+        var pairs: [UUID: [UUID]] = [:]
+        for section in sidebarSections {
+            switch section {
+            case .loose(let item):
+                if item.isPair { pairs[item.id] = item.members }
+            case .folder(let group):
+                for item in group.children where item.isPair {
+                    pairs[item.id] = item.members
+                }
+            }
+        }
+        return pairs
     }
 
     func folderMoveTarget(visibleInsertion: Int) -> FolderMoveTarget {

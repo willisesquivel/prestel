@@ -365,19 +365,25 @@ enum SidebarOutline {
     /// The edge under the last child follows drag direction. Dragging down past that
     /// tab's midpoint lands below the folder. Dragging up into the top of the next
     /// row joins it. Direction itself ignores travel shorter than `directionDeadzone`.
+    ///
+    /// A split pair is one row whose id is the leading tab. The other member can sit
+    /// earlier in the tab list, so a gap above that row has to land before whichever
+    /// member comes first, and a gap below it has to land after whichever comes last.
     static func dropTarget(
         visibleInsertion: Int,
         visibleIDs: [UUID],
         tabIDs: [UUID],
         folders: [TabFolder],
-        probe: FolderDropProbe? = nil
+        probe: FolderDropProbe? = nil,
+        splitPairs: [UUID: [UUID]] = [:]
     ) -> SidebarDropTarget {
         if folders.isEmpty {
             return SidebarDropTarget(
-                index: TabInsertionGeometry.canonicalInsertionIndex(
+                index: canonicalIndex(
                     visibleInsertion: visibleInsertion,
                     visibleIDs: visibleIDs,
-                    canonicalIDs: tabIDs
+                    tabIDs: tabIDs,
+                    splitPairs: splitPairs
                 ),
                 folderID: nil
             )
@@ -387,7 +393,13 @@ enum SidebarOutline {
             return SidebarDropTarget(index: indexAfter(folder, tabIDs: tabIDs), folderID: folder.id)
         }
         if visibleInsertion >= visibleIDs.count {
-            return dropPastEnd(visibleIDs: visibleIDs, tabIDs: tabIDs, folders: folders, probe: probe)
+            return dropPastEnd(
+                visibleIDs: visibleIDs,
+                tabIDs: tabIDs,
+                folders: folders,
+                probe: probe,
+                splitPairs: splitPairs
+            )
         }
         let target = visibleIDs[visibleInsertion]
         if let folder = folders.first(where: { $0.id == target }) {
@@ -397,7 +409,7 @@ enum SidebarOutline {
             }
             return SidebarDropTarget(index: clampedAnchor(folder, count: tabIDs.count), folderID: nil)
         }
-        let index = tabIDs.firstIndex(of: target) ?? tabIDs.count
+        let index = indexBeforeRow(target, tabIDs: tabIDs, splitPairs: splitPairs, missing: tabIDs.count)
         if let folder = folders.first(where: { $0.tabIDs.contains(target) }) {
             return SidebarDropTarget(index: index, folderID: folder.id)
         }
@@ -491,11 +503,50 @@ enum SidebarOutline {
         var rowID: UUID
     }
 
+    /// Same results as `TabInsertionGeometry.canonicalInsertionIndex` when `splitPairs` is empty.
+    private static func canonicalIndex(
+        visibleInsertion: Int,
+        visibleIDs: [UUID],
+        tabIDs: [UUID],
+        splitPairs: [UUID: [UUID]]
+    ) -> Int {
+        guard !visibleIDs.isEmpty else { return tabIDs.count }
+        if visibleInsertion <= 0 {
+            return indexBeforeRow(visibleIDs[0], tabIDs: tabIDs, splitPairs: splitPairs, missing: 0)
+        }
+        if visibleInsertion >= visibleIDs.count {
+            return indexAfterRow(visibleIDs[visibleIDs.count - 1], tabIDs: tabIDs, splitPairs: splitPairs)
+        }
+        return indexBeforeRow(visibleIDs[visibleInsertion], tabIDs: tabIDs, splitPairs: splitPairs, missing: tabIDs.count)
+    }
+
+    private static func indexBeforeRow(
+        _ visualID: UUID,
+        tabIDs: [UUID],
+        splitPairs: [UUID: [UUID]],
+        missing: Int
+    ) -> Int {
+        let indexes = (splitPairs[visualID] ?? [visualID]).compactMap { tabIDs.firstIndex(of: $0) }
+        return indexes.min() ?? tabIDs.firstIndex(of: visualID) ?? missing
+    }
+
+    private static func indexAfterRow(
+        _ visualID: UUID,
+        tabIDs: [UUID],
+        splitPairs: [UUID: [UUID]]
+    ) -> Int {
+        let indexes = (splitPairs[visualID] ?? [visualID]).compactMap { tabIDs.firstIndex(of: $0) }
+        if let last = indexes.max() { return last + 1 }
+        if let index = tabIDs.firstIndex(of: visualID) { return index + 1 }
+        return tabIDs.count
+    }
+
     private static func dropPastEnd(
         visibleIDs: [UUID],
         tabIDs: [UUID],
         folders: [TabFolder],
-        probe: FolderDropProbe?
+        probe: FolderDropProbe?,
+        splitPairs: [UUID: [UUID]]
     ) -> SidebarDropTarget {
         guard let last = visibleIDs.last else {
             return SidebarDropTarget(index: tabIDs.count, folderID: nil)
@@ -517,9 +568,11 @@ enum SidebarOutline {
             return SidebarDropTarget(index: index, folderID: nil)
         }
         let folderIDs = Set(folders.map(\.id))
-        if let lastTab = visibleIDs.last(where: { !folderIDs.contains($0) }),
-           let index = tabIDs.firstIndex(of: lastTab) {
-            return SidebarDropTarget(index: index + 1, folderID: nil)
+        if let lastTab = visibleIDs.last(where: { !folderIDs.contains($0) }) {
+            return SidebarDropTarget(
+                index: indexAfterRow(lastTab, tabIDs: tabIDs, splitPairs: splitPairs),
+                folderID: nil
+            )
         }
         return SidebarDropTarget(index: tabIDs.count, folderID: nil)
     }
