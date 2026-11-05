@@ -2,6 +2,33 @@ import AppKit
 import Combine
 import Darwin
 import SwiftTerm
+import UniformTypeIdentifiers
+
+/// Decides whether opening a file shows it or runs it. Terminal output and
+/// repository contents are untrusted, so a link or "Open" action must never
+/// launch an app, script or executable that happens to be named there.
+enum SafeFileOpener {
+    static func runsWhenOpened(_ url: URL) -> Bool {
+        let keys: Set<URLResourceKey> = [.contentTypeKey, .isExecutableKey, .isPackageKey, .isApplicationKey, .isDirectoryKey]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return true }
+        if values.isApplication == true || values.isPackage == true { return true }
+        if values.isDirectory != true, values.isExecutable == true { return true }
+        guard let type = values.contentType else { return false }
+        let risky = [UTType.application, .executable, .unixExecutable, .shellScript, .script]
+            + ["com.apple.terminal.shell-script", "com.apple.automator-workflow", "com.apple.application-bundle"]
+                .compactMap { UTType($0) }
+        return risky.contains { type.conforms(to: $0) }
+    }
+
+    /// Opens a harmless file; reveals anything that would run in Finder instead.
+    static func open(_ url: URL) {
+        if runsWhenOpened(url) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
 
 enum ShellConfiguration {
     static var loginShell: String {
@@ -304,7 +331,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     }
     func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
         guard let url = URL(string: link), ["https", "http", "mailto", "file"].contains(url.scheme?.lowercased() ?? "") else { return }
-        NSWorkspace.shared.open(url)
+        if url.isFileURL { SafeFileOpener.open(url) } else { NSWorkspace.shared.open(url) }
     }
     /// OSC 52 write: programs like vim and tmux set the system clipboard.
     func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {

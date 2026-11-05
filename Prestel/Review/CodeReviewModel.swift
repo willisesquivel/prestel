@@ -177,7 +177,7 @@ final class CodeReviewModel: ObservableObject {
             return
         }
         guard let root = snapshot?.revision.key.worktreeRoot else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: root).appendingPathComponent(file.identityPath.display))
+        SafeFileOpener.open(URL(fileURLWithPath: root).appendingPathComponent(file.identityPath.display))
     }
 
     func reveal(_ file: ChangedFile) {
