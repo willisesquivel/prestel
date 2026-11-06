@@ -469,7 +469,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -499,7 +499,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
 				SWIFT_EMIT_LOC_STRINGS = YES;

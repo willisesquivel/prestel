@@ -35,7 +35,7 @@ Unicode, IME input, and selection work as they do anywhere else.
 
 ## Install
 
-Download [Prestel 0.1.1](https://github.com/willisesquivel/prestel/releases/download/v0.1.1/Prestel-0.1.1.dmg).
+Download [Prestel 0.1.2](https://github.com/willisesquivel/prestel/releases/download/v0.1.2/Prestel-0.1.2.dmg).
 
 Open the DMG and drag Prestel into Applications.
 
@@ -44,7 +44,7 @@ Try to open Prestel once. Then go to System Settings, Privacy & Security,
 scroll down, and click Open Anyway.
 
 Notes for this version are on the
-[v0.1.1 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.1).
+[v0.1.2 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.2).
 
 ## Code Review
 
