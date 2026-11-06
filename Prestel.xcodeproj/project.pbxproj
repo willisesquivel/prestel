@@ -473,6 +473,10 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
 				MARKETING_VERSION = 0.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
@@ -506,6 +510,10 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "A program running in Prestel wants to use the camera.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "© 2026 Ian Esquivel";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "A program running in Prestel wants to use the microphone.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
 				MARKETING_VERSION = 0.1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.willisesquivel.Prestel;
 				PRODUCT_NAME = Prestel;
