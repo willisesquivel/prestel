@@ -137,7 +137,9 @@ final class GitProcessRunner: GitCommandExecuting, @unchecked Sendable {
         let stdoutData: Data
         let stderrData: Data
         do {
-            (stdoutData, stderrData) = try Self.read(stdout: stdout, stderr: stderr, limit: request.outputLimit)
+            (stdoutData, stderrData) = try Self.read(stdout: stdout, stderr: stderr, limit: request.outputLimit, abort: { [self] in
+                self.cancel(request.identifier)
+            })
         } catch {
             if process.processIdentifier > 0 { kill(-process.processIdentifier, SIGTERM) }
             process.terminate()
@@ -189,7 +191,7 @@ final class GitProcessRunner: GitCommandExecuting, @unchecked Sendable {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func read(stdout: Pipe, stderr: Pipe, limit: Int) throws -> (Data, Data) {
+    private static func read(stdout: Pipe, stderr: Pipe, limit: Int, abort: @escaping @Sendable () -> Void) throws -> (Data, Data) {
         let group = DispatchGroup()
         var stdoutData = Data()
         var stderrData = Data()
@@ -197,12 +199,12 @@ final class GitProcessRunner: GitCommandExecuting, @unchecked Sendable {
         var stderrError: Error?
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            do { stdoutData = try read(stdout.fileHandleForReading, limit: limit) } catch { stdoutError = error }
+            do { stdoutData = try read(stdout.fileHandleForReading, limit: limit, abort: abort) } catch { stdoutError = error }
             group.leave()
         }
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            do { stderrData = try read(stderr.fileHandleForReading, limit: limit) } catch { stderrError = error }
+            do { stderrData = try read(stderr.fileHandleForReading, limit: limit, abort: abort) } catch { stderrError = error }
             group.leave()
         }
         group.wait()
@@ -211,13 +213,16 @@ final class GitProcessRunner: GitCommandExecuting, @unchecked Sendable {
         return (stdoutData, stderrData)
     }
 
-    private static func read(_ handle: FileHandle, limit: Int) throws -> Data {
+    private static func read(_ handle: FileHandle, limit: Int, abort: @Sendable () -> Void) throws -> Data {
         var data = Data()
         while true {
             let chunk = handle.availableData
             if chunk.isEmpty { break }
             data.append(chunk)
-            if data.count > limit { throw GitRunnerError.outputLimitExceeded }
+            if data.count > limit {
+                abort()
+                throw GitRunnerError.outputLimitExceeded
+            }
         }
         return data
     }
