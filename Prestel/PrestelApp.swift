@@ -21,11 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private(set) var controllers: [UUID: TerminalWindowController] = [:]
     private var quitting = false
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if Self.isTesting { TestHostConcealment.install() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
         PrestelAppearance.apply(UserDefaults.standard.string(forKey: "appearanceMode") ?? "system")
         NSWindow.allowsAutomaticWindowTabbing = false
         guard !Self.isTesting else { return }
+        NSApp.setActivationPolicy(.regular)
         // Finder Services ("New Prestel Tab at Folder") call the handlers below.
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
@@ -553,5 +557,80 @@ private struct SettingsAppearancePreview: View {
             .resizable()
             .interpolation(.high)
             .scaledToFill()
+    }
+}
+
+/// Unit tests run inside the app and open real windows. While testing, keep
+/// the app off the user's screen and keyboard: no Dock icon, never frontmost,
+/// and every window invisible, click-through and behind the desktop picture.
+@MainActor
+enum TestHostConcealment {
+    private static var installed = false
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        NSApp.setActivationPolicy(.accessory)
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { NSApp.deactivate() }
+        }
+        wrapOrderingMethods()
+        // Catches windows whose alpha or level is changed after they show.
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, _ in
+            MainActor.assumeIsolated { NSApp.windows.forEach(conceal) }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+
+    static let hiddenLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) - 1)
+
+    static func conceal(_ window: NSWindow) {
+        if window.alphaValue != 0 { window.alphaValue = 0 }
+        if window.level != hiddenLevel { window.level = hiddenLevel }
+        if window.hasShadow { window.hasShadow = false }
+        if !window.ignoresMouseEvents { window.ignoresMouseEvents = true }
+        let behavior: NSWindow.CollectionBehavior = [.transient, .ignoresCycle]
+        if !window.collectionBehavior.isSuperset(of: behavior) { window.collectionBehavior.formUnion(behavior) }
+    }
+
+    /// Every public way of showing a window passes through one of these;
+    /// each conceals the window before the original method runs.
+    private static func wrapOrderingMethods() {
+        func wrap(_ selector: Selector, _ make: (IMP) -> Any) {
+            guard let method = class_getInstanceMethod(NSWindow.self, selector) else { return }
+            method_setImplementation(method, imp_implementationWithBlock(make(method_getImplementation(method))))
+        }
+        typealias Plain = @convention(c) (NSWindow, Selector) -> Void
+        typealias WithSender = @convention(c) (NSWindow, Selector, Any?) -> Void
+        typealias Ordering = @convention(c) (NSWindow, Selector, Int, Int) -> Void
+
+        let regardless = #selector(NSWindow.orderFrontRegardless)
+        wrap(regardless) { imp in
+            let original = unsafeBitCast(imp, to: Plain.self)
+            let block: @convention(block) (NSWindow) -> Void = { window in
+                MainActor.assumeIsolated { conceal(window) }
+                original(window, regardless)
+            }
+            return block
+        }
+        for selector in [#selector(NSWindow.orderFront(_:)), #selector(NSWindow.makeKeyAndOrderFront(_:)), #selector(NSWindow.orderBack(_:))] {
+            wrap(selector) { imp in
+                let original = unsafeBitCast(imp, to: WithSender.self)
+                let block: @convention(block) (NSWindow, Any?) -> Void = { window, sender in
+                    MainActor.assumeIsolated { conceal(window) }
+                    original(window, selector, sender)
+                }
+                return block
+            }
+        }
+        let ordering = #selector(NSWindow.order(_:relativeTo:))
+        wrap(ordering) { imp in
+            let original = unsafeBitCast(imp, to: Ordering.self)
+            let block: @convention(block) (NSWindow, Int, Int) -> Void = { window, place, other in
+                if place != NSWindow.OrderingMode.out.rawValue { MainActor.assumeIsolated { conceal(window) } }
+                original(window, ordering, place, other)
+            }
+            return block
+        }
     }
 }

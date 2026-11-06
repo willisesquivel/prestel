@@ -173,6 +173,7 @@ struct TerminalFindCaretTests {
         let window = CaretKeyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 400, height: 160),
             styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         defer { window.close() }
         window.contentView?.addSubview(field)
         window.makeKeyAndOrderFront(nil)

@@ -350,6 +350,7 @@ private final class CaretClickHarness {
         let delegate = ViewClickRecorder()
         view.claimsFocus = false
         let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
         window.contentView = view
         view.terminalDelegate = delegate
         guard let cell = TerminalFontSize.cellSize(of: view), cell.width > 0, cell.height > 0 else {
