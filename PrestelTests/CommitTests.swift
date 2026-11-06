@@ -144,6 +144,32 @@ struct CommitTests {
         #expect(material.diff.count < 200_000)
     }
 
+    @Test func instructionEchoesAreRejectedAndRecovered() {
+        for echo in ["at most 72 characters", "At most 72 chars", "One specific git commit subject", "No trailing period", "The commit subject line"] {
+            #expect(CommitMessage.isInstructionEcho(echo), "\(echo)")
+            #expect(CommitMessage.isWeak(echo), "\(echo)")
+            #expect(!CommitMessage.isSafeToShow(partialSubject: echo + " and some more words"), "\(echo)")
+        }
+        // Real subjects that merely mention the words are fine.
+        for real in ["Fix EQ gear gliding on Dynamic toggle", "Escape special characters in file paths", "Trim names to 72 characters"] {
+            #expect(!CommitMessage.isInstructionEcho(real), "\(real)")
+            #expect(!CommitMessage.isWeak(real), "\(real)")
+        }
+        // The real subject landed in the body: it becomes the subject.
+        let fixed = CommitMessage.composed(
+            subject: "at most 72 characters",
+            detail: "Fix EQ gear gliding on Dynamic toggle: decouple icon fade from layout"
+        )
+        #expect(fixed == "Fix EQ gear gliding on Dynamic toggle: decouple icon fade from layout")
+        let withBody = CommitMessage.composed(
+            subject: "at most 72 characters",
+            detail: "Fix EQ gear gliding\n\n- Decouple the icon fade from layout"
+        )
+        #expect(withBody == "Fix EQ gear gliding\n\n- Decouple the icon fade from layout")
+        // Nothing to recover from.
+        #expect(CommitMessage.composed(subject: "at most 72 characters", detail: "") == "")
+    }
+
     @Test func fitLeavesASmallDiffAlone() {
         let diff = "diff --git a/a.txt b/a.txt\n+one\n"
         #expect(CommitDigest.fit(diff, budget: 5_000) == diff)

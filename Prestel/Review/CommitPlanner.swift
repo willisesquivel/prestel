@@ -284,6 +284,15 @@ enum CommitMessage {
 
     /// Subject plus an optional explanation. A vague or repeated explanation is left off.
     static func composed(subject rawSubject: String, detail rawDetail: String) -> String {
+        var rawSubject = rawSubject
+        var rawDetail = rawDetail
+        if isInstructionEcho(subject(from: rawSubject)) {
+            // The real subject often lands in the body: use its first line.
+            let lines = prepared(rawDetail).split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let first = lines.first, !first.isEmpty else { return "" }
+            rawSubject = String(first)
+            rawDetail = lines.count > 1 ? String(lines[1]) : ""
+        }
         let subject = subject(from: rawSubject)
         guard !subject.isEmpty else { return "" }
         let detail = tidied(detail: rawDetail)
@@ -359,14 +368,24 @@ enum CommitMessage {
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return normalized.isEmpty || weakSubjects.contains(normalized)
+        return normalized.isEmpty || weakSubjects.contains(normalized) || isInstructionEcho(normalized)
+    }
+
+    /// A small model sometimes copies a fragment of its own instructions into a
+    /// field ("at most 72 characters") instead of writing the subject.
+    static func isInstructionEcho(_ subject: String) -> Bool {
+        let lower = subject.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower.contains("trailing period") { return true }
+        if lower.contains("at most"), lower.contains("char") { return true }
+        return ["at most", "no trailing", "no quotes", "one specific", "a factual", "the commit subject", "the subject line", "the commit body"]
+            .contains { lower.hasPrefix($0) }
     }
 
     /// Whether a subject that is still being written is long enough to show.
     /// Anything longer than every weak subject cannot turn out to be one, so a
     /// streamed draft never flashes "Update files" before it is rejected.
     static func isSafeToShow(partialSubject subject: String) -> Bool {
-        subject.count > (weakSubjects.map(\.count).max() ?? 0)
+        subject.count > (weakSubjects.map(\.count).max() ?? 0) && !isInstructionEcho(subject)
     }
 
     static func fileLine(_ file: ChangedFile) -> String {
@@ -396,6 +415,7 @@ enum CommitMessagePrompt {
     When the diff has one purpose, name that purpose instead of listing files.
     In the body, explain the important behavior and user-visible effects supported by the diff. For a small change, one sentence is enough; for a larger one, at most four concrete bullet points. Do not invent intent, tests, or outcomes that the diff does not show. Parts of a long diff may be cut off; describe only what is shown.
     Put the subject in subject and the body in detail. Do not repeat the subject in the body.
+    Body bullets start with "- " and stay short. Plain text only, no markdown.
     """
 
     static func body(

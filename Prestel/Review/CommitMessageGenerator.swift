@@ -129,11 +129,14 @@ enum CommitNameError: Error, Equatable {
     case declined
 }
 
+// Field descriptions are plain labels on purpose: the on-device model copies
+// constraint wording into the field ("at most 72 characters"). The rules are in
+// `CommitMessagePrompt.instructions`.
 @Generable
 struct CommitSubjectDraft {
-    @Guide(description: "One specific git commit subject of at most 72 characters. No trailing period, quotes, or label.")
+    @Guide(description: "The commit subject line")
     var subject: String
 
-    @Guide(description: "A short factual body: one sentence for a small change, or at most four bullet points for a larger one, each starting with "- " and under 72 characters. Plain text, no markdown. Do not repeat the subject, invent motives or claim unshown tests.")
+    @Guide(description: "The commit body")
     var detail: String
 }
