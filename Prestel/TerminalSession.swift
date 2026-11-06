@@ -8,24 +8,31 @@ import UniformTypeIdentifiers
 /// repository contents are untrusted, so a link or "Open" action must never
 /// launch an app, script or executable that happens to be named there.
 enum SafeFileOpener {
+    /// Kinds of file that only display when opened. Anything else is revealed.
+    static let passiveTypes: [UTType] = [.text, .image, .pdf, .audiovisualContent]
+    /// Scripts conform to `.text`, so these are checked before `passiveTypes`.
+    static let runnableTypes: [UTType] = [.application, .executable, .unixExecutable, .shellScript, .script]
+        + ["com.apple.terminal.shell-script", "com.apple.automator-workflow", "com.apple.application-bundle"]
+            .compactMap { UTType($0) }
+
     static func runsWhenOpened(_ url: URL) -> Bool {
         let keys: Set<URLResourceKey> = [.contentTypeKey, .isExecutableKey, .isPackageKey, .isApplicationKey, .isDirectoryKey]
-        guard let values = try? url.resourceValues(forKeys: keys) else { return true }
+        guard let values = try? url.resolvingSymlinksInPath().resourceValues(forKeys: keys) else { return true }
         if values.isApplication == true || values.isPackage == true { return true }
-        if values.isDirectory != true, values.isExecutable == true { return true }
-        guard let type = values.contentType else { return false }
-        let risky = [UTType.application, .executable, .unixExecutable, .shellScript, .script]
-            + ["com.apple.terminal.shell-script", "com.apple.automator-workflow", "com.apple.application-bundle"]
-                .compactMap { UTType($0) }
-        return risky.contains { type.conforms(to: $0) }
+        if values.isDirectory == true { return false }
+        if values.isExecutable == true { return true }
+        guard let type = values.contentType else { return true }
+        if runnableTypes.contains(where: { type.conforms(to: $0) }) { return true }
+        return !passiveTypes.contains { type.conforms(to: $0) }
     }
 
-    /// Opens a harmless file; reveals anything that would run in Finder instead.
+    /// Opens a harmless file; reveals anything else in Finder instead.
     static func open(_ url: URL) {
-        if runsWhenOpened(url) {
+        let target = url.resolvingSymlinksInPath()
+        if runsWhenOpened(target) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } else {
-            NSWorkspace.shared.open(url)
+            NSWorkspace.shared.open(target)
         }
     }
 }

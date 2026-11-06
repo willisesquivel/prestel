@@ -2649,3 +2649,41 @@ struct PrestelTests {
         #expect(predicate(), sourceLocation: sourceLocation)
     }
 }
+
+struct SafeFileOpenerTests {
+    private func file(_ name: String, contents: String = "x", executable: Bool = false) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        if executable { try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path) }
+        return url
+    }
+
+    @Test func opensPassiveFiles() throws {
+        for name in ["notes.txt", "README.md", "data.json", "main.swift", "page.html", "log.csv"] {
+            #expect(!SafeFileOpener.runsWhenOpened(try file(name)), "\(name)")
+        }
+    }
+
+    @Test func revealsFilesThatCanRun() throws {
+        for name in ["run.command", "x.sh", "x.py", "x.scpt", "Basic.terminal", "x.jar", "x.pkg",
+                     "x.webloc", "x.fileloc", "x.shortcut", "no-extension-type.zzqq"] {
+            #expect(SafeFileOpener.runsWhenOpened(try file(name)), "\(name)")
+        }
+        #expect(SafeFileOpener.runsWhenOpened(try file("tool.txt", executable: true)))
+    }
+
+    @Test func followsSymlinksToTheirTarget() throws {
+        let link = try file("placeholder").deletingLastPathComponent().appendingPathComponent("notes.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: URL(fileURLWithPath: "/System/Applications/Calculator.app"))
+        #expect(SafeFileOpener.runsWhenOpened(link))
+        let textLink = link.deletingLastPathComponent().appendingPathComponent("alias.txt")
+        try FileManager.default.createSymbolicLink(at: textLink, withDestinationURL: try file("real.md"))
+        #expect(!SafeFileOpener.runsWhenOpened(textLink))
+    }
+
+    @Test func revealsMissingFiles() {
+        #expect(SafeFileOpener.runsWhenOpened(URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).txt")))
+    }
+}
