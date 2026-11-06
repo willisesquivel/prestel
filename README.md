@@ -70,7 +70,7 @@ key, and no setting. If Draft is unavailable, the sheet says why, for example
 that Apple Intelligence is off in System Settings or that the Mac is an Intel
 Mac.
 
-The model runs on your Mac. A long diff is trimmed to fit its small context
+The message appears in the box as it is written. The model runs on your Mac. A long diff is trimmed to fit its small context
 window, keeping every file's header and cutting the longest files first, so a
 draft is one model call. Drafts are a starting point: edit them before you
 commit.

@@ -266,6 +266,8 @@ final class CodeReviewModel: ObservableObject {
         commitGeneration += 1
         let token = commitGeneration
         let draftID = draft.id
+        // The message streams into the box while drafting; a failure puts this back.
+        let previousMessage = draft.message
         draft.isGenerating = true
         draft.notice = nil
         commitDraft = draft
@@ -284,13 +286,18 @@ final class CodeReviewModel: ObservableObject {
                     branch: branch,
                     files: files,
                     diff: material.diff,
-                    recentSubjects: material.recentSubjects
+                    recentSubjects: material.recentSubjects,
+                    onPartial: { [weak self] partial in
+                        guard let self, self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
+                        self.commitDraft?.message = partial
+                    }
                 )
                 guard self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
                 self.commitDraft?.message = name
                 self.commitDraft?.isGenerating = false
             } catch {
                 guard self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
+                self.commitDraft?.message = previousMessage
                 self.commitDraft?.isGenerating = false
                 self.commitDraft?.notice = Self.commitNotice(error)
             }

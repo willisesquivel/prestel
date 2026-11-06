@@ -31,12 +31,15 @@ enum CommitMessageGenerator {
         LanguageModelSession(instructions: CommitMessagePrompt.instructions).prewarm()
     }
 
+    /// Writes the message, calling `onPartial` with the text so far as the model
+    /// produces it. The return value is the finished, validated message.
     static func subject(
         repository: String,
         branch: String,
         files: [ChangedFile],
         diff: String,
-        recentSubjects: [String]
+        recentSubjects: [String],
+        onPartial: @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> String {
         if let reason = unavailableReason() { throw CommitNameError.unavailable(reason) }
 
@@ -47,15 +50,16 @@ enum CommitMessageGenerator {
             diff: CommitDigest.fit(diff, budget: evidenceCharacters),
             recentSubjects: recentSubjects
         )
-        var message = try await draft(prompt)
+        var message = try await draft(prompt, onPartial: onPartial)
         // One retry, only when the first subject says nothing ("Update files").
+        // That subject was never shown, so the retry streams in as a fresh draft.
         if CommitMessage.isWeak(CommitMessage.subjectLine(message)) {
             message = try await draft("""
                 \(prompt)
 
                 A previous draft was too vague: \(CommitMessage.subjectLine(message))
                 Make the subject specific, using only facts supported by the changes.
-                """)
+                """, onPartial: onPartial)
         }
         try Task.checkCancellation()
         let subject = CommitMessage.subjectLine(message)
@@ -64,15 +68,30 @@ enum CommitMessageGenerator {
         return message
     }
 
-    private static func draft(_ prompt: String) async throws -> String {
+    private static func draft(
+        _ prompt: String,
+        onPartial: @MainActor @Sendable (String) -> Void
+    ) async throws -> String {
         let session = LanguageModelSession(instructions: CommitMessagePrompt.instructions)
+        var message = ""
         do {
-            let response = try await session.respond(
+            let stream = session.streamResponse(
                 to: prompt,
                 generating: CommitSubjectDraft.self,
                 options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 600)
             )
-            return CommitMessage.composed(subject: response.content.subject, detail: response.content.detail)
+            // Fields arrive in declaration order: the subject first, then the body.
+            // The last snapshot is the complete draft.
+            for try await snapshot in stream {
+                message = CommitMessage.composed(
+                    subject: snapshot.content.subject ?? "",
+                    detail: snapshot.content.detail ?? ""
+                )
+                if CommitMessage.isSafeToShow(partialSubject: CommitMessage.subjectLine(message)) {
+                    await onPartial(message)
+                }
+            }
+            return message
         } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
             throw CommitNameError.tooLarge
         } catch LanguageModelSession.GenerationError.guardrailViolation {

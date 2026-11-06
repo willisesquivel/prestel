@@ -263,19 +263,27 @@ enum CommitMessage {
         return String(text.prefix(maxSubjectLength)).trimmingCharacters(in: .whitespaces)
     }
 
+    private static let weakSubjects: Set<String> = [
+        "update", "updates", "update files", "update code", "update the code",
+        "changes", "change", "misc", "miscellaneous", "wip", "todo",
+        "fix", "fixes", "fix bug", "bug fix", "bugfix",
+        "cleanup", "clean up", "tweaks", "tweak", "minor changes",
+        "various changes", "various fixes", "commit", "save", "edits"
+    ]
+
     static func isWeak(_ subject: String) -> Bool {
         let normalized = subject
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let weak: Set<String> = [
-            "update", "updates", "update files", "update code", "update the code",
-            "changes", "change", "misc", "miscellaneous", "wip", "todo",
-            "fix", "fixes", "fix bug", "bug fix", "bugfix",
-            "cleanup", "clean up", "tweaks", "tweak", "minor changes",
-            "various changes", "various fixes", "commit", "save", "edits"
-        ]
-        return normalized.isEmpty || weak.contains(normalized)
+        return normalized.isEmpty || weakSubjects.contains(normalized)
+    }
+
+    /// Whether a subject that is still being written is long enough to show.
+    /// Anything longer than every weak subject cannot turn out to be one, so a
+    /// streamed draft never flashes "Update files" before it is rejected.
+    static func isSafeToShow(partialSubject subject: String) -> Bool {
+        subject.count > (weakSubjects.map(\.count).max() ?? 0)
     }
 
     static func fileLine(_ file: ChangedFile) -> String {

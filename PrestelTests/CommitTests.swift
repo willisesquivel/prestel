@@ -68,6 +68,16 @@ struct CommitTests {
         #expect(CommitDigest.failureLine("hint: set upstream\nfatal: no upstream\n", fallback: "failed") == "no upstream")
     }
 
+    @Test func streamedSubjectsStayHiddenUntilTheyCannotBeVague() {
+        // Everything the weak list would reject is held back while it streams...
+        for weak in ["U", "Update", "Update files", "Update the code", "Various changes"] {
+            #expect(!CommitMessage.isSafeToShow(partialSubject: weak))
+        }
+        // ...and anything shown is already too long to be on that list.
+        #expect(CommitMessage.isSafeToShow(partialSubject: "Keep the send slot visible"))
+        #expect(!CommitMessage.isWeak("Keep the send slot visible"))
+    }
+
     @Test func fitLeavesASmallDiffAlone() {
         let diff = "diff --git a/a.txt b/a.txt\n+one\n"
         #expect(CommitDigest.fit(diff, budget: 5_000) == diff)
