@@ -215,6 +215,7 @@ final class CodeReviewModel: ObservableObject {
         guard commitDraft == nil else { return }
         guard case .ready = loadState, let snapshot, !snapshot.isClean, !snapshot.waitingOnIndexLock else { return }
         commitDraft = CommitDraft()
+        CommitMessageGenerator.prewarm()
     }
 
     func closeCommitComposer() {
@@ -691,7 +692,7 @@ final class CodeReviewModel: ObservableObject {
         case CommitNameError.vague:
             return "The draft was too vague. Edit the name, or try again."
         case CommitNameError.tooLarge:
-            return "The local model could not condense this commit. Write the message manually."
+            return "This commit is too large for the on-device model. Write the message manually."
         case GitRunnerError.outputLimitExceeded:
             return "A changed file is too large for the commit draft. Write the message manually."
         case GitRunnerError.timeout:

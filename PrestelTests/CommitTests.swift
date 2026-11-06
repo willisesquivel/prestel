@@ -64,21 +64,48 @@ struct CommitTests {
         #expect(!CommitMessage.isWeak("Fix send slot visibility"))
     }
 
-    @Test func digestChunksWithoutDroppingContent() {
-        let diff = String(repeating: "line\n", count: 80) + "last line"
-        let chunks = CommitDigest.chunks(diff, budget: 100)
-        #expect(chunks.count > 1)
-        #expect(chunks.joined() == diff)
-        #expect(chunks.allSatisfy { $0.count <= 100 })
+    @Test func failureLineSkipsHintsAndFatalPrefix() {
         #expect(CommitDigest.failureLine("hint: set upstream\nfatal: no upstream\n", fallback: "failed") == "no upstream")
     }
 
-    @Test func localModelSelectionPrefersTheCodeModel() {
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:30b"]) == "qwen3-coder:30b")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen2.5-coder:7b"]) == "qwen2.5-coder:7b")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
-        #expect(OllamaCommitModel.preferredModel(in: ["qwen2.5-coder:1.5b", "gpt-oss-20b:latest"]) == "gpt-oss-20b:latest")
-        #expect(OllamaCommitModel.preferredModel(in: ["other:latest", "qwen3-coder:480b-cloud"]) == nil)
+    @Test func fitLeavesASmallDiffAlone() {
+        let diff = "diff --git a/a.txt b/a.txt\n+one\n"
+        #expect(CommitDigest.fit(diff, budget: 5_000) == diff)
+    }
+
+    @Test func fitKeepsEveryFileAndStaysNearTheBudget() {
+        func section(_ name: String, lines: Int) -> String {
+            "diff --git a/\(name) b/\(name)\nnew file mode 100644\n" + String(repeating: "+code line\n", count: lines)
+        }
+        let diff = [
+            section("huge.swift", lines: 2_000),
+            section("small.swift", lines: 3),
+            "new file notes.txt\n" + String(repeating: "note line\n", count: 600)
+        ].joined(separator: "\n")
+        let fitted = CommitDigest.fit(diff, budget: 1_500)
+        #expect(fitted.count <= 1_500 + 200)
+        #expect(fitted.contains("diff --git a/huge.swift"))
+        #expect(fitted.contains("diff --git a/small.swift"))
+        #expect(fitted.contains("new file notes.txt"))
+        // The small file is whole; the large ones are cut and say so.
+        #expect(fitted.contains("diff --git a/small.swift b/small.swift\nnew file mode 100644\n+code line\n+code line\n+code line"))
+        #expect(fitted.contains("[truncated]"))
+    }
+
+    @Test func fitStaysBoundedWithHundredsOfFiles() {
+        let diff = (0..<200).map { "diff --git a/f\($0).txt b/f\($0).txt\n" + String(repeating: "+x\n", count: 50) }
+            .joined(separator: "\n")
+        let fitted = CommitDigest.fit(diff, budget: 2_000)
+        #expect(fitted.count <= 2_000 + 200)
+        #expect(fitted.contains("diff --git a/f0.txt"))
+        #expect(fitted.contains("more files not shown"))
+    }
+
+    @Test func promptCapsTheFileList() {
+        let files = (0..<(CommitMessagePrompt.maxListedFiles + 5)).map { sample("file\($0).swift") }
+        let body = CommitMessagePrompt.body(repository: "prestel", branch: "main", files: files, diff: "", recentSubjects: [])
+        #expect(body.contains("and 5 more files"))
+        #expect(!body.contains("file\(CommitMessagePrompt.maxListedFiles + 4).swift"))
     }
 
     @Test func promptCarriesTheDiffNotOnlyTheFileNames() {
@@ -146,7 +173,10 @@ struct CommitTests {
         #expect(material.diff.contains("marker-0 "))
         #expect(material.diff.contains("marker-44 "))
         #expect(material.diff.contains("last untracked behavior"))
-        #expect(CommitDigest.chunks(material.diff, budget: 6_000).joined() == material.diff)
+        let fitted = CommitDigest.fit(material.diff, budget: CommitMessageGenerator.evidenceCharacters)
+        #expect(fitted.contains("change-00.txt"))
+        #expect(fitted.contains("change-44.txt"))
+        #expect(fitted.contains("new-large.txt"))
     }
 
     @Test func commitKeepsStagedRenamesWhole() async throws {

@@ -17,9 +17,9 @@ Unicode, IME input, and selection work as they do anywhere else.
   ones, and open new tabs in the current directory.
 - **Code Review.** A panel on the right shows the staged and unstaged changes
   of the selected terminal's working directory, with syntax-highlighted diffs.
-- **Commit from the panel.** Write a message, or press Draft to have a local
-  model write one. Commit, commit and push, or commit, push, and open a pull
-  request page.
+- **Commit from the panel.** Write a message, or press Draft to have the
+  on-device Apple model write one. Commit, commit and push, or commit, push,
+  and open a pull request page.
 - **Clipboard from programs.** Programs such as vim and tmux can set the
   system clipboard through OSC 52. Programs cannot read the clipboard.
 - **Window restoration.** Tabs, working directories, and per-window review
@@ -30,7 +30,8 @@ Unicode, IME input, and selection work as they do anywhere else.
 
 - macOS 26 or later. The download is a universal app for Apple Silicon and Intel.
 - Git, for Code Review
-- Optional: [Ollama](https://ollama.com) for commit message drafts
+- Optional: Apple Silicon with Apple Intelligence turned on, for commit message
+  drafts
 
 ## Install
 
@@ -60,17 +61,19 @@ not follow remote or tmux panes. Outside a Git repository it says so.
   branch has none. The pull request page opens for that same remote.
 - The panel never discards changes.
 
-### Commit drafts with Ollama
+### Commit drafts
 
-Press Draft in the commit sheet and Prestel asks a model on your Mac to write
-the message from the diff and your recent commit subjects. It uses local
-Ollama when a supported model is installed, and Apple Intelligence otherwise.
-Large diffs are summarized in passes first.
+Press Draft in the commit sheet and Prestel writes the message from the diff
+and your recent commit subjects, using the language model built into macOS
+through Apple Intelligence. There is nothing to download, no account or API
+key, and no setting. If Draft is unavailable, the sheet says why, for example
+that Apple Intelligence is off in System Settings or that the Mac is an Intel
+Mac.
 
-Prestel prefers `qwen3-coder:30b`, then `gpt-oss-20b`, and also recognizes
-other installed Coder models. Ollama owns the model weights; Prestel does not
-download or bundle them. To set one up, install Ollama and run
-`ollama pull qwen3-coder:30b`.
+The model runs on your Mac. A long diff is trimmed to fit its small context
+window, keeping every file's header and cutting the longest files first, so a
+draft is one model call. Drafts are a starting point: edit them before you
+commit.
 
 ## Shortcuts
 
@@ -94,8 +97,7 @@ file links open.
 
 Prestel has no accounts, analytics, crash reporting, or telemetry. It does not
 send your terminal output, files, or repository contents anywhere on its own.
-Its only network request is the commit draft: when Ollama is running on your
-Mac, Draft asks it at `127.0.0.1`. Otherwise it uses Apple's on-device model.
+Commit drafts are written by Apple's on-device model and never leave your Mac.
 Git commands you run from the Code Review panel, such as push, talk to your
 remote the same way they do in any terminal.
 
