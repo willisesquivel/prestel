@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 import UniformTypeIdentifiers
 import UserNotifications
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     override init() { super.init(); Self.current = self }
     var keyController: TerminalWindowController? { (NSApp.keyWindow ?? NSApp.mainWindow)?.windowController as? TerminalWindowController }
     private(set) var controllers: [UUID: TerminalWindowController] = [:]
+    let updaterController = SPUStandardUpdaterController(startingUpdater: !AppDelegate.isTesting, updaterDelegate: nil, userDriverDelegate: nil)
     private var quitting = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {

@@ -45,6 +45,7 @@
 		A1000000000000000000002F /* CommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002F /* CommitTests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
+		C10000000000000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000003 /* Sparkle */; };
 		A1000000000000000000F101 /* ShellIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F101 /* ShellIntegration.swift */; };
 		A1000000000000000000F102 /* ShellMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F102 /* ShellMarks.swift */; };
 		A1000000000000000000F103 /* ShellIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F103 /* ShellIntegrationTests.swift */; };
@@ -114,6 +115,7 @@
 			files = (
 				C10000000000000000000001 /* SwiftTerm in Frameworks */,
 				C10000000000000000000002 /* Highlighter in Frameworks */,
+				C10000000000000000000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -228,6 +230,7 @@
 			packageProductDependencies = (
 				C30000000000000000000001 /* SwiftTerm */,
 				C30000000000000000000002 /* Highlighter */,
+				C30000000000000000000003 /* Sparkle */,
 			);
 			productName = Prestel;
 			productReference = A2000000000000000000000B /* Prestel.app */;
@@ -281,6 +284,7 @@
 			packageReferences = (
 				C20000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				C20000000000000000000002 /* XCRemoteSwiftPackageReference "HighlighterSwift" */,
+				C20000000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = A50000000000000000000004 /* Products */;
 			projectDirPath = "";
@@ -456,7 +460,7 @@
 				CODE_SIGN_ENTITLEMENTS = Prestel/Prestel.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(MARKETING_VERSION)";
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_TESTABILITY = YES;
@@ -488,7 +492,7 @@
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = "$(MARKETING_VERSION)";
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 8Y5M8LD8SA;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -591,6 +595,14 @@
 				revision = fe7aae9c9b31d3b296fd3d2dd575e1a207bb29e0;
 			};
 		};
+		C20000000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.10.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -603,6 +615,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C20000000000000000000002 /* XCRemoteSwiftPackageReference "HighlighterSwift" */;
 			productName = Highlighter;
+		};
+		C30000000000000000000003 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C20000000000000000000003 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

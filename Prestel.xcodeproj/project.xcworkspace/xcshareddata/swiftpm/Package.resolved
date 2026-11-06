@@ -1,5 +1,5 @@
 {
-  "originHash" : "d5d08e160cbe86b1374e147353794955c8a00be82768c4ddcee38b3f11f27cdd",
+  "originHash" : "3dfc23031e1d788a050b92907948bb383225b7a828fb529f863282fee4b71c83",
   "pins" : [
     {
       "identity" : "h",
@@ -16,6 +16,15 @@
       "location" : "https://github.com/smittytone/HighlighterSwift",
       "state" : {
         "revision" : "fe7aae9c9b31d3b296fd3d2dd575e1a207bb29e0"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle",
+      "state" : {
+        "revision" : "ab7d71291238df6e0492143b120c9b696a35f603",
+        "version" : "2.10.1"
       }
     },
     {

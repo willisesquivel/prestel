@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Prestel</title>
+    <link>https://github.com/willisesquivel/prestel/releases</link>
+    <description>Prestel updates</description>
+    <language>en</language>
+    <item>
+      <title>Prestel 0.1.2</title>
+      <link>https://github.com/willisesquivel/prestel/releases/tag/v0.1.2</link>
+      <sparkle:version>0.1.2</sparkle:version>
+      <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+      <pubDate>Fri, 06 Nov 2026 18:20:57 +0000</pubDate>
+      <enclosure url="https://github.com/willisesquivel/prestel/releases/download/v0.1.2/Prestel-0.1.2.dmg" sparkle:edSignature="gQYDgUz9WFOEZiTEh+PQ+CFcJKhTSXnqC8b9PhdXUPt5GcBGQteSqwAcL6U+YyrCRG93vMDPbze3jTgmRYL4BQ==" length="13539010" type="application/octet-stream"/>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+    </item>
+  </channel>
+</rss>

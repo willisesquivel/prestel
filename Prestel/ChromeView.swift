@@ -1,4 +1,5 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 struct PrestelCommands: Commands {
@@ -8,6 +9,10 @@ struct PrestelCommands: Commands {
         let window = app.keyController
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") { app.openSettingsTab() }.keyboardShortcut(",")
+        }
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { app.updaterController.checkForUpdates(nil) }
+                .disabled(!app.updaterController.updater.canCheckForUpdates)
         }
         CommandGroup(replacing: .newItem) {
             Button("New Window") { app.newWindow(nil) }.keyboardShortcut("n")

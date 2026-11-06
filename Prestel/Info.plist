@@ -3,6 +3,12 @@
 <plist version="1.0">
 <dict>
 	<!-- Merged with the generated Info.plist (INFOPLIST_KEY_* build settings). -->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/willisesquivel/prestel/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>5Z3IhiPdLUA7SS4nTcqVwGvg5iP/1ZsPzqyOwmk3FhI=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
