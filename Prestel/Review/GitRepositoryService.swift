@@ -605,27 +605,45 @@ actor GitRepositoryService: GitReviewServicing {
         var start = 0
         while start < paths.count {
             let end = min(start + 40, paths.count)
-            var arguments = [
-                "--no-optional-locks", "-C", root,
-                "-c", "color.ui=never",
-                "diff", "--no-ext-diff", "--no-textconv", "--no-color",
-                "-U1", "--find-renames"
-            ]
-            arguments.append(contentsOf: extra)
-            arguments.append("--")
-            arguments.append(contentsOf: paths[start..<end])
-            let result = try await git(
-                directory: root,
-                arguments: arguments,
-                timeout: ReviewBudgets.operationTimeout,
-                limit: ReviewBudgets.commitDiffBytes,
-                treatDiffExitAsSuccess: true
-            )
-            let chunk = text(result.stdout)
-            if !chunk.isEmpty { chunks.append(chunk) }
+            let batch = Array(paths[start..<end])
+            do {
+                let chunk = try await diffOutput(root: root, extra: extra, paths: batch)
+                if !chunk.isEmpty { chunks.append(chunk) }
+            } catch GitRunnerError.outputLimitExceeded {
+                // One huge file must not sink the whole draft. Read the files of
+                // this batch one at a time and stub the ones that are too big.
+                for path in batch {
+                    do {
+                        let chunk = try await diffOutput(root: root, extra: extra, paths: [path])
+                        if !chunk.isEmpty { chunks.append(chunk) }
+                    } catch GitRunnerError.outputLimitExceeded {
+                        chunks.append("diff --git a/\(path) b/\(path)\n[large change not shown]")
+                    }
+                }
+            }
             start = end
         }
         return chunks.joined(separator: "\n")
+    }
+
+    private func diffOutput(root: String, extra: [String], paths: [String]) async throws -> String {
+        var arguments = [
+            "--no-optional-locks", "-C", root,
+            "-c", "color.ui=never",
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color",
+            "-U1", "--find-renames"
+        ]
+        arguments.append(contentsOf: extra)
+        arguments.append("--")
+        arguments.append(contentsOf: paths)
+        let result = try await git(
+            directory: root,
+            arguments: arguments,
+            timeout: ReviewBudgets.operationTimeout,
+            limit: ReviewBudgets.commitDiffBytes,
+            treatDiffExitAsSuccess: true
+        )
+        return text(result.stdout)
     }
 
     private func untrackedPreview(root: String, paths: [String]) throws -> String {
@@ -649,12 +667,18 @@ actor GitRepositoryService: GitReviewServicing {
         guard lstat(fileURL.path, &info) == 0 else { return "[unreadable]\n" }
         if (info.st_mode & S_IFMT) == S_IFLNK { return "[symlink]\n" }
         if (info.st_mode & S_IFMT) != S_IFREG { return "[not a file]\n" }
-        if info.st_size > ReviewBudgets.commitDiffBytes { throw GitRunnerError.outputLimitExceeded }
-        guard let data = try? Data(contentsOf: fileURL) else { return "[unreadable]\n" }
+        if info.st_size == 0 { return "[empty]\n" }
+        // Only the start of a new file says what it is; never read all of a big one.
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return "[unreadable]\n" }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: ReviewBudgets.commitPreviewBytes), !data.isEmpty else {
+            return "[unreadable]\n"
+        }
         if data.prefix(8_000).contains(0) { return "[binary file]\n" }
-        let text = String(data: data, encoding: .utf8) ?? "[non-UTF-8 file]\n"
-        if text.isEmpty { return "[empty]\n" }
-        return text.hasSuffix("\n") ? text : text + "\n"
+        var text = String(decoding: data, as: UTF8.self)
+        if text.hasSuffix("\n") { text.removeLast() }
+        if Int64(data.count) < Int64(info.st_size) { text += "\n[rest of file not shown]" }
+        return text + "\n"
     }
 
     private func text(_ data: Data) -> String {

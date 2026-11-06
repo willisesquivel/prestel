@@ -272,11 +272,14 @@ final class CodeReviewModel: ObservableObject {
         draft.notice = nil
         commitDraft = draft
         let key = snapshot.revision.key
-        let files = snapshot.files.filter { selection.paths.contains($0.identityPath.display) }
+        let selected = snapshot.files.filter { selection.paths.contains($0.identityPath.display) }
+        // Build output, lockfiles and the like are summarized, never read.
+        let files = selected.filter { !CommitDigest.isNoise($0.identityPath.display) }
+        let generated = selected.filter { CommitDigest.isNoise($0.identityPath.display) }
         let repository = key.basename
         let branch = snapshot.revision.isDetached ? "detached" : (snapshot.revision.branchName ?? "unknown")
-        let paths = selection.paths
-        let untracked = selection.untrackedPaths
+        let paths = selection.paths.filter { !CommitDigest.isNoise($0) }
+        let untracked = selection.untrackedPaths.filter { !CommitDigest.isNoise($0) }
         commitDraftTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -285,6 +288,7 @@ final class CodeReviewModel: ObservableObject {
                     repository: repository,
                     branch: branch,
                     files: files,
+                    generated: generated,
                     diff: material.diff,
                     recentSubjects: material.recentSubjects,
                     onPartial: { [weak self] partial in
@@ -700,6 +704,8 @@ final class CodeReviewModel: ObservableObject {
             return "The draft was too vague. Edit the name, or try again."
         case CommitNameError.tooLarge:
             return "This commit is too large for the on-device model. Write the message manually."
+        case CommitNameError.declined:
+            return "The on-device model declined this change. Write the message manually."
         case GitRunnerError.outputLimitExceeded:
             return "A changed file is too large for the commit draft. Write the message manually."
         case GitRunnerError.timeout:

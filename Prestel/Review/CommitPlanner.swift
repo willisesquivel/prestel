@@ -179,6 +179,55 @@ enum CommitDigest {
         line.hasPrefix("diff --git ") || (line.hasPrefix("new file ") && !line.hasPrefix("new file mode "))
     }
 
+    /// Build output, vendored code, lockfiles and other generated files. Their
+    /// diffs say nothing about intent and can be enormous, so a draft never reads
+    /// them; it only learns how many changed and where.
+    static func isNoise(_ path: String) -> Bool {
+        let parts = path.lowercased().split(separator: "/").map(String.init)
+        guard let name = parts.last else { return false }
+        let generatedDirectories: Set<String> = [
+            "build", "dist", "out", "target", "node_modules", "deriveddata", "pods",
+            "vendor", "carthage", "cmakefiles", "__pycache__", ".build", ".gradle", ".next"
+        ]
+        for directory in parts.dropLast() {
+            if generatedDirectories.contains(directory) { return true }
+            if directory.hasPrefix("build-") || directory.hasPrefix("build_") { return true }
+        }
+        let generatedFiles: Set<String> = [
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "cargo.lock", "gemfile.lock",
+            "podfile.lock", "poetry.lock", "package.resolved", "cmakecache.txt", "project.pbxproj"
+        ]
+        if generatedFiles.contains(name) { return true }
+        for suffix in [".min.js", ".min.css", ".map", ".pyc", ".o", ".a", ".dylib", ".class", ".lock"] where name.hasSuffix(suffix) {
+            return true
+        }
+        return false
+    }
+
+    /// One line per top-level directory, such as
+    /// `build-xcode/ - 93 files, +6285 -4478`, in order of first appearance.
+    static func summary(of files: [ChangedFile], limit: Int = 8) -> [String] {
+        var order: [String] = []
+        var totals: [String: (files: Int, additions: Int, deletions: Int)] = [:]
+        for file in files {
+            let path = file.identityPath.display
+            let key = path.contains("/") ? String(path.split(separator: "/")[0]) + "/" : path
+            if totals[key] == nil { order.append(key) }
+            var entry = totals[key] ?? (0, 0, 0)
+            entry.files += 1
+            entry.additions += file.additions
+            entry.deletions += file.deletions
+            totals[key] = entry
+        }
+        var lines = order.prefix(limit).map { key -> String in
+            let entry = totals[key]!
+            let count = entry.files == 1 ? "1 file" : "\(entry.files) files"
+            return "\(key) - \(count), +\(entry.additions) -\(entry.deletions)"
+        }
+        if order.count > limit { lines.append("and \(order.count - limit) more places") }
+        return lines
+    }
+
     static func failureLine(_ stderr: String, fallback: String) -> String {
         let lines = stderr.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         let useful = lines.first { line in
@@ -237,7 +286,7 @@ enum CommitMessage {
     static func composed(subject rawSubject: String, detail rawDetail: String) -> String {
         let subject = subject(from: rawSubject)
         guard !subject.isEmpty else { return "" }
-        let detail = prepared(rawDetail)
+        let detail = tidied(detail: rawDetail)
         if detail.isEmpty || detail.compare(subject, options: .caseInsensitive) == .orderedSame {
             return subject
         }
@@ -245,6 +294,40 @@ enum CommitMessage {
             return subject
         }
         return subject + "\n\n" + detail
+    }
+
+    static let maxBodyBullets = 5
+
+    /// Cleans a model-written body: one bullet style, no markdown emphasis or
+    /// headings, no empty or repeated lines, and at most a handful of bullets.
+    static func tidied(detail raw: String) -> String {
+        var lines: [String] = []
+        var bullets = 0
+        for rawLine in prepared(raw).split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
+            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+            while line.hasPrefix("#") { line.removeFirst() }
+            line = line.trimmingCharacters(in: .whitespaces)
+            let markers = ["-", "*", "•", "–", "—", "+"]
+            if markers.contains(line) { continue }
+            var isBullet = false
+            for marker in markers where line.hasPrefix(marker + " ") {
+                line = String(line.dropFirst(marker.count + 1)).trimmingCharacters(in: .whitespaces)
+                isBullet = true
+                break
+            }
+            if isBullet {
+                guard !line.isEmpty, bullets < maxBodyBullets else { continue }
+                line = "- " + line
+                if lines.contains(line) { continue }
+                bullets += 1
+            }
+            if line.isEmpty, lines.last?.isEmpty ?? true { continue }
+            if !line.isEmpty, lines.last == line { continue }
+            lines.append(line)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 
     static func subject(from raw: String) -> String {
@@ -319,6 +402,7 @@ enum CommitMessagePrompt {
         repository: String,
         branch: String,
         files: [ChangedFile],
+        generated: [ChangedFile] = [],
         diff: String,
         recentSubjects: [String]
     ) -> String {
@@ -335,7 +419,7 @@ enum CommitMessagePrompt {
         }
         lines.append("Files:")
         if files.isEmpty {
-            lines.append("- (none)")
+            lines.append(generated.isEmpty ? "- (none)" : "- (none besides the generated files below)")
         } else {
             for file in files.prefix(maxListedFiles) {
                 lines.append("- \(CommitMessage.fileLine(file))")
@@ -343,6 +427,10 @@ enum CommitMessagePrompt {
             if files.count > maxListedFiles {
                 lines.append("- … and \(files.count - maxListedFiles) more files")
             }
+        }
+        if !generated.isEmpty {
+            lines.append("Generated or build files, diffs not shown:")
+            for line in CommitDigest.summary(of: generated) { lines.append("- \(line)") }
         }
         lines.append("Changes:")
         lines.append(diff.isEmpty ? "(no textual diff)" : diff)

@@ -33,24 +33,44 @@ enum CommitMessageGenerator {
 
     /// Writes the message, calling `onPartial` with the text so far as the model
     /// produces it. The return value is the finished, validated message.
+    ///
+    /// This should always produce a draft. If the model overflows its context or
+    /// declines the content, it tries again with less of the diff, down to just
+    /// the file list.
     static func subject(
         repository: String,
         branch: String,
         files: [ChangedFile],
+        generated: [ChangedFile] = [],
         diff: String,
         recentSubjects: [String],
         onPartial: @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> String {
         if let reason = unavailableReason() { throw CommitNameError.unavailable(reason) }
 
-        let prompt = CommitMessagePrompt.body(
-            repository: repository,
-            branch: branch,
-            files: files,
-            diff: CommitDigest.fit(diff, budget: evidenceCharacters),
-            recentSubjects: recentSubjects
-        )
-        var message = try await draft(prompt, onPartial: onPartial)
+        var lastFailure = CommitNameError.tooLarge
+        var prompt = ""
+        var message = ""
+        for budget in [evidenceCharacters, evidenceCharacters / 2, 1_000, 0] {
+            try Task.checkCancellation()
+            let attempt = CommitMessagePrompt.body(
+                repository: repository,
+                branch: branch,
+                files: files,
+                generated: generated,
+                diff: budget > 0 ? CommitDigest.fit(diff, budget: budget) : "",
+                recentSubjects: recentSubjects
+            )
+            do {
+                message = try await draft(attempt, onPartial: onPartial)
+                prompt = attempt
+                break
+            } catch let failure as CommitNameError where failure == .tooLarge || failure == .declined {
+                lastFailure = failure
+            }
+        }
+        if prompt.isEmpty { throw lastFailure }
+
         // One retry, only when the first subject says nothing ("Update files").
         // That subject was never shown, so the retry streams in as a fresh draft.
         if CommitMessage.isWeak(CommitMessage.subjectLine(message)) {
@@ -95,7 +115,7 @@ enum CommitMessageGenerator {
         } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
             throw CommitNameError.tooLarge
         } catch LanguageModelSession.GenerationError.guardrailViolation {
-            throw CommitNameError.unavailable("The on-device model declined to describe this change. Write the message manually.")
+            throw CommitNameError.declined
         }
     }
 }
@@ -105,6 +125,8 @@ enum CommitNameError: Error, Equatable {
     case empty
     case vague
     case tooLarge
+    /// The model's content safety check refused this text.
+    case declined
 }
 
 @Generable
@@ -112,6 +134,6 @@ struct CommitSubjectDraft {
     @Guide(description: "One specific git commit subject of at most 72 characters. No trailing period, quotes, or label.")
     var subject: String
 
-    @Guide(description: "A short factual body: one sentence for a small change, or at most four concrete bullet points for a larger one. Do not repeat the subject, invent motives or claim unshown tests.")
+    @Guide(description: "A short factual body: one sentence for a small change, or at most four bullet points for a larger one, each starting with "- " and under 72 characters. Plain text, no markdown. Do not repeat the subject, invent motives or claim unshown tests.")
     var detail: String
 }

@@ -28,7 +28,11 @@ enum ReviewBudgets {
     static let contextLines = 3
     static let commitTimeout: Duration = .seconds(60)
     static let pushTimeout: Duration = .seconds(120)
-    static let commitDiffBytes = 8 * 1024 * 1024
+    /// Largest `git diff` output read in one go for a draft. Past this, the files
+    /// are read one at a time and the oversized ones are stubbed, never an error.
+    static let commitDiffBytes = 1024 * 1024
+    /// How much of a new, untracked file a draft reads.
+    static let commitPreviewBytes = 64 * 1024
     static let revealMoreLines = 20
     static let intralinePairLimit = 20
     static let intralineCharacterLimit = 2_000

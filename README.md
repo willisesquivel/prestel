@@ -71,9 +71,17 @@ that Apple Intelligence is off in System Settings or that the Mac is an Intel
 Mac.
 
 The message appears in the box as it is written. The model runs on your Mac.
-A long diff is trimmed to fit its small context window, keeping every file's
-header and cutting the longest files first, so a draft is one model call.
-Drafts are a starting point: edit them before you commit.
+
+Draft is meant to work on big commits too. Build output, vendored code and
+lockfiles are summarized by folder and never read, new files are read only
+from the top, and a huge file is skipped instead of failing. A long diff is
+trimmed to fit the model's small context window, keeping every file's header
+and cutting the longest files first. If the model overflows or declines, Draft
+retries with less of the diff, down to just the file list. Drafts are a
+starting point: edit them before you commit.
+
+If something does go wrong, the notice replaces the hint under the branch name,
+so the sheet never changes size.
 
 ## Shortcuts
 

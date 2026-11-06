@@ -78,6 +78,72 @@ struct CommitTests {
         #expect(!CommitMessage.isWeak("Keep the send slot visible"))
     }
 
+    @Test func buildOutputAndLockfilesAreNoise() {
+        for path in [
+            "build-xcode-stage4/CMakeCache.txt", "build/out.o", "node_modules/a/index.js",
+            "app/Pods/Foo/Foo.m", "package-lock.json", "web/yarn.lock", "App.xcodeproj/project.pbxproj",
+            "dist/app.min.js", "Sources/cache.pyc"
+        ] {
+            #expect(CommitDigest.isNoise(path), "\(path)")
+        }
+        for path in [
+            "Prestel/Review/CommitPlanner.swift", "README.md", "scripts/build-dmg.sh",
+            "Sources/Builder.swift", "docs/build.md", "buildings.txt"
+        ] {
+            #expect(!CommitDigest.isNoise(path), "\(path)")
+        }
+    }
+
+    @Test func generatedFilesSummarizeByTopLevelDirectory() {
+        let files = [
+            sample("build-x/a.txt", additions: 6, deletions: 1),
+            sample("build-x/CMakeFiles/b.txt", additions: 4, deletions: 2),
+            sample("package-lock.json", additions: 10, deletions: 3)
+        ]
+        let lines = CommitDigest.summary(of: files)
+        #expect(lines == ["build-x/ - 2 files, +10 -3", "package-lock.json - 1 file, +10 -3"])
+        let body = CommitMessagePrompt.body(repository: "r", branch: "main", files: [], generated: files, diff: "", recentSubjects: [])
+        #expect(body.contains("Generated or build files, diffs not shown:"))
+        #expect(body.contains("- build-x/ - 2 files, +10 -3"))
+        #expect(body.contains("(none besides the generated files below)"))
+    }
+
+    @Test func bodiesAreTidiedIntoOneBulletStyle() {
+        let raw = """
+            ## Changes
+            * **Stream** the draft into the box
+            • Hold back vague subjects
+            – Hold back vague subjects
+            -
+            - Restore the old text on failure
+            """
+        let tidy = CommitMessage.tidied(detail: raw)
+        // One bullet style, markdown gone, the empty and repeated bullets dropped.
+        #expect(tidy == "Changes\n- Stream the draft into the box\n- Hold back vague subjects\n- Restore the old text on failure")
+        let many = (1...9).map { "- point \($0)" }.joined(separator: "\n")
+        #expect(CommitMessage.tidied(detail: many).split(separator: "\n").count == CommitMessage.maxBodyBullets)
+        #expect(CommitMessage.composed(subject: "Add streaming", detail: "**Bold** sentence.") == "Add streaming\n\nBold sentence.")
+    }
+
+    @Test func draftMaterialSurvivesHugeFiles() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        // A tracked file whose diff is far past the read limit, and a huge new file.
+        let huge = String(repeating: "0123456789\n", count: 150_000)
+        try huge.write(toFile: (root as NSString).appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
+        try ("first line of the new file\n" + huge).write(toFile: (root as NSString).appendingPathComponent("huge-new.txt"), atomically: true, encoding: .utf8)
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root))
+        let snapshot = try await service.loadCatalog(for: key, generation: 1)
+        let selection = CommitPlanner.selection(from: snapshot.files)
+        let material = try await service.commitMaterial(for: key, paths: selection.paths, untrackedPaths: selection.untrackedPaths)
+        #expect(material.diff.contains("diff --git a/staged.txt b/staged.txt\n[large change not shown]"))
+        #expect(material.diff.contains("first line of the new file"))
+        #expect(material.diff.contains("[rest of file not shown]"))
+        #expect(material.diff.contains("unstaged"))
+        #expect(material.diff.count < 200_000)
+    }
+
     @Test func fitLeavesASmallDiffAlone() {
         let diff = "diff --git a/a.txt b/a.txt\n+one\n"
         #expect(CommitDigest.fit(diff, budget: 5_000) == diff)

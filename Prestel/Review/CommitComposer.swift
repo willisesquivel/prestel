@@ -25,6 +25,15 @@ private enum CommitMetrics {
     static let sectionRadius: CGFloat = 20
     static let fieldRadius: CGFloat = 12
     static let buttonHeight: CGFloat = 38
+    /// The message section has a fixed height: a notice takes the place of the
+    /// hint line and the message box gives up the room, so the card never resizes.
+    static let messageRowHeight: CGFloat = 24
+    static let hintLineHeight: CGFloat = 15
+    static let messageFieldHeight: CGFloat = 104
+    static let messageSpacing: CGFloat = 10
+    static var messageContentHeight: CGFloat {
+        messageRowHeight + hintLineHeight + messageFieldHeight + messageSpacing * 2
+    }
     /// The blue of the reference’s primary button; the system accent can be any colour.
     static let buttonBlue = Color(red: 0.20, green: 0.47, blue: 0.86)
 }
@@ -52,17 +61,6 @@ private struct CommitDialog: View {
             messageSection
             CommitActionPicker(selection: actionBinding, isDisabled: model.commitDraft?.isCommitting == true)
             filesSection
-            if let guidance {
-                Label {
-                    Text(guidance)
-                        .fixedSize(horizontal: false, vertical: true)
-                } icon: {
-                    Image(systemName: "info.circle")
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-            }
             commitButton
         }
         .padding(CommitMetrics.cardPadding)
@@ -93,7 +91,7 @@ private struct CommitDialog: View {
 
     private var messageSection: some View {
         CommitSection {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: CommitMetrics.messageSpacing) {
                 HStack(alignment: .center, spacing: 10) {
                     Image(systemName: branchSymbol)
                         .font(.system(size: 15, weight: .medium))
@@ -105,9 +103,7 @@ private struct CommitDialog: View {
                     Spacer(minLength: 8)
                     draftButton
                 }
-                Text("Files are committed from the working tree.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                hintLine
 
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: messageBinding)
@@ -125,7 +121,7 @@ private struct CommitDialog: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .frame(height: 104)
+                .frame(maxHeight: .infinity)
                 .background {
                     RoundedRectangle(cornerRadius: CommitMetrics.fieldRadius, style: .continuous)
                         .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
@@ -136,7 +132,30 @@ private struct CommitDialog: View {
                 }
 
             }
+            .frame(height: CommitMetrics.messageContentHeight)
         }
+    }
+
+    /// The line under the branch. A notice or refusal replaces the usual hint
+    /// here (up to two lines, full text on hover) rather than adding a row.
+    private var hintLine: some View {
+        Group {
+            if let guidance {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: "info.circle")
+                    Text(guidance)
+                }
+            } else {
+                Text("Files are committed from the working tree.")
+            }
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+        .lineLimit(2)
+        .truncationMode(.tail)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, minHeight: CommitMetrics.hintLineHeight, alignment: .topLeading)
+        .help(guidance ?? "")
     }
 
     private var draftButton: some View {
