@@ -39,9 +39,8 @@ Download [Prestel 0.1.2](https://github.com/willisesquivel/prestel/releases/down
 
 Open the DMG and drag Prestel into Applications.
 
-This build is not notarized by Apple yet, so macOS blocks the first launch.
-Try to open Prestel once. Then go to System Settings, Privacy & Security,
-scroll down, and click Open Anyway.
+The build is signed with a Developer ID and notarized by Apple, so Prestel
+opens without a Gatekeeper prompt.
 
 Notes for this version are on the
 [v0.1.2 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.2).
