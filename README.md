@@ -28,57 +28,22 @@ Unicode, IME input, and selection work as they do anywhere else.
 
 ## Requirements
 
-- macOS 26 or later
-- Xcode 26.5 or later to build
+- macOS 26 or later. The download is a universal app for Apple Silicon and Intel.
 - Git, for Code Review
 - Optional: [Ollama](https://ollama.com) for commit message drafts
 
-## Install and build
+## Install
 
-Prestel is built from source.
+Download [Prestel 0.1.1](https://github.com/willisesquivel/prestel/releases/download/v0.1.1/Prestel-0.1.1.dmg).
 
-1. Clone this repository.
-2. Open `Prestel.xcodeproj` in Xcode.
-3. Run the `Prestel` scheme. It uses a Release build with the debugger and
-   runtime checkers disabled for everyday terminal work. Xcode fetches the Swift packages on
-   the first build, so you need a network connection once.
+Open the DMG and drag Prestel into Applications.
 
-Use the `Debug Prestel` scheme when you need breakpoints or runtime checks.
-Keep long-running terminal sessions in the `Prestel` scheme or launch the
-built app directly. For a frozen debugging session, try pausing and continuing
-in Xcode before force quitting; this may recover the existing shells.
+This build is not notarized by Apple yet, so macOS blocks the first launch.
+Try to open Prestel once. Then go to System Settings, Privacy & Security,
+scroll down, and click Open Anyway.
 
-From the command line:
-
-```sh
-xcodebuild -project Prestel.xcodeproj -scheme Prestel -configuration Release build
-xcodebuild -project Prestel.xcodeproj -scheme Prestel test
-```
-
-The tests include some that start real shells.
-
-Run the terminal reliability check with:
-
-```sh
-python3 scripts/check-reliability.py --runs 5
-```
-
-Each run starts a fresh test app with a hidden window, sends 216,000 colored
-lines through three PTYs, changes splits, panels, window size and font size, and opens and closes
-24 temporary sessions. It checks output, completed draws, UI delays and shell
-cleanup. Logs and test results go under `.build/reliability/Release`; an external
-timeout captures the test app's stack if it hangs. Use `--configuration Debug`
-to check the unoptimized build too.
-
-Zsh sessions use a temporary startup directory and wait for a shell handshake
-before the stress phase. Completion markers pass through the terminal parser
-so wrapping and prompt redraws cannot erase the completion signal.
-
-The optimized test host enables testability and disables hardened runtime so
-XCTest can load its locally signed bundle. The timing run removes Xcode's
-runtime-checker injection; `Debug Prestel` keeps the diagnostic tools. Normal
-Release builds retain their project settings. A passing stress run covers these operations; it does not
-establish the cause of an unreproduced freeze.
+Notes for this version are on the
+[v0.1.1 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.1).
 
 ## Code Review
 
@@ -253,3 +218,48 @@ Recipes (restart the TUI after changing):
 The sidebar search uses a dedicated `NSTextView`, with its own undo history,
 single-line paste, horizontal caret scrolling, select-all on focus, and Escape
 to clear and dismiss. It does not use `TextField` or `NSTextField`.
+
+## Build from source
+
+To work on Prestel, clone this repository and open `Prestel.xcodeproj` in
+Xcode 26.5 or later. Run the `Prestel` scheme. It uses a Release build with
+the debugger and runtime checkers disabled for everyday terminal work. Xcode
+fetches the Swift packages on the first build, so you need a network
+connection once.
+
+Use the `Debug Prestel` scheme when you need breakpoints or runtime checks.
+Keep long-running terminal sessions in the `Prestel` scheme or launch the
+built app directly. For a frozen debugging session, try pausing and continuing
+in Xcode before force quitting; this may recover the existing shells.
+
+From the command line:
+
+```sh
+xcodebuild -project Prestel.xcodeproj -scheme Prestel -configuration Release build
+xcodebuild -project Prestel.xcodeproj -scheme Prestel test
+```
+
+The tests include some that start real shells.
+
+Run the terminal reliability check with:
+
+```sh
+python3 scripts/check-reliability.py --runs 5
+```
+
+Each run starts a fresh test app with a hidden window, sends 216,000 colored
+lines through three PTYs, changes splits, panels, window size and font size, and opens and closes
+24 temporary sessions. It checks output, completed draws, UI delays and shell
+cleanup. Logs and test results go under `.build/reliability/Release`; an external
+timeout captures the test app's stack if it hangs. Use `--configuration Debug`
+to check the unoptimized build too.
+
+Zsh sessions use a temporary startup directory and wait for a shell handshake
+before the stress phase. Completion markers pass through the terminal parser
+so wrapping and prompt redraws cannot erase the completion signal.
+
+The optimized test host enables testability and disables hardened runtime so
+XCTest can load its locally signed bundle. The timing run removes Xcode's
+runtime-checker injection; `Debug Prestel` keeps the diagnostic tools. Normal
+Release builds retain their project settings. A passing stress run covers these operations; it does not
+establish the cause of an unreproduced freeze.
