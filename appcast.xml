@@ -14,6 +14,15 @@
       <enclosure url="https://github.com/willisesquivel/prestel/releases/download/v0.1.2/Prestel-0.1.2.dmg" sparkle:edSignature="gQYDgUz9WFOEZiTEh+PQ+CFcJKhTSXnqC8b9PhdXUPt5GcBGQteSqwAcL6U+YyrCRG93vMDPbze3jTgmRYL4BQ==" length="13539010" type="application/octet-stream"/>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
     </item>
+    <item>
+      <title>Prestel 0.1.4</title>
+      <link>https://github.com/willisesquivel/prestel/releases/tag/v0.1.3</link>
+      <sparkle:version>0.1.4</sparkle:version>
+      <sparkle:shortVersionString>0.1.4</sparkle:shortVersionString>
+      <pubDate>Sat, 07 Nov 2026 04:00:00 +0000</pubDate>
+      <enclosure url="https://github.com/willisesquivel/prestel/releases/download/v0.1.3/Prestel-0.1.3.dmg" sparkle:edSignature="AMqbO6f//k1elX+tHKed/kpNCBWZsOoQkLn16A2+JKFSZeAfgY2tYJYgdmXH8/gxqs5lCAM+5P4r1FbbKfH3BA==" length="12538882" type="application/octet-stream"/>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+    </item>
       <item>
       <title>Prestel 0.1.3</title>
       <link>https://github.com/willisesquivel/prestel/releases/tag/v0.1.3</link>
