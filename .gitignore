@@ -8,3 +8,4 @@
 *.swp
 *.profraw
 .DS_Store
+build/
