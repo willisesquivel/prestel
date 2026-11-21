@@ -213,25 +213,34 @@ struct CodeReviewPanel: View {
 
     private func header(_ snapshot: ReviewSnapshot) -> some View {
         let totals = model.filteredTotals(in: snapshot)
-        return HStack(alignment: .center, spacing: 8) {
-        VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 2) {
             Text(snapshot.revision.key.basename)
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .help(snapshot.revision.key.worktreeRoot)
-            Text(branchLabel(snapshot))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-            Spacer(minLength: 0)
-            HStack(spacing: 8) {
-                Text("\(totals.count) file\(totals.count == 1 ? "" : "s")")
+            HStack(spacing: 5) {
+                Text(branchLabel(snapshot))
                     .foregroundStyle(.secondary)
-                Text("+\(totals.additions)")
-                    .foregroundStyle(AppColors.reviewAddition)
-                Text("−\(totals.deletions)")
-                    .foregroundStyle(AppColors.reviewDeletion)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if !isCleanStatus {
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                    HStack(spacing: 5) {
+                        Text("+\(totals.additions)")
+                            .foregroundStyle(AppColors.reviewAddition)
+                        Text("−\(totals.deletions)")
+                            .foregroundStyle(AppColors.reviewDeletion)
+                    }
+                    .fixedSize()
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                    Text("\(totals.count) file\(totals.count == 1 ? "" : "s")")
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
             }
             .font(.system(size: 11, design: .monospaced))
             .help(totalsHelp(snapshot))
@@ -325,6 +334,11 @@ struct CodeReviewPanel: View {
                 ChromeDivider()
 
                 Menu {
+                    Button("Stage All") { model.stageAll() }
+                        .disabled(!model.canStageAny)
+                    Button("Unstage All") { model.unstageAll() }
+                        .disabled(!model.canUnstageAny)
+                    Divider()
                     Button("Expand All") { model.expandAll() }
                     Button("Collapse All") { model.collapseAll() }
                     Button(model.showWhitespace ? "Hide Whitespace" : "Show Whitespace") {

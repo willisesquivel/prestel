@@ -23,6 +23,8 @@ final class CodeReviewModel: ObservableObject {
     private var watchTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var safetyTask: Task<Void, Never>?
+    private var stagingTask: Task<Void, Never>?
+    private var pendingStagingCount = 0
     private var presentationCache: [RepositoryKey: ReviewPresentationState] = [:]
     private var lastDirectory: String?
     private var lastSessionID: UUID?
@@ -211,10 +213,202 @@ final class CodeReviewModel: ObservableObject {
         NSPasteboard.general.setString(patches.joined(separator: "\n"), forType: .string)
     }
 
+    var canStageAny: Bool {
+        guard let snapshot, !snapshot.waitingOnIndexLock else { return false }
+        return snapshot.files.contains(where: \.canStage)
+    }
+
+    var canUnstageAny: Bool {
+        guard let snapshot, !snapshot.waitingOnIndexLock else { return false }
+        return snapshot.files.contains(where: \.canUnstage)
+    }
+
+    func stageFile(_ file: ChangedFile) {
+        guard file.canStage, let snapshot, !snapshot.waitingOnIndexLock else { return }
+        let key = snapshot.revision.key
+        let wasSingleLane = file.comparisons.count == 1
+        let previousLane = file.comparisons.first?.kind
+        applyOptimisticUpdate(for: [file.id: file.optimisticallyStaged()])
+        if wasSingleLane, let previousLane {
+            mirrorCachedDiff(fileID: file.id, from: previousLane, to: .staged)
+        }
+        enqueueIndexMutation(key: key, evictFileIDs: wasSingleLane ? [] : [file.id]) {
+            try await self.service.stage(in: key, paths: [file.identityPath.display])
+        }
+    }
+
+    func unstageFile(_ file: ChangedFile) {
+        guard file.canUnstage, let snapshot, !snapshot.waitingOnIndexLock else { return }
+        let key = snapshot.revision.key
+        let isUnborn = snapshot.revision.isUnborn
+        let wasSingleLane = file.comparisons.count == 1
+        let next = file.optimisticallyUnstaged()
+        applyOptimisticUpdate(for: [file.id: next])
+        if wasSingleLane, let nextLane = next.comparisons.first?.kind {
+            mirrorCachedDiff(fileID: file.id, from: .staged, to: nextLane)
+        }
+        enqueueIndexMutation(key: key, evictFileIDs: wasSingleLane ? [] : [file.id]) {
+            try await self.service.unstage(in: key, paths: file.unstagePaths, isUnborn: isUnborn)
+        }
+    }
+
+    func stageAll() {
+        guard let snapshot, !snapshot.waitingOnIndexLock else { return }
+        let targets = snapshot.files.filter(\.canStage)
+        guard !targets.isEmpty else { return }
+        let key = snapshot.revision.key
+        let paths = targets.map(\.identityPath.display)
+        var updates: [String: ChangedFile] = [:]
+        var evictIDs: Set<String> = []
+        for file in targets {
+            updates[file.id] = file.optimisticallyStaged()
+            if file.comparisons.count == 1, let prev = file.comparisons.first?.kind {
+                mirrorCachedDiff(fileID: file.id, from: prev, to: .staged)
+            } else {
+                evictIDs.insert(file.id)
+            }
+        }
+        applyOptimisticUpdate(for: updates)
+        enqueueIndexMutation(key: key, evictFileIDs: evictIDs) {
+            try await self.service.stage(in: key, paths: paths)
+        }
+    }
+
+    func unstageAll() {
+        guard let snapshot, !snapshot.waitingOnIndexLock else { return }
+        let targets = snapshot.files.filter(\.canUnstage)
+        guard !targets.isEmpty else { return }
+        let key = snapshot.revision.key
+        let paths = targets.flatMap(\.unstagePaths)
+        let isUnborn = snapshot.revision.isUnborn
+        var updates: [String: ChangedFile] = [:]
+        var evictIDs: Set<String> = []
+        for file in targets {
+            let next = file.optimisticallyUnstaged()
+            updates[file.id] = next
+            if file.comparisons.count == 1, let nextLane = next.comparisons.first?.kind {
+                mirrorCachedDiff(fileID: file.id, from: .staged, to: nextLane)
+            } else {
+                evictIDs.insert(file.id)
+            }
+        }
+        applyOptimisticUpdate(for: updates)
+        enqueueIndexMutation(key: key, evictFileIDs: evictIDs) {
+            try await self.service.unstage(in: key, paths: paths, isUnborn: isUnborn)
+        }
+    }
+
+    private func applyOptimisticUpdate(for updates: [String: ChangedFile]) {
+        guard var current = snapshot, !updates.isEmpty else { return }
+        current.files = current.files.map { updates[$0.id] ?? $0 }
+        current.additions = current.files.reduce(0) { $0 + $1.additions }
+        current.deletions = current.files.reduce(0) { $0 + $1.deletions }
+        publishWithoutAnimation {
+            snapshot = current
+        }
+    }
+
+    /// Keeps an already-loaded expanded diff visible across a single-lane
+    /// stage/unstage flip so the pane does not flash "Loading diff…".
+    private func mirrorCachedDiff(fileID: String, from source: FileComparisonKind, to destination: FileComparisonKind) {
+        let sourceKey = reviewDiffKey(fileID, source)
+        let destKey = reviewDiffKey(fileID, destination)
+        guard let diff = diffs[sourceKey] else { return }
+        var copied = diff
+        copied.comparison = destination
+        diffs[destKey] = copied
+        if let oldHL = highlights["old:\(sourceKey)"] {
+            highlights["old:\(destKey)"] = oldHL
+        }
+        if let newHL = highlights["new:\(sourceKey)"] {
+            highlights["new:\(destKey)"] = newHL
+        }
+    }
+
+    /// Serializes git index mutations so rapid per-file clicks never race on
+    /// `index.lock`, then reconciles once with a fast catalog reload.
+    private func enqueueIndexMutation(
+        key: RepositoryKey,
+        evictFileIDs: Set<String>,
+        operation: @escaping @MainActor () async throws -> Void
+    ) {
+        diagnostic = nil
+        pendingStagingCount += 1
+        debounceTask?.cancel()
+        let previous = stagingTask
+        stagingTask = Task { [weak self] in
+            _ = await previous?.value
+            guard let self else { return }
+            var failedError: Error?
+            do {
+                try await operation()
+            } catch {
+                failedError = error
+            }
+            self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
+            guard self.activeKey == key else { return }
+            if let failedError {
+                self.diagnostic = Self.commitNotice(failedError)
+                self.evictCachedDiffs(for: evictFileIDs)
+                await self.reloadCatalog(for: key)
+            } else {
+                self.evictCachedDiffs(for: evictFileIDs)
+                if self.pendingStagingCount == 0 {
+                    await self.reloadCatalog(for: key)
+                }
+            }
+        }
+    }
+
+    private func reloadCatalog(for key: RepositoryKey) async {
+        let expectedContext = context?.generation
+        snapshotGeneration += 1
+        let generation = snapshotGeneration
+        do {
+            let loaded = try await service.loadCatalog(for: key, generation: generation)
+            guard context?.generation == expectedContext, activeKey == key, pendingStagingCount == 0 else { return }
+            if !loaded.waitingOnIndexLock {
+                publishWithoutAnimation {
+                    snapshot = loaded
+                    loadState = .ready
+                }
+                diagnostic = loaded.diagnostic
+                applyDefaultExpansion(loaded)
+                for fileID in presentation.expandedFileIDs {
+                    loadBodies(for: fileID)
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch GitRunnerError.cancelled {
+            return
+        } catch {
+            guard context?.generation == expectedContext, activeKey == key else { return }
+            diagnostic = error.localizedDescription
+        }
+    }
+
+    private func evictCachedDiffs(for fileIDs: Set<String>) {
+        guard !fileIDs.isEmpty else { return }
+        for fileID in fileIDs {
+            for kind in FileComparisonKind.allCases {
+                let key = reviewDiffKey(fileID, kind)
+                diffs.removeValue(forKey: key)
+                highlights.removeValue(forKey: "old:\(key)")
+                highlights.removeValue(forKey: "new:\(key)")
+            }
+        }
+    }
+
+    var effectiveCommitStagedOnly: Bool {
+        guard let draft = commitDraft, let snapshot else { return false }
+        return draft.stagedOnly && snapshot.files.contains(where: \.isStaged)
+    }
+
     func openCommitComposer() {
         guard commitDraft == nil else { return }
         guard case .ready = loadState, let snapshot, !snapshot.isClean, !snapshot.waitingOnIndexLock else { return }
-        commitDraft = CommitDraft()
+        commitDraft = CommitDraft(stagedOnly: snapshot.files.contains(where: \.isStaged))
         CommitMessageGenerator.prewarm()
     }
 
@@ -235,6 +429,11 @@ final class CodeReviewModel: ObservableObject {
         commitDraft?.notice = nil
     }
 
+    func updateCommitStagedOnly(_ stagedOnly: Bool) {
+        commitDraft?.stagedOnly = stagedOnly
+        commitDraft?.notice = nil
+    }
+
     var canSubmitCommit: Bool {
         guard let draft = commitDraft, let snapshot, !draft.isCommitting, !draft.isGenerating else { return false }
         return CommitPlanner.canSubmit(
@@ -243,21 +442,24 @@ final class CodeReviewModel: ObservableObject {
             push: draft.push,
             detached: snapshot.revision.isDetached,
             indexLocked: snapshot.waitingOnIndexLock,
-            catalogComplete: snapshot.isComplete
+            catalogComplete: snapshot.isComplete,
+            stagedOnly: effectiveCommitStagedOnly
         )
     }
 
     func draftCommitName() {
         guard var draft = commitDraft, !draft.isGenerating, !draft.isCommitting else { return }
         guard let snapshot else { return }
-        let selection = CommitPlanner.selection(from: snapshot.files)
+        let stagedOnly = effectiveCommitStagedOnly
+        let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
         guard !selection.paths.isEmpty else {
             draft.notice = CommitPlanner.refusal(
                 files: snapshot.files,
                 push: draft.push,
                 detached: snapshot.revision.isDetached,
                 indexLocked: snapshot.waitingOnIndexLock,
-                catalogComplete: snapshot.isComplete
+                catalogComplete: snapshot.isComplete,
+                stagedOnly: stagedOnly
             ) ?? "There is nothing to commit."
             commitDraft = draft
             return
@@ -283,7 +485,7 @@ final class CodeReviewModel: ObservableObject {
         commitDraftTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let material = try await self.service.commitMaterial(for: key, paths: paths, untrackedPaths: untracked)
+                let material = try await self.service.commitMaterial(for: key, paths: paths, untrackedPaths: untracked, stagedOnly: stagedOnly)
                 let name = try await CommitMessageGenerator.subject(
                     repository: repository,
                     branch: branch,
@@ -310,7 +512,8 @@ final class CodeReviewModel: ObservableObject {
 
     func commitFromComposer() {
         guard var draft = commitDraft, !draft.isCommitting, !draft.isGenerating, let snapshot else { return }
-        let selection = CommitPlanner.selection(from: snapshot.files)
+        let stagedOnly = effectiveCommitStagedOnly
+        let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
         let message = CommitMessage.prepared(draft.message)
         guard CommitPlanner.canSubmit(
             files: snapshot.files,
@@ -318,14 +521,16 @@ final class CodeReviewModel: ObservableObject {
             push: draft.push,
             detached: snapshot.revision.isDetached,
             indexLocked: snapshot.waitingOnIndexLock,
-            catalogComplete: snapshot.isComplete
+            catalogComplete: snapshot.isComplete,
+            stagedOnly: stagedOnly
         ) else {
             draft.notice = CommitPlanner.refusal(
                 files: snapshot.files,
                 push: draft.push,
                 detached: snapshot.revision.isDetached,
                 indexLocked: snapshot.waitingOnIndexLock,
-                catalogComplete: snapshot.isComplete
+                catalogComplete: snapshot.isComplete,
+                stagedOnly: stagedOnly
             )
             commitDraft = draft
             return
@@ -343,8 +548,9 @@ final class CodeReviewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let outcome = try await self.service.commit(in: key, paths: selection.paths, message: message, push: push)
+                let outcome = try await self.service.commit(in: key, paths: selection.paths, message: message, push: push, stagedOnly: stagedOnly)
                 if self.activeKey == key {
+                    self.evictCachedDiffs(for: Set(selection.paths))
                     self.refresh(userInitiated: false)
                 }
                 var pullRequest: URL?
@@ -642,6 +848,7 @@ final class CodeReviewModel: ObservableObject {
     }
 
     private func handle(_ event: RepositoryInvalidation) async {
+        guard pendingStagingCount == 0 else { return }
         switch event {
         case .indexLockChanged(let locked):
             if locked {

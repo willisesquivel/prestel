@@ -55,7 +55,7 @@ actor GitRepositoryService: GitReviewServicing {
     }
 
     func loadCatalog(for key: RepositoryKey, generation: UInt64) async throws -> ReviewSnapshot {
-        let statusData = try await git(
+        async let statusRequest = git(
             directory: key.worktreeRoot,
             arguments: [
                 "--no-optional-locks", "-C", key.worktreeRoot,
@@ -70,14 +70,19 @@ actor GitRepositoryService: GitReviewServicing {
             timeout: ReviewBudgets.operationTimeout,
             limit: ReviewBudgets.statusOutputBytes
         )
+        async let stagedRequest = numstat(root: key.worktreeRoot, staged: true)
+        async let unstagedRequest = numstat(root: key.worktreeRoot, staged: false)
+        let statusData = try await statusRequest
+        let stagedStats = try await stagedRequest
+        let unstagedStats = try await unstagedRequest
         let parsed = GitStatusParser.parse(statusData.stdout)
-        let stagedStats = try await numstat(root: key.worktreeRoot, staged: true)
-        let unstagedStats = try await numstat(root: key.worktreeRoot, staged: false)
+        let untrackedStats = Self.untrackedStats(root: key.worktreeRoot, paths: parsed.untracked)
         let fingerprint = indexFingerprint(gitDirectory: key.gitDirectory)
         let files = Self.catalog(
             status: parsed,
             staged: stagedStats,
-            unstaged: unstagedStats
+            unstaged: unstagedStats,
+            untracked: untrackedStats
         )
         let additions = files.reduce(0) { $0 + $1.additions }
         let deletions = files.reduce(0) { $0 + $1.deletions }
@@ -399,10 +404,65 @@ actor GitRepositoryService: GitReviewServicing {
         return text
     }
 
-    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial {
+    func stage(in key: RepositoryKey, paths: [String]) async throws {
+        let unique = Self.uniqueSafePaths(paths)
+        guard !unique.isEmpty else { return }
+        let lock = (key.gitDirectory as NSString).appendingPathComponent("index.lock")
+        if FileManager.default.fileExists(atPath: lock) {
+            throw GitReviewServiceError.commitRejected("Wait for the Git operation to finish.")
+        }
+        var start = 0
+        while start < unique.count {
+            let end = min(start + 100, unique.count)
+            var arguments = ["-C", key.worktreeRoot, "add", "--"]
+            arguments.append(contentsOf: unique[start..<end])
+            _ = try await git(
+                directory: key.worktreeRoot,
+                arguments: arguments,
+                timeout: ReviewBudgets.operationTimeout,
+                limit: 256 * 1024
+            )
+            start = end
+        }
+    }
+
+    func unstage(in key: RepositoryKey, paths: [String], isUnborn: Bool) async throws {
+        let unique = Self.uniqueSafePaths(paths)
+        guard !unique.isEmpty else { return }
+        let lock = (key.gitDirectory as NSString).appendingPathComponent("index.lock")
+        if FileManager.default.fileExists(atPath: lock) {
+            throw GitReviewServiceError.commitRejected("Wait for the Git operation to finish.")
+        }
+        var start = 0
+        while start < unique.count {
+            let end = min(start + 100, unique.count)
+            var arguments = ["-C", key.worktreeRoot]
+            if isUnborn {
+                // On an unborn branch HEAD does not exist yet; `--cached` only
+                // removes the entry from the index and never touches the work tree.
+                arguments.append(contentsOf: ["rm", "--cached", "-f", "--"])
+            } else {
+                arguments.append(contentsOf: ["restore", "--staged", "--"])
+            }
+            arguments.append(contentsOf: unique[start..<end])
+            _ = try await git(
+                directory: key.worktreeRoot,
+                arguments: arguments,
+                timeout: ReviewBudgets.operationTimeout,
+                limit: 256 * 1024
+            )
+            start = end
+        }
+    }
+
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String], stagedOnly: Bool = false) async throws -> CommitMaterial {
         let subjects = await recentSubjects(root: key.worktreeRoot)
         guard !paths.isEmpty else {
             return CommitMaterial(diff: "", recentSubjects: subjects)
+        }
+        if stagedOnly {
+            let diff = try await diffText(root: key.worktreeRoot, extra: ["--cached"], paths: paths)
+            return CommitMaterial(diff: diff, recentSubjects: subjects)
         }
         var diff = try await workingDiff(root: key.worktreeRoot, paths: paths)
         let untracked = try untrackedPreview(root: key.worktreeRoot, paths: untrackedPaths)
@@ -413,7 +473,7 @@ actor GitRepositoryService: GitReviewServicing {
         return CommitMaterial(diff: diff, recentSubjects: subjects)
     }
 
-    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool, stagedOnly: Bool = false) async throws -> CommitOutcome {
         let message = CommitMessage.prepared(message)
         guard !CommitMessage.subjectLine(message).isEmpty else {
             throw GitReviewServiceError.commitRejected("Write a commit message first.")
@@ -426,7 +486,9 @@ actor GitRepositoryService: GitReviewServicing {
             throw GitReviewServiceError.commitRejected("Wait for the Git operation to finish.")
         }
         do {
-            try await stage(root: key.worktreeRoot, paths: paths)
+            if !stagedOnly {
+                try await stage(root: key.worktreeRoot, paths: paths)
+            }
             _ = try await git(
                 directory: key.worktreeRoot,
                 arguments: ["-C", key.worktreeRoot, "commit", "-m", message],
@@ -739,10 +801,98 @@ actor GitRepositoryService: GitReviewServicing {
         }
     }
 
+    struct UntrackedStat: Equatable, Sendable {
+        var additions: Int?
+        var deletions: Int?
+        var isBinary: Bool
+    }
+
+    /// Counts lines of untracked files directly so `+N −0` appears before a
+    /// file is expanded, matching `git diff --numstat` (NUL in the first 8 KB
+    /// marks a file binary). Bounded so large build trees never stall status.
+    static func untrackedStats(root: String, paths: [ReviewPath]) -> [String: UntrackedStat] {
+        guard !paths.isEmpty else { return [:] }
+        let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+        let rootPath = rootURL.path
+        let maxFiles = 500
+        let maxTotalBytes = 32 * 1024 * 1024
+        let maxFileBytes = ReviewBudgets.sourceSnapshotBytes
+        let chunkBytes = 64 * 1024
+        var scannedBytes = 0
+        var results: [String: UntrackedStat] = [:]
+
+        for path in paths.prefix(maxFiles) {
+            guard path.isLossless, CommitPlanner.isSafeRelativePath(path.display) else { continue }
+            let fileURL = URL(fileURLWithPath: path.display, relativeTo: rootURL).standardizedFileURL
+            guard fileURL.path == rootPath || fileURL.path.hasPrefix(rootPath + "/") else { continue }
+            var info = stat()
+            guard lstat(fileURL.path, &info) == 0 else { continue }
+            let fileType = info.st_mode & S_IFMT
+            if fileType == S_IFLNK {
+                results[path.display] = UntrackedStat(additions: 1, deletions: 0, isBinary: false)
+                continue
+            }
+            guard fileType == S_IFREG else { continue }
+            if info.st_size == 0 {
+                results[path.display] = UntrackedStat(additions: 0, deletions: 0, isBinary: false)
+                continue
+            }
+            guard let handle = try? FileHandle(forReadingFrom: fileURL) else { continue }
+            defer { try? handle.close() }
+            if Int64(info.st_size) > Int64(maxFileBytes) {
+                if let sample = try? handle.read(upToCount: 8_000), sample.contains(0) {
+                    results[path.display] = UntrackedStat(additions: nil, deletions: nil, isBinary: true)
+                }
+                continue
+            }
+            let fileSize = Int(info.st_size)
+            if scannedBytes + fileSize > maxTotalBytes { break }
+            scannedBytes += fileSize
+
+            var prefixRemaining = 8_000
+            var isBinary = false
+            var newlineCount = 0
+            var lastByte: UInt8?
+            while let chunk = try? handle.read(upToCount: chunkBytes), !chunk.isEmpty {
+                if prefixRemaining > 0 {
+                    let checkCount = min(prefixRemaining, chunk.count)
+                    if chunk.prefix(checkCount).contains(0) {
+                        isBinary = true
+                        break
+                    }
+                    prefixRemaining -= checkCount
+                }
+                for byte in chunk where byte == 0x0A {
+                    newlineCount += 1
+                }
+                lastByte = chunk.last
+            }
+            if isBinary {
+                results[path.display] = UntrackedStat(additions: nil, deletions: nil, isBinary: true)
+            } else if let lastByte {
+                let lines = newlineCount + (lastByte == 0x0A ? 0 : 1)
+                results[path.display] = UntrackedStat(additions: lines, deletions: 0, isBinary: false)
+            }
+        }
+        return results
+    }
+
+    private static func uniqueSafePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for path in paths where CommitPlanner.isSafeRelativePath(path) {
+            if seen.insert(path).inserted {
+                result.append(path)
+            }
+        }
+        return result
+    }
+
     static func catalog(
         status: GitStatusParser.ParsedStatus,
         staged: [GitNumstatParser.Record],
-        unstaged: [GitNumstatParser.Record]
+        unstaged: [GitNumstatParser.Record],
+        untracked: [String: UntrackedStat] = [:]
     ) -> [ChangedFile] {
         var files: [String: ChangedFile] = [:]
         func stats(in records: [GitNumstatParser.Record], path: String) -> GitNumstatParser.Record? {
@@ -866,15 +1016,16 @@ actor GitRepositoryService: GitReviewServicing {
         }
 
         for path in status.untracked {
+            let stat = untracked[path.display]
             files[path.display] = ChangedFile(
                 identityPath: path,
                 kind: .untracked,
                 comparisons: [
                     ComparisonSummary(
                         kind: .untracked,
-                        additions: nil,
-                        deletions: nil,
-                        isBinary: false,
+                        additions: stat?.additions,
+                        deletions: stat?.deletions,
+                        isBinary: stat?.isBinary ?? false,
                         oldPath: nil,
                         newPath: path,
                         oldMode: nil,

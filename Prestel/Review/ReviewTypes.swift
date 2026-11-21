@@ -153,7 +153,82 @@ struct ChangedFile: Hashable, Sendable, Identifiable {
 
     var additions: Int { comparisons.compactMap(\.additions).reduce(0, +) }
     var deletions: Int { comparisons.compactMap(\.deletions).reduce(0, +) }
+    var stagedAdditions: Int { comparisons.filter { $0.kind == .staged }.compactMap(\.additions).reduce(0, +) }
+    var stagedDeletions: Int { comparisons.filter { $0.kind == .staged }.compactMap(\.deletions).reduce(0, +) }
     var hasBinaryComparison: Bool { comparisons.contains(where: \.isBinary) }
+    var isStaged: Bool { comparisons.contains { $0.kind == .staged } }
+    var hasUnstagedChanges: Bool { comparisons.contains { $0.kind == .unstaged || $0.kind == .untracked } }
+    var canStage: Bool {
+        kind != .conflicted
+            && !comparisons.contains(where: { $0.kind == .conflict })
+            && hasUnstagedChanges
+            && identityPath.isLossless
+            && CommitPlanner.isSafeRelativePath(identityPath.display)
+    }
+    var canUnstage: Bool {
+        isStaged
+            && identityPath.isLossless
+            && (oldPath?.isLossless ?? true)
+            && CommitPlanner.isSafeRelativePath(identityPath.display)
+            && (oldPath.map { CommitPlanner.isSafeRelativePath($0.display) } ?? true)
+    }
+
+    /// Paths to pass to git when unstaging this file (includes rename origin when present).
+    var unstagePaths: [String] {
+        if let oldPath, oldPath.display != identityPath.display {
+            return [oldPath.display, identityPath.display]
+        }
+        return [identityPath.display]
+    }
+
+    func optimisticallyStaged() -> ChangedFile {
+        let nextKind: FileChangeKind = kind == .untracked ? .added : kind
+        let hasCounts = comparisons.contains { $0.additions != nil || $0.deletions != nil }
+        let existing = comparisons.first { $0.kind == .staged } ?? comparisons.first
+        let summary = ComparisonSummary(
+            kind: .staged,
+            additions: hasCounts ? additions : nil,
+            deletions: hasCounts ? deletions : nil,
+            isBinary: hasBinaryComparison,
+            oldPath: existing?.oldPath ?? oldPath,
+            newPath: identityPath,
+            oldMode: existing?.oldMode,
+            newMode: existing?.newMode,
+            oldOID: existing?.oldOID,
+            newOID: existing?.newOID
+        )
+        return ChangedFile(
+            identityPath: identityPath,
+            kind: nextKind,
+            comparisons: [summary],
+            oldPath: oldPath
+        )
+    }
+
+    func optimisticallyUnstaged() -> ChangedFile {
+        let nextKind: FileChangeKind = kind == .added ? .untracked : kind
+        let laneKind: FileComparisonKind = nextKind == .untracked ? .untracked : .unstaged
+        let hasCounts = comparisons.contains { $0.additions != nil || $0.deletions != nil }
+        let existing = comparisons.first { $0.kind == .unstaged } ?? comparisons.first
+        let summary = ComparisonSummary(
+            kind: laneKind,
+            additions: hasCounts ? additions : nil,
+            deletions: hasCounts ? deletions : nil,
+            isBinary: hasBinaryComparison,
+            oldPath: nil,
+            newPath: identityPath,
+            oldMode: existing?.oldMode,
+            newMode: existing?.newMode,
+            oldOID: existing?.oldOID,
+            newOID: nil
+        )
+        return ChangedFile(
+            identityPath: identityPath,
+            kind: nextKind,
+            comparisons: [summary],
+            oldPath: nil
+        )
+    }
 
     func matches(_ filter: ReviewFilter) -> Bool {
         switch filter {
@@ -169,7 +244,7 @@ struct ChangedFile: Hashable, Sendable, Identifiable {
         let status = kind.title
         let lanes = comparisons.map(\.kind.shortTitle)
         if lanes.isEmpty { return status }
-        if lanes.count == 1 { return "\(status) · \(lanes[0])" }
+        if lanes.count == 1 { return lanes[0] == status ? status : "\(status) · \(lanes[0])" }
         if Set(lanes) == ["Staged", "Unstaged"] { return "\(status) · Staged + unstaged" }
         return "\(status) · \(lanes.joined(separator: " + "))"
     }
@@ -402,6 +477,7 @@ struct CommitDraft: Equatable {
     var id = UUID()
     var message = ""
     var action: CommitAction = .commit
+    var stagedOnly = false
     var isGenerating = false
     var isCommitting = false
     var notice: String?
@@ -418,19 +494,33 @@ protocol GitReviewServicing: Sendable {
         generation: UInt64,
         loadLarge: Bool
     ) async throws -> FileDiff
-    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial
-    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome
+    func stage(in key: RepositoryKey, paths: [String]) async throws
+    func unstage(in key: RepositoryKey, paths: [String], isUnborn: Bool) async throws
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String], stagedOnly: Bool) async throws -> CommitMaterial
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool, stagedOnly: Bool) async throws -> CommitOutcome
     /// The remote’s page for opening a pull request from the current branch.
     func pullRequestURL(for key: RepositoryKey) async -> URL?
 }
 
 extension GitReviewServicing {
-    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial {
+    func stage(in key: RepositoryKey, paths: [String]) async throws {}
+
+    func unstage(in key: RepositoryKey, paths: [String], isUnborn: Bool) async throws {}
+
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String], stagedOnly: Bool) async throws -> CommitMaterial {
         CommitMaterial(diff: "", recentSubjects: [])
     }
 
-    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String]) async throws -> CommitMaterial {
+        try await commitMaterial(for: key, paths: paths, untrackedPaths: untrackedPaths, stagedOnly: false)
+    }
+
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool, stagedOnly: Bool) async throws -> CommitOutcome {
         throw GitReviewServiceError.commitRejected("Commit is not available.")
+    }
+
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
+        try await commit(in: key, paths: paths, message: message, push: push, stagedOnly: false)
     }
 
     func pullRequestURL(for key: RepositoryKey) async -> URL? { nil }

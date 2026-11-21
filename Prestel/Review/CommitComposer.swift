@@ -145,6 +145,8 @@ private struct CommitDialog: View {
                     Image(systemName: "info.circle")
                     Text(guidance)
                 }
+            } else if stagedOnly {
+                Text("Only staged changes will be committed.")
             } else {
                 Text("Files are committed from the working tree.")
             }
@@ -182,39 +184,57 @@ private struct CommitDialog: View {
     }
 
     private var filesSection: some View {
-        CommitSection {
+        let files = committedFiles
+        return CommitSection {
             VStack(alignment: .leading, spacing: 8) {
-                fileHeader
-                if snapshot.files.isEmpty {
-                    Text("The working tree is clean.")
+                fileHeader(files)
+                if files.isEmpty {
+                    Text(stagedOnly ? "No staged files." : "The working tree is clean.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(snapshot.files) { file in
+                            ForEach(files) { file in
                                 fileRow(file)
                             }
                         }
                         .padding(.trailing, scrollerLane)
                     }
                     .padding(.trailing, -scrollerLane)
-                    .frame(height: listHeight)
+                    .frame(height: listHeight(for: files.count))
                     .clipped()
                 }
             }
         }
     }
 
-    private var fileHeader: some View {
-        let additions = snapshot.files.reduce(0) { $0 + $1.additions }
-        let deletions = snapshot.files.reduce(0) { $0 + $1.deletions }
-        return HStack(spacing: 10) {
+    private func fileHeader(_ files: [ChangedFile]) -> some View {
+        let additions = files.reduce(0) { $0 + (stagedOnly ? $1.stagedAdditions : $1.additions) }
+        let deletions = files.reduce(0) { $0 + (stagedOnly ? $1.stagedDeletions : $1.deletions) }
+        let titleNoun = stagedOnly ? "Staged File" : "Changed File"
+        return HStack(spacing: 8) {
             Image(systemName: "doc.on.doc")
                 .font(.system(size: 14, weight: .medium))
                 .frame(width: 20)
-            Text("\(snapshot.files.count) Changed File\(snapshot.files.count == 1 ? "" : "s")")
+            Text("\(files.count) \(titleNoun)\(files.count == 1 ? "" : "s")")
                 .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+            if hasMixedStaging {
+                Button {
+                    model.updateCommitStagedOnly(!stagedOnly)
+                } label: {
+                    Text(stagedOnly ? "Include unstaged" : "Staged only")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.07)))
+                }
+                .buttonStyle(.plain)
+                .disabled(isBusy)
+                .help(stagedOnly ? "Commit all working tree changes instead" : "Commit only staged changes")
+            }
             Spacer(minLength: 0)
             Group {
                 Text("+\(additions)")
@@ -227,7 +247,10 @@ private struct CommitDialog: View {
     }
 
     private func fileRow(_ file: ChangedFile) -> some View {
-        HStack(alignment: .center, spacing: 10) {
+        let relevant = stagedOnly ? file.comparisons.filter { $0.kind == .staged } : file.comparisons
+        let additions = stagedOnly ? file.stagedAdditions : file.additions
+        let deletions = stagedOnly ? file.stagedDeletions : file.deletions
+        return HStack(alignment: .center, spacing: 10) {
             Circle()
                 .fill(kindColor(file))
                 .frame(width: 6, height: 6)
@@ -243,11 +266,11 @@ private struct CommitDialog: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            if file.comparisons.contains(where: { $0.additions != nil || $0.deletions != nil }) {
+            if relevant.contains(where: { $0.additions != nil || $0.deletions != nil }) {
                 Group {
-                    Text("+\(file.additions)")
+                    Text("+\(additions)")
                         .foregroundStyle(AppColors.reviewAddition)
-                    Text("−\(file.deletions)")
+                    Text("−\(deletions)")
                         .foregroundStyle(AppColors.reviewDeletion)
                 }
                 .font(.system(size: 11, design: .monospaced))
@@ -320,12 +343,24 @@ private struct CommitDialog: View {
         isBusy
     }
 
+    private var stagedOnly: Bool {
+        model.effectiveCommitStagedOnly
+    }
+
+    private var hasMixedStaging: Bool {
+        snapshot.files.contains(where: \.isStaged) && snapshot.files.contains(where: \.hasUnstagedChanges)
+    }
+
+    private var committedFiles: [ChangedFile] {
+        stagedOnly ? snapshot.files.filter(\.isStaged) : snapshot.files
+    }
+
     /// Room for the vertical scroller, taken from the section’s trailing padding
     /// so the line counts stay aligned with the header.
     private var scrollerLane: CGFloat { 12 }
 
-    private var listHeight: CGFloat {
-        min(CGFloat(snapshot.files.count) * 38, 152)
+    private func listHeight(for count: Int) -> CGFloat {
+        min(CGFloat(count) * 38, 152)
     }
 
     private var guidance: String? {
@@ -335,7 +370,8 @@ private struct CommitDialog: View {
             push: model.commitDraft?.push ?? false,
             detached: snapshot.revision.isDetached,
             indexLocked: snapshot.waitingOnIndexLock,
-            catalogComplete: snapshot.isComplete
+            catalogComplete: snapshot.isComplete,
+            stagedOnly: stagedOnly
         )
     }
 

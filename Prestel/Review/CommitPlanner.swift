@@ -8,23 +8,26 @@ struct CommitSelection: Equatable, Sendable {
 }
 
 enum CommitPlanner {
-    static func selection(from files: [ChangedFile]) -> CommitSelection {
+    static func selection(from files: [ChangedFile], stagedOnly: Bool = false) -> CommitSelection {
         var paths: [String] = []
         var untracked: [String] = []
         var conflicts: [String] = []
         var unsafe: [String] = []
         for file in files {
             let path = file.identityPath.display
-            if !file.identityPath.isLossless || !isSafeRelativePath(path) {
-                unsafe.append(path)
-                continue
-            }
             if file.kind == .conflicted || file.comparisons.contains(where: { $0.kind == .conflict }) {
                 conflicts.append(path)
                 continue
             }
+            if stagedOnly && !file.isStaged {
+                continue
+            }
+            if !file.identityPath.isLossless || !isSafeRelativePath(path) {
+                unsafe.append(path)
+                continue
+            }
             paths.append(path)
-            if file.kind == .untracked || file.comparisons.contains(where: { $0.kind == .untracked }) {
+            if !stagedOnly, file.kind == .untracked || file.comparisons.contains(where: { $0.kind == .untracked }) {
                 untracked.append(path)
             }
         }
@@ -36,14 +39,15 @@ enum CommitPlanner {
         push: Bool,
         detached: Bool,
         indexLocked: Bool,
-        catalogComplete: Bool
+        catalogComplete: Bool,
+        stagedOnly: Bool = false
     ) -> String? {
         if indexLocked { return "Wait for the Git operation to finish." }
         if !catalogComplete { return "The file list is incomplete. Refresh before committing." }
-        let selection = selection(from: files)
+        let selection = selection(from: files, stagedOnly: stagedOnly)
         if !selection.unsafePaths.isEmpty { return "A changed path could not be read safely." }
         if !selection.conflictPaths.isEmpty { return "Resolve the conflicted files before committing." }
-        if selection.paths.isEmpty { return "There is nothing to commit." }
+        if selection.paths.isEmpty { return stagedOnly ? "There are no staged changes to commit." : "There is nothing to commit." }
         if push && detached { return "This checkout is detached. Commit without pushing." }
         return nil
     }
@@ -54,9 +58,10 @@ enum CommitPlanner {
         push: Bool,
         detached: Bool,
         indexLocked: Bool,
-        catalogComplete: Bool
+        catalogComplete: Bool,
+        stagedOnly: Bool = false
     ) -> Bool {
-        guard refusal(files: files, push: push, detached: detached, indexLocked: indexLocked, catalogComplete: catalogComplete) == nil else {
+        guard refusal(files: files, push: push, detached: detached, indexLocked: indexLocked, catalogComplete: catalogComplete, stagedOnly: stagedOnly) == nil else {
             return false
         }
         return !CommitMessage.subjectLine(message).isEmpty
@@ -107,7 +112,7 @@ enum CommitPlanner {
 
     /// Status paths are relative to the work tree. Reject anything `git add` could
     /// resolve outside that tree.
-    private static func isSafeRelativePath(_ path: String) -> Bool {
+    static func isSafeRelativePath(_ path: String) -> Bool {
         if path.isEmpty || path.contains("\u{0}") || path.hasPrefix("/") { return false }
         return !path.split(separator: "/").contains("..")
     }

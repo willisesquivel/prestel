@@ -16,6 +16,8 @@ protocol ReviewDiffCoordinating: AnyObject {
 enum ReviewFileStickyMetrics {
     static let headerHeight: CGFloat = 40
     static let headerCornerRadius: CGFloat = 7
+    /// Breathing room between a file's header and its expanded diff surface.
+    static let diffTopSpacing: CGFloat = 6
     /// Same fill as a selected sidebar tab.
     static let expandedHeaderFill = Color.primary.opacity(0.16)
     /// Same fill as a hovered sidebar tab.
@@ -48,7 +50,10 @@ enum ReviewFileStickyMetrics {
 struct ReviewFileHeaderRow: View {
     let file: ChangedFile
     let expanded: Bool
+    let indexLocked: Bool
     let onToggle: () -> Void
+    let onStage: () -> Void
+    let onUnstage: () -> Void
     let onOpen: () -> Void
     let onReveal: () -> Void
     let onCopyRelative: () -> Void
@@ -56,58 +61,115 @@ struct ReviewFileHeaderRow: View {
     let onCopyPatch: () -> Void
 
     @State private var isHovered = false
+    @State private var isChevronHovered = false
+    @State private var isStageHovered = false
+    @State private var isMenuHovered = false
 
     var body: some View {
         HStack(spacing: 0) {
-            Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .padding(.leading, 4)
+            Button(action: onToggle) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isChevronHovered ? Color.primary : Color.primary.opacity(0.72))
+                    .transaction { $0.animation = nil }
+                    .frame(width: 24, height: 24)
+                    .background {
+                        if isChevronHovered {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(Color.primary.opacity(0.08))
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .onHover { isChevronHovered = $0 }
+            .help(expanded ? "Collapse file" : "Expand file")
+            .padding(.leading, 8)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(file.identityPath.basename)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(file.metadataLabel)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 5) {
+                    Text(file.metadataLabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if !file.hasBinaryComparison {
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize()
+                        HStack(spacing: 5) {
+                            Text("+\(file.additions)")
+                                .foregroundStyle(AppColors.reviewAddition)
+                            Text("−\(file.deletions)")
+                                .foregroundStyle(AppColors.reviewDeletion)
+                        }
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .fixedSize()
+                    }
+                }
             }
-            .padding(.leading, 4)
+            .padding(.leading, 6)
             .help(pathHelp)
 
             Spacer(minLength: 8)
 
-            if !file.hasBinaryComparison {
-                Text("+\(file.additions)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(AppColors.reviewAddition)
-                Text("−\(file.deletions)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(AppColors.reviewDeletion)
-                    .padding(.leading, 6)
+            if file.canStage || file.canUnstage {
+                let stages = file.canStage
+                let symbol = stages ? "plus" : "minus"
+                let label = stages
+                    ? (file.isStaged ? "Stage remaining changes" : "Stage file")
+                    : "Unstage file"
+                Button {
+                    if stages { onStage() } else { onUnstage() }
+                } label: {
+                    Image(systemName: symbol)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(isStageHovered ? Color.primary : Color.primary.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                        .background {
+                            if isStageHovered {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(Color.primary.opacity(0.08))
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(indexLocked)
+                .opacity(indexLocked ? 0.35 : 1)
+                .onHover { isStageHovered = $0 }
+                .help(label)
+                .accessibilityLabel(label)
+                .padding(.leading, 4)
             }
 
             Menu {
-                Button("Copy Relative Path", action: onCopyRelative)
-                    .disabled(!file.identityPath.isLossless)
-                Button("Copy Absolute Path", action: onCopyAbsolute)
-                    .disabled(!file.identityPath.isLossless)
-                Button("Open File", action: onOpen)
-                    .disabled(file.kind == .deleted || !file.identityPath.isLossless)
-                Button("Reveal in Finder", action: onReveal)
-                    .disabled(!file.identityPath.isLossless)
-                Button("Copy Patch", action: onCopyPatch)
+                fileMenuItems
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isMenuHovered ? Color.primary : Color.primary.opacity(0.72))
                     .frame(width: 24, height: 24)
+                    .background {
+                        if isMenuHovered {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(Color.primary.opacity(0.08))
+                        }
+                    }
+                    .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .onHover { isMenuHovered = $0 }
             .help("File actions")
+            .accessibilityLabel("File actions")
+            .padding(.leading, 2)
             .padding(.trailing, 8)
         }
         .frame(height: ReviewFileStickyMetrics.headerHeight)
@@ -115,31 +177,47 @@ struct ReviewFileHeaderRow: View {
         .background {
             RoundedRectangle(cornerRadius: ReviewFileStickyMetrics.headerCornerRadius, style: .continuous)
                 .fill(backgroundColor)
+                .animation(.easeInOut(duration: 0.14), value: isHovered)
+                .animation(.easeInOut(duration: 0.16), value: expanded)
         }
         .contentShape(
             .interaction,
             RoundedRectangle(cornerRadius: ReviewFileStickyMetrics.headerCornerRadius, style: .continuous)
         )
         .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: 0.14), value: isHovered)
-        .animation(.easeInOut(duration: 0.16), value: expanded)
         .onTapGesture(perform: onToggle)
         .contextMenu {
-            Button("Copy Relative Path", action: onCopyRelative)
-                .disabled(!file.identityPath.isLossless)
-            Button("Copy Absolute Path", action: onCopyAbsolute)
-                .disabled(!file.identityPath.isLossless)
-            Button("Open File", action: onOpen)
-                .disabled(file.kind == .deleted || !file.identityPath.isLossless)
-            Button("Reveal in Finder", action: onReveal)
-                .disabled(!file.identityPath.isLossless)
-            Button("Copy Patch", action: onCopyPatch)
+            fileMenuItems
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("\(file.identityPath.basename), \(file.metadataLabel)")
         .accessibilityValue(expanded ? "expanded" : "collapsed")
         .accessibilityAction(named: expanded ? "Collapse" : "Expand", onToggle)
+    }
+
+    @ViewBuilder
+    private var fileMenuItems: some View {
+        if file.canStage || file.canUnstage {
+            if file.canStage {
+                Button(file.isStaged ? "Stage Remaining Changes" : "Stage File", action: onStage)
+                    .disabled(indexLocked)
+            }
+            if file.canUnstage {
+                Button("Unstage File", action: onUnstage)
+                    .disabled(indexLocked)
+            }
+            Divider()
+        }
+        Button("Copy Relative Path", action: onCopyRelative)
+            .disabled(!file.identityPath.isLossless)
+        Button("Copy Absolute Path", action: onCopyAbsolute)
+            .disabled(!file.identityPath.isLossless)
+        Button("Open File", action: onOpen)
+            .disabled(file.kind == .deleted || !file.identityPath.isLossless)
+        Button("Reveal in Finder", action: onReveal)
+            .disabled(!file.identityPath.isLossless)
+        Button("Copy Patch", action: onCopyPatch)
     }
 
     private var backgroundColor: Color {
@@ -182,11 +260,14 @@ struct ReviewFileCard: View {
         let offset = expanded ? stickyOffset : 0
         // A stale offset from a fast fling must never cull the whole pane.
         let cull = min(ReviewFileStickyMetrics.contentCull(headerOffset: offset), max(paneHeight - 1, 0))
-        VStack(spacing: 0) {
+        VStack(spacing: expanded ? ReviewFileStickyMetrics.diffTopSpacing : 0) {
             ReviewFileHeaderRow(
                 file: file,
                 expanded: expanded,
+                indexLocked: model.snapshot?.waitingOnIndexLock == true,
                 onToggle: toggle,
+                onStage: { model.stageFile(file) },
+                onUnstage: { model.unstageFile(file) },
                 onOpen: { model.openFile(file) },
                 onReveal: { model.reveal(file) },
                 onCopyRelative: { model.copyPath(file, absolute: false) },
@@ -202,7 +283,7 @@ struct ReviewFileCard: View {
                 if visualExpanded {
                     offset = ReviewFileStickyMetrics.headerOffset(
                         sectionMinY: minY,
-                        sectionMaxY: minY + ReviewFileStickyMetrics.headerHeight + visualPaneHeight,
+                        sectionMaxY: minY + ReviewFileStickyMetrics.headerHeight + ReviewFileStickyMetrics.diffTopSpacing + visualPaneHeight,
                         pinTop: ShellMetrics.sidebarInset
                     )
                 } else {
@@ -216,6 +297,7 @@ struct ReviewFileCard: View {
                 ReviewDiffHost(
                     model: model,
                     file: file,
+                    topCull: cull,
                     onEscape: onEscape,
                     onFocusChange: { _ in }
                 )
@@ -244,7 +326,7 @@ struct ReviewFileCard: View {
             } else {
                 next = 0
             }
-            if abs(next - stickyOffset) > 0.5 {
+            if abs(next - stickyOffset) > 0.01 {
                 stickyOffset = next
             }
         }
@@ -262,14 +344,15 @@ struct ReviewFileCard: View {
 struct ReviewDiffHost: NSViewRepresentable, Equatable {
     @ObservedObject var model: CodeReviewModel
     var file: ChangedFile
+    var topCull: CGFloat = 0
     var onEscape: () -> Void
     var onFocusChange: (Bool) -> Void
 
-    /// Model-driven reloads flow through the observed object; identity alone
-    /// decides view equality so unrelated parent refreshes (scroll tracking)
-    /// never retrigger a pane reload mid-scroll.
+    /// Model-driven reloads flow through the observed object; scroll tracking
+    /// only updates `topCull` so the gutter can keep its left capsule rounded
+    /// at the clipped top edge without reloading the diff document.
     static nonisolated func == (lhs: ReviewDiffHost, rhs: ReviewDiffHost) -> Bool {
-        lhs.file.id == rhs.file.id
+        lhs.file.id == rhs.file.id && abs(lhs.topCull - rhs.topCull) < 0.01
     }
 
     func makeCoordinator() -> Coordinator {
@@ -287,12 +370,17 @@ struct ReviewDiffHost: NSViewRepresentable, Equatable {
         context.coordinator.onEscape = onEscape
         context.coordinator.onFocusChange = onFocusChange
         nsView.coordinator = context.coordinator
-        nsView.reload(
-            rows: ReviewDocumentBuilder.bodyRows(file: file, diffs: model.diffs, presentation: model.presentation),
-            highlights: model.highlights,
-            showWhitespace: model.showWhitespace,
-            file: file
-        )
+        nsView.setTopCull(topCull)
+        let reloadKey = Coordinator.ReloadKey(model: model, file: file)
+        if context.coordinator.lastReloadKey != reloadKey {
+            context.coordinator.lastReloadKey = reloadKey
+            nsView.reload(
+                rows: ReviewDocumentBuilder.bodyRows(file: file, diffs: model.diffs, presentation: model.presentation),
+                highlights: model.highlights,
+                showWhitespace: model.showWhitespace,
+                file: file
+            )
+        }
     }
 
     static func dismantleNSView(_ nsView: ReviewDiffPane, coordinator: Coordinator) {
@@ -301,9 +389,34 @@ struct ReviewDiffHost: NSViewRepresentable, Equatable {
 
     @MainActor
     final class Coordinator: NSObject, ReviewDiffCoordinating {
+        struct ReloadKey: Equatable {
+            var file: ChangedFile
+            var diffRevisions: [String?]
+            var highlightTokens: [String?]
+            var revealedContext: Set<Int>
+            var showWhitespace: Bool
+
+            @MainActor
+            init(model: CodeReviewModel, file: ChangedFile) {
+                self.file = file
+                self.diffRevisions = file.comparisons.map {
+                    model.diffs[reviewDiffKey(file.id, $0.kind)]?.revision
+                }
+                self.highlightTokens = file.comparisons.flatMap { comparison -> [String?] in
+                    let key = reviewDiffKey(file.id, comparison.kind)
+                    let old = model.highlights["old:\(key)"].map { "\($0.identity):\($0.appearanceGeneration)" }
+                    let new = model.highlights["new:\(key)"].map { "\($0.identity):\($0.appearanceGeneration)" }
+                    return [old, new]
+                }
+                self.revealedContext = model.presentation.revealedContext[file.id] ?? []
+                self.showWhitespace = model.showWhitespace
+            }
+        }
+
         var model: CodeReviewModel
         var onEscape: () -> Void
         var onFocusChange: (Bool) -> Void
+        var lastReloadKey: ReloadKey?
 
         init(model: CodeReviewModel, onEscape: @escaping () -> Void, onFocusChange: @escaping (Bool) -> Void) {
             self.model = model
@@ -318,8 +431,12 @@ struct ReviewDiffHost: NSViewRepresentable, Equatable {
 
 enum ReviewDiffMetrics {
     static let markerSlotWidth: CGFloat = 14
-    static let changeBarWidth: CGFloat = 2
-    static let numberLeadingInset: CGFloat = 8
+    static let changeBarWidth: CGFloat = 3
+    /// The tinted row body starts at the horizontal center of the capsule so the
+    /// capsule straddles the left edge and its rounded ends flow tangentially
+    /// into the top and bottom of each changed block.
+    static var diffFillLeading: CGFloat { changeBarWidth / 2 }
+    static var numberLeadingInset: CGFloat { changeBarWidth + 5 }
     static let codeTextLeading: CGFloat = 4
 
     static func isDark(_ appearance: NSAppearance) -> Bool {
@@ -334,7 +451,7 @@ enum ReviewDiffMetrics {
             }
         }
         let digits = max(3, String(maxNumber).count)
-        return CGFloat(digits) * font.maximumAdvancement.width + 16
+        return CGFloat(digits) * font.maximumAdvancement.width + numberLeadingInset + 8
     }
 
     /// Single line-number column (GEN-51 follow-up): deletion shows the old
@@ -753,6 +870,13 @@ final class ReviewDiffPane: NSView, ReviewFocusOwning {
         layoutDocument()
     }
 
+    func setTopCull(_ cull: CGFloat) {
+        let clamped = max(0, cull)
+        guard abs(document.topCull - clamped) > 0.01 else { return }
+        document.topCull = clamped
+        gutter.redrawSlice()
+    }
+
     func shutdown() {
         coordinator = nil
         document.reload(rows: [], highlights: [:], showWhitespace: false, file: nil)
@@ -943,6 +1067,7 @@ private final class ReviewDiffDocumentView: NSView {
     private var gutterWidth: CGFloat = 44
     private var maxCodeWidth: CGFloat = 0
     private var isMessageOnly = false
+    var topCull: CGFloat = 0
     private let selection = ReviewSelectionController()
     private let drawingSlice = ReviewDiffDrawingSlice()
 
@@ -1034,14 +1159,59 @@ private final class ReviewDiffDocumentView: NSView {
     func drawGutter(in dirtyRect: NSRect, width: CGFloat) {
         let dark = ReviewDiffMetrics.isDark(effectiveAppearance)
         var y: CGFloat = 0
+        var runKind: DiffLineKind?
+        var runStartY: CGFloat = 0
+        var runEndY: CGFloat = 0
+
+        func flushCapsuleRun() {
+            guard let kind = runKind,
+                  let bar = ReviewDiffMetrics.changeBarColor(kind: kind, dark: dark) else {
+                runKind = nil
+                return
+            }
+            let visibleStartY = max(runStartY, topCull)
+            let height = max(0, runEndY - visibleStartY)
+            if height > 0 {
+                let capsuleRect = NSRect(
+                    x: 0,
+                    y: visibleStartY,
+                    width: ReviewDiffMetrics.changeBarWidth,
+                    height: height
+                )
+                if capsuleRect.intersects(dirtyRect) {
+                    bar.setFill()
+                    let radius = ReviewDiffMetrics.changeBarWidth / 2
+                    NSBezierPath(roundedRect: capsuleRect, xRadius: radius, yRadius: radius).fill()
+                }
+            }
+            runKind = nil
+        }
+
         for row in rows {
             let height = ReviewDocumentBuilder.height(of: row)
             let rect = NSRect(x: 0, y: y, width: width, height: height)
-            if rect.intersects(dirtyRect), case .code(let line, _, _, _, _, _) = row {
-                drawGutter(line: line, in: rect, dark: dark)
+            if case .code(let line, _, _, _, _, _) = row {
+                if line.kind == .addition || line.kind == .deletion {
+                    if runKind == line.kind {
+                        runEndY = y + height
+                    } else {
+                        flushCapsuleRun()
+                        runKind = line.kind
+                        runStartY = y
+                        runEndY = y + height
+                    }
+                } else {
+                    flushCapsuleRun()
+                }
+                if rect.intersects(dirtyRect) {
+                    drawGutter(line: line, in: rect, dark: dark)
+                }
+            } else {
+                flushCapsuleRun()
             }
             y += height
         }
+        flushCapsuleRun()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1220,11 +1390,9 @@ private final class ReviewDiffDocumentView: NSView {
     private func drawGutter(line: DiffLine, in rect: NSRect, dark: Bool) {
         if let fill = ReviewDiffMetrics.changeFillColor(kind: line.kind, dark: dark) {
             fill.setFill()
-            rect.fill()
-        }
-        if let bar = ReviewDiffMetrics.changeBarColor(kind: line.kind, dark: dark) {
-            bar.setFill()
-            NSRect(x: rect.minX, y: rect.minY, width: ReviewDiffMetrics.changeBarWidth, height: rect.height).fill()
+            let fillX = rect.minX + ReviewDiffMetrics.diffFillLeading
+            let fillWidth = max(0, rect.maxX - fillX)
+            NSRect(x: fillX, y: rect.minY, width: fillWidth, height: rect.height).fill()
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping

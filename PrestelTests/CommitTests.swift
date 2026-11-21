@@ -328,6 +328,28 @@ struct CommitTests {
         let subject = try GitFixture.output(["log", "-1", "--format=%s"], in: root)
         #expect(subject.trimmingCharacters(in: .whitespacesAndNewlines) == "Record the working tree files")
     }
+
+    @Test func stagedOnlyCommitLeavesUnstagedAndUntrackedFilesAlone() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root))
+        let snapshot = try await service.loadCatalog(for: key, generation: 1)
+        let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: true)
+        #expect(selection.paths.sorted() == ["both.txt", "staged.txt"])
+        #expect(selection.untrackedPaths.isEmpty)
+        let material = try await service.commitMaterial(for: key, paths: selection.paths, untrackedPaths: selection.untrackedPaths, stagedOnly: true)
+        #expect(material.diff.contains("staged-both"))
+        #expect(!material.diff.contains("unstaged-both"))
+        let outcome = try await service.commit(in: key, paths: selection.paths, message: "Commit staged only", push: false, stagedOnly: true)
+        #expect(outcome == .committed)
+        let status = try GitFixture.output(["status", "--porcelain"], in: root)
+        let lines = status.split(separator: "\n").map(String.init)
+        #expect(lines.contains(" M both.txt"))
+        #expect(lines.contains(" M unstaged.txt"))
+        #expect(lines.contains("?? untracked.txt"))
+        #expect(!lines.contains { $0.hasSuffix(" staged.txt") })
+    }
 }
 
 @Suite
@@ -364,6 +386,28 @@ struct CommitComposerModelTests {
         await waitUntil { model.commitDraft?.notice != nil }
         #expect(model.commitDraft?.notice == "Committed. There is no remote to push to.")
         #expect(model.commitDraft?.isCommitting == false)
+    }
+
+    @Test func composerDefaultsToStagedOnlyWhenStagedFilesExist() async {
+        let service = RecordingCommitService(
+            pushFailure: nil,
+            files: [
+                sample("Staged.swift", lanes: [.staged], additions: 4, deletions: 1),
+                sample("Unstaged.swift", lanes: [.unstaged], additions: 2, deletions: 0)
+            ]
+        )
+        let model = CodeReviewModel(service: service, watcher: CommitNullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
+        model.bind(visible: true, windowID: UUID(), session: session)
+        await waitUntil { model.loadState == .ready }
+        model.openCommitComposer()
+        #expect(model.effectiveCommitStagedOnly == true)
+        model.updateCommitMessage("Stage only")
+        model.commitFromComposer()
+        await waitUntil { await service.recorded() != nil }
+        let recorded = await service.recorded()
+        #expect(recorded?.paths == ["Staged.swift"])
+        #expect(recorded?.stagedOnly == true)
     }
 }
 
@@ -411,13 +455,15 @@ private func lane(
 
 private actor RecordingCommitService: GitReviewServicing {
     private let pushFailure: String?
-    private var recordedCommit: (paths: [String], message: String, push: Bool)?
+    private let files: [ChangedFile]
+    private var recordedCommit: (paths: [String], message: String, push: Bool, stagedOnly: Bool)?
 
-    init(pushFailure: String?) {
+    init(pushFailure: String?, files: [ChangedFile] = [sample("IOStrip.cpp", additions: 62, deletions: 11)]) {
         self.pushFailure = pushFailure
+        self.files = files
     }
 
-    func recorded() -> (paths: [String], message: String, push: Bool)? {
+    func recorded() -> (paths: [String], message: String, push: Bool, stagedOnly: Bool)? {
         recordedCommit
     }
 
@@ -436,11 +482,11 @@ private actor RecordingCommitService: GitReviewServicing {
                 indexFingerprint: "1",
                 generation: generation
             ),
-            files: [sample("IOStrip.cpp", additions: 62, deletions: 11)],
-            additions: 62,
-            deletions: 11,
+            files: files,
+            additions: files.reduce(0) { $0 + $1.additions },
+            deletions: files.reduce(0) { $0 + $1.deletions },
             isComplete: true,
-            isClean: false,
+            isClean: files.isEmpty,
             isBare: false,
             waitingOnIndexLock: false,
             diagnostic: nil
@@ -468,8 +514,8 @@ private actor RecordingCommitService: GitReviewServicing {
         )
     }
 
-    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool) async throws -> CommitOutcome {
-        recordedCommit = (paths, message, push)
+    func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool, stagedOnly: Bool) async throws -> CommitOutcome {
+        recordedCommit = (paths, message, push, stagedOnly)
         if push, let pushFailure {
             return .committedPushFailed(pushFailure)
         }

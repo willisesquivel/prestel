@@ -122,6 +122,40 @@ struct CodeReviewModelTests {
         #expect(model.loadState == .ready)
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
+
+    @Test func stageAndUnstageFlipFileImmediatelyBeforeGitFinishes() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let model = CodeReviewModel(service: GitRepositoryService(), watcher: NullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: root))
+        model.bind(visible: true, windowID: UUID(), session: session)
+        await waitUntilReady(model)
+
+        let untracked = try #require(model.snapshot?.files.first { $0.identityPath.display == "untracked.txt" })
+        #expect(untracked.canStage)
+        #expect(!untracked.isStaged)
+
+        // Optimistic flip happens synchronously on click — before git add finishes.
+        model.stageFile(untracked)
+        let optimisticStaged = try #require(model.snapshot?.files.first { $0.identityPath.display == "untracked.txt" })
+        #expect(optimisticStaged.isStaged)
+        #expect(!optimisticStaged.canStage)
+        #expect(optimisticStaged.canUnstage)
+        #expect(optimisticStaged.additions == 1)
+
+        // Immediate unstage flips right back synchronously and serializes after git add.
+        model.unstageFile(optimisticStaged)
+        let optimisticUnstaged = try #require(model.snapshot?.files.first { $0.identityPath.display == "untracked.txt" })
+        #expect(!optimisticUnstaged.isStaged)
+        #expect(optimisticUnstaged.canStage)
+        #expect(optimisticUnstaged.kind == .untracked)
+
+        // Let the queued git commands and catalog reconcile settle.
+        try? await Task.sleep(for: .milliseconds(400))
+        let settled = try #require(model.snapshot?.files.first { $0.identityPath.display == "untracked.txt" })
+        #expect(!settled.isStaged)
+        #expect(settled.kind == .untracked)
+    }
 }
 
 /// The catalog load yields once before it publishes, so a fixed sleep can

@@ -244,10 +244,10 @@ enum ReviewDocumentBuilder {
             for (lineIndex, line) in hunk.lines.enumerated() {
                 rows.append(.code(line, fileID: file.id, comparison: comparison, revision: diff.revision, hunkIndex: hunkIndex, lineIndex: lineIndex))
             }
-            oldCursor = hunk.oldStart + hunk.oldCount
-            newCursor = hunk.newStart + hunk.newCount
+            oldCursor = max(oldCursor, hunk.oldStart + hunk.oldCount)
+            newCursor = max(newCursor, hunk.newStart + hunk.newCount)
         }
-        let trailing = max(0, oldLines.count - (oldCursor - 1))
+        let trailing = oldLines.isEmpty ? 0 : max(0, oldLines.count - (oldCursor - 1))
         if trailing > 0 {
             let marker = diff.hunks.count
             if revealed.contains(marker) {
@@ -272,6 +272,7 @@ enum ReviewDocumentBuilder {
     }
 
     private static func splitLines(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
         var lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
         if text.hasSuffix("\n") && lines.last == "" { lines.removeLast() }
         return lines
