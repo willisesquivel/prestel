@@ -60,6 +60,7 @@ private struct CommitDialog: View {
         VStack(alignment: .leading, spacing: 10) {
             messageSection
             CommitActionPicker(selection: actionBinding, isDisabled: model.commitDraft?.isCommitting == true)
+                .pointerStyle(.default)
             filesSection
             commitButton
         }
@@ -269,6 +270,7 @@ private struct CommitDialog: View {
                 } else {
                     Text(model.commitDraft?.action.buttonTitle ?? "Commit")
                         .font(.system(size: 14, weight: .medium))
+                        .contentTransition(.identity)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -349,7 +351,11 @@ private struct CommitDialog: View {
     private var actionBinding: Binding<CommitAction> {
         Binding(
             get: { model.commitDraft?.action ?? .commit },
-            set: { model.updateCommitAction($0) }
+            set: { action in
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { model.updateCommitAction(action) }
+            }
         )
     }
 }
@@ -367,54 +373,6 @@ private struct CommitSection<Content: View>: View {
                 RoundedRectangle(cornerRadius: CommitMetrics.sectionRadius, style: .continuous)
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04))
             }
-    }
-}
-
-/// Capsule segmented control: a recessed track with a raised white thumb.
-private struct CommitActionPicker: View {
-    @Binding var selection: CommitAction
-    var isDisabled: Bool
-    @Namespace private var thumb
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(CommitAction.allCases) { action in
-                segment(action)
-            }
-        }
-        .padding(3)
-        .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06)))
-        .disabled(isDisabled)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Action")
-    }
-
-    private func segment(_ action: CommitAction) -> some View {
-        let selected = selection == action
-        return Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                selection = action
-            }
-        } label: {
-            Text(action.title)
-                .font(.system(size: 13, weight: selected ? .medium : .regular))
-                .foregroundStyle(selected ? Color.primary : Color.secondary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
-                .frame(height: 30)
-                .background {
-                    if selected {
-                        Capsule()
-                            .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.white)
-                            .shadow(color: .black.opacity(colorScheme == .dark ? 0.3 : 0.1), radius: 2, y: 1)
-                            .matchedGeometryEffect(id: "thumb", in: thumb)
-                    }
-                }
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }
 
