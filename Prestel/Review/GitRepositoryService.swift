@@ -464,13 +464,28 @@ actor GitRepositoryService: GitReviewServicing {
             let diff = try await diffText(root: key.worktreeRoot, extra: ["--cached"], paths: paths)
             return CommitMaterial(diff: diff, recentSubjects: subjects)
         }
-        var diff = try await workingDiff(root: key.worktreeRoot, paths: paths)
-        let untracked = try untrackedPreview(root: key.worktreeRoot, paths: untrackedPaths)
-        if !untracked.isEmpty {
-            if !diff.isEmpty { diff += "\n" }
-            diff += untracked
+        // Match `commit(stagedOnly: false)` exactly: files already in the index
+        // commit their staged contents without re-staging working-tree edits.
+        let inIndex = try await stagedPaths(root: key.worktreeRoot, paths: paths)
+        let untrackedSet = Set(untrackedPaths)
+        let stagedGroup = paths.filter { inIndex.contains($0) }
+        let unstagedGroup = paths.filter { !inIndex.contains($0) && !untrackedSet.contains($0) }
+        let untrackedGroup = untrackedPaths.filter { !inIndex.contains($0) }
+
+        var parts: [String] = []
+        if !stagedGroup.isEmpty {
+            let stagedDiff = try await diffText(root: key.worktreeRoot, extra: ["--cached"], paths: stagedGroup)
+            if !stagedDiff.isEmpty { parts.append(stagedDiff) }
         }
-        return CommitMaterial(diff: diff, recentSubjects: subjects)
+        if !unstagedGroup.isEmpty {
+            let unstagedDiff = try await unstagedWorkingDiff(root: key.worktreeRoot, paths: unstagedGroup)
+            if !unstagedDiff.isEmpty { parts.append(unstagedDiff) }
+        }
+        if !untrackedGroup.isEmpty {
+            let untracked = try untrackedPreview(root: key.worktreeRoot, paths: untrackedGroup)
+            if !untracked.isEmpty { parts.append(untracked) }
+        }
+        return CommitMaterial(diff: parts.joined(separator: "\n"), recentSubjects: subjects)
     }
 
     func commit(in key: RepositoryKey, paths: [String], message: String, push: Bool, stagedOnly: Bool = false) async throws -> CommitOutcome {
@@ -652,13 +667,14 @@ actor GitRepositoryService: GitReviewServicing {
         }
     }
 
-    private func workingDiff(root: String, paths: [String]) async throws -> String {
+    private static let diffFunctionPattern =
+        #"^[[:space:]]*(((public|private|fileprivate|internal|open|protected|static|class|final|override|mutating|nonmutating|async|export|default|pub|@MainActor|@objc)[[:space:]]+)*((func|init|deinit|subscript|struct|class|enum|actor|protocol|extension|def|function|interface|type|fn|impl|trait)[[:space:]]+|var[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:[^=]*\{[[:space:]]*$).*)$"#
+
+    private func unstagedWorkingDiff(root: String, paths: [String]) async throws -> String {
         do {
             return try await diffText(root: root, extra: ["HEAD"], paths: paths)
         } catch GitRunnerError.failed {
-            let staged = try await diffText(root: root, extra: ["--cached"], paths: paths)
-            let unstaged = try await diffText(root: root, extra: [], paths: paths)
-            return [staged, unstaged].filter { !$0.isEmpty }.joined(separator: "\n")
+            return try await diffText(root: root, extra: [], paths: paths)
         }
     }
 
@@ -692,6 +708,7 @@ actor GitRepositoryService: GitReviewServicing {
         var arguments = [
             "--no-optional-locks", "-C", root,
             "-c", "color.ui=never",
+            "-c", "diff.default.xfuncname=\(Self.diffFunctionPattern)",
             "diff", "--no-ext-diff", "--no-textconv", "--no-color",
             "-U1", "--find-renames"
         ]

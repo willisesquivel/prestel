@@ -131,6 +131,7 @@ struct CommitTests {
         // A tracked file whose diff is far past the read limit, and a huge new file.
         let huge = String(repeating: "0123456789\n", count: 150_000)
         try huge.write(toFile: (root as NSString).appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
+        try GitFixture.run(["add", "staged.txt"], in: root)
         try ("first line of the new file\n" + huge).write(toFile: (root as NSString).appendingPathComponent("huge-new.txt"), atomically: true, encoding: .utf8)
         let service = GitRepositoryService()
         let key = try #require(try await service.resolveRepository(directory: root))
@@ -221,7 +222,9 @@ struct CommitTests {
         #expect(body.contains("Repository: prestel"))
         #expect(body.contains("Modified IOStrip.cpp +62 -11"))
         #expect(body.contains("+ keep the slot"))
-        #expect(body.contains("- Add terminal tabs"))
+        #expect(body.contains("Subject style: Plain sentence-case imperative"))
+        #expect(!body.contains("feat:"))
+        #expect(!body.contains("Add terminal tabs"))
         #expect(body.contains("Write the commit message."))
         #expect(CommitMessagePrompt.instructions.contains("72 characters"))
     }
@@ -239,6 +242,8 @@ struct CommitTests {
         #expect(!selection.paths.contains("skip.log"))
         let material = try await service.commitMaterial(for: key, paths: selection.paths, untrackedPaths: selection.untrackedPaths)
         #expect(material.diff.contains("untracked.txt"))
+        #expect(material.diff.contains("staged-both"))
+        #expect(!material.diff.contains("unstaged-both"))
         #expect(material.recentSubjects.contains("base"))
         let outcome = try await service.commit(in: key, paths: selection.paths, message: "Record the working tree files", push: false)
         #expect(outcome == .committed)
@@ -350,6 +355,530 @@ struct CommitTests {
         #expect(lines.contains("?? untracked.txt"))
         #expect(!lines.contains { $0.hasSuffix(" staged.txt") })
     }
+
+    @Test func mixedChangeDraftPreservesNewFileAndMatchesCommitScope() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prestel-mixed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Prestel/Review"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Prestel.xcodeproj"), withIntermediateDirectories: true)
+        try GitFixture.run(["init", "-b", "main"], in: root.path)
+        try GitFixture.run(["config", "user.name", "Prestel"], in: root.path)
+        try GitFixture.run(["config", "user.email", "prestel@example.com"], in: root.path)
+        try GitFixture.run(["config", "commit.gpgsign", "false"], in: root.path)
+
+        let baseModel = """
+        import Foundation
+
+        final class CodeReviewModel {
+            private var pendingStagingCount = 0
+            private func enqueueIndexMutation(key: String) {
+                pendingStagingCount += 1
+                debounceTask?.cancel()
+                Task {
+                    self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
+                    guard self.activeKey == key else { return }
+                    if failedError != nil {
+                        self.evictCachedDiffs()
+                        await self.reloadCatalog(for: key)
+                    } else {
+                        self.evictCachedDiffs()
+                        if self.pendingStagingCount == 0 {
+                            await self.reloadCatalog(for: key)
+                        }
+                    }
+                }
+            }
+
+            private func reloadCatalog(for key: String) async {
+                guard pendingStagingCount == 0 else { return }
+            }
+        }
+        """
+        let baseComposer = """
+        import SwiftUI
+
+        struct CommitDialog: View {
+            var body: some View {
+                VStack {
+                    CommitActionPicker(selection: actionBinding, isDisabled: false)
+                    commitButton
+                }
+            }
+
+            private var commitButton: some View {
+                Text("Commit")
+                    .font(.system(size: 14, weight: .medium))
+            }
+
+            private var actionBinding: Binding<Int> {
+                Binding(get: { 0 }, set: { model.updateCommitAction($0) })
+            }
+        }
+
+        /// Capsule segmented control: a recessed track with a raised white thumb.
+        private struct CommitActionPicker: View {
+            @Binding var selection: Int
+            var isDisabled: Bool
+            var body: some View {
+                HStack(spacing: 0) {
+                    Text("Commit")
+                }
+            }
+        }
+        """
+        let baseTable = """
+        import SwiftUI
+
+        struct ReviewFileHeaderRow: View {
+            var body: some View {
+                Button(action: {}) {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        """
+        try baseModel.write(to: root.appendingPathComponent("Prestel/Review/CodeReviewModel.swift"), atomically: true, encoding: .utf8)
+        try baseComposer.write(to: root.appendingPathComponent("Prestel/Review/CommitComposer.swift"), atomically: true, encoding: .utf8)
+        try baseTable.write(to: root.appendingPathComponent("Prestel/Review/ReviewTableView.swift"), atomically: true, encoding: .utf8)
+        try "// project\n".write(to: root.appendingPathComponent("Prestel.xcodeproj/project.pbxproj"), atomically: true, encoding: .utf8)
+        try GitFixture.run(["add", "."], in: root.path)
+        try GitFixture.run(["commit", "-m", "Add per-file staging"], in: root.path)
+
+        // Apply staging/review edits (unrelated to the commit action picker)
+        let editedModel = """
+        import Foundation
+
+        final class CodeReviewModel {
+            private var pendingStagingCount = 0
+            private func enqueueIndexMutation(key: String) {
+                pendingStagingCount += 1
+                loadTask?.cancel()
+                debounceTask?.cancel()
+                Task {
+                    guard self.activeKey == key else {
+                        self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
+                        return
+                    }
+                    self.evictCachedDiffs()
+                    if failedError != nil {
+                        await self.reloadCatalog(for: key, expectedPending: self.pendingStagingCount)
+                    } else if self.pendingStagingCount == 1 {
+                        await self.reloadCatalog(for: key, expectedPending: 1)
+                    }
+                    self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
+                }
+            }
+
+            private func reloadCatalog(for key: String, expectedPending: Int) async {
+                guard pendingStagingCount == expectedPending else { return }
+            }
+        }
+        """
+        let editedTable = """
+        import SwiftUI
+
+        struct ReviewFileHeaderRow: View {
+            var body: some View {
+                Button(action: {}) {
+                    Image(systemName: "chevron.right")
+                        .contentTransition(.identity)
+                }
+                .buttonStyle(ReviewHeaderIconButtonStyle(isHovered: false))
+            }
+        }
+
+        private struct ReviewHeaderIconButtonStyle: ButtonStyle {
+            var isHovered: Bool
+            func makeBody(configuration: Configuration) -> some View {
+                configuration.label
+            }
+        }
+        """
+
+        // Apply Lume-style commit action picker changes (new ~250-line file + composer edit)
+        let paddingLines = (0..<170).map { "    private var segmentMetric\($0): CGFloat { CGFloat(\($0)) }" }.joined(separator: "\n")
+        let pickerFile = """
+        import AppKit
+        import QuartzCore
+        import SwiftUI
+
+        struct CommitActionPicker: NSViewRepresentable {
+            @Binding var selection: Int
+            var isDisabled: Bool
+
+            func makeNSView(context: Context) -> CommitActionPickerView {
+                CommitActionPickerView(selection: selection)
+            }
+
+            func updateNSView(_ view: CommitActionPickerView, context: Context) {
+                view.update(selection: selection)
+            }
+        }
+
+        final class CommitActionPickerView: NSView {
+            static let height: CGFloat = 36
+            private let track = CALayer()
+            private let pill = CALayer()
+            private var position: CGFloat = 0.5
+            private var target: CGFloat = 0.5
+            private var velocity: CGFloat = 0
+        \(paddingLines)
+
+            init(selection: Int) {
+                super.init(frame: .zero)
+            }
+
+            override func mouseDown(with event: NSEvent) {
+                target = 1.5
+            }
+
+            override func mouseDragged(with event: NSEvent) {
+                target = 2.5
+                startMotion()
+            }
+
+            override func mouseUp(with event: NSEvent) {
+                choose(Int(target))
+            }
+
+            private func placePill() {
+                let stretch = min(0.45, abs(velocity) * 0.035)
+                pill.frame = CGRect(x: position * 100, y: 3, width: 100 * (1 + stretch), height: 30)
+            }
+
+            private func startMotion() {
+                let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { _ in }
+                RunLoop.main.add(timer, forMode: .common)
+            }
+
+            private func step() {
+                // Lume's damped spring retains velocity when the pointer retargets it.
+                let stiffness: CGFloat = 420
+                let damping = 2 * 0.72 * stiffness.squareRoot()
+                velocity += (stiffness * (target - position) - damping * velocity) * (1.0 / 120.0)
+                position += velocity * (1.0 / 120.0)
+                placePill()
+            }
+        }
+        """
+        let editedComposer = """
+        import SwiftUI
+
+        struct CommitDialog: View {
+            var body: some View {
+                VStack {
+                    CommitActionPicker(selection: actionBinding, isDisabled: false)
+                        .pointerStyle(.default)
+                    commitButton
+                }
+            }
+
+            private var commitButton: some View {
+                Text("Commit")
+                    .font(.system(size: 14, weight: .medium))
+                    .contentTransition(.identity)
+            }
+
+            private var actionBinding: Binding<Int> {
+                Binding(get: { 0 }, set: { action in
+                    var transaction = Transaction(animation: nil)
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { model.updateCommitAction(action) }
+                })
+            }
+        }
+        """
+
+        try editedModel.write(to: root.appendingPathComponent("Prestel/Review/CodeReviewModel.swift"), atomically: true, encoding: .utf8)
+        try editedTable.write(to: root.appendingPathComponent("Prestel/Review/ReviewTableView.swift"), atomically: true, encoding: .utf8)
+        try pickerFile.write(to: root.appendingPathComponent("Prestel/Review/CommitActionPicker.swift"), atomically: true, encoding: .utf8)
+        try editedComposer.write(to: root.appendingPathComponent("Prestel/Review/CommitComposer.swift"), atomically: true, encoding: .utf8)
+        try "// project + picker\n".write(to: root.appendingPathComponent("Prestel.xcodeproj/project.pbxproj"), atomically: true, encoding: .utf8)
+
+        let service = GitRepositoryService()
+        let key = try #require(try await service.resolveRepository(directory: root.path))
+
+        // Case 1: Mixed working tree (nothing staged, stagedOnly = false) must include both changes
+        // and preserve bottom-of-file picker evidence + full modified hunk evidence.
+        let mixedSnapshot = try await service.loadCatalog(for: key, generation: 1)
+        let mixedSelection = CommitPlanner.selection(from: mixedSnapshot.files, stagedOnly: false)
+        let mixedSelected = mixedSnapshot.files.filter { mixedSelection.paths.contains($0.identityPath.display) }
+        let mixedFiles = mixedSelected.filter { !CommitDigest.isNoise($0.identityPath.display) }
+        let mixedGenerated = mixedSelected.filter { CommitDigest.isNoise($0.identityPath.display) }
+        let mixedMaterial = try await service.commitMaterial(
+            for: key,
+            paths: mixedSelection.paths.filter { !CommitDigest.isNoise($0) },
+            untrackedPaths: mixedSelection.untrackedPaths.filter { !CommitDigest.isNoise($0) },
+            stagedOnly: false
+        )
+        let mixedFitted = CommitDigest.fit(mixedMaterial.diff, budget: CommitMessageGenerator.evidenceCharacters)
+        let mixedBody = CommitMessagePrompt.body(
+            repository: key.basename,
+            branch: "main",
+            files: mixedFiles,
+            generated: mixedGenerated,
+            diff: mixedFitted,
+            recentSubjects: mixedMaterial.recentSubjects,
+            stagedOnly: false
+        )
+
+        #expect(mixedBody.contains("Added Prestel/Review/CommitActionPicker.swift"))
+        #expect(mixedBody.contains("Modified Prestel/Review/CodeReviewModel.swift"))
+        #expect(mixedBody.contains("Modified Prestel/Review/CommitComposer.swift"))
+        #expect(mixedBody.contains("Modified Prestel/Review/ReviewTableView.swift"))
+        #expect(mixedBody.contains("Prestel.xcodeproj/ - 1 file"))
+        #expect(mixedFitted.contains("mouseDragged"))
+        #expect(mixedFitted.contains("placePill"))
+        #expect(mixedFitted.contains("stretch"))
+        #expect(mixedFitted.contains("Lume's damped spring"))
+        #expect(mixedFitted.contains("enqueueIndexMutation"))
+        #expect(mixedFitted.contains("expectedPending"))
+        #expect(mixedFitted.contains("pendingStagingCount == 1"))
+        #expect(mixedFitted.contains("-private struct CommitActionPicker: View"))
+        #expect(mixedFitted.contains("ReviewHeaderIconButtonStyle"))
+
+        // Case 2: Stage only picker changes (stagedOnly = true) must include picker evidence
+        // and contain zero references to unstaged staging or review-table internals.
+        try GitFixture.run(["add", "Prestel/Review/CommitActionPicker.swift", "Prestel/Review/CommitComposer.swift", "Prestel.xcodeproj/project.pbxproj"], in: root.path)
+        let stagedSnapshot = try await service.loadCatalog(for: key, generation: 2)
+        let stagedSelection = CommitPlanner.selection(from: stagedSnapshot.files, stagedOnly: true)
+        #expect(stagedSelection.paths.sorted() == [
+            "Prestel.xcodeproj/project.pbxproj",
+            "Prestel/Review/CommitActionPicker.swift",
+            "Prestel/Review/CommitComposer.swift"
+        ])
+        let stagedSelected = stagedSnapshot.files.filter { stagedSelection.paths.contains($0.identityPath.display) }
+        let stagedFiles = stagedSelected.filter { !CommitDigest.isNoise($0.identityPath.display) }
+        let stagedGenerated = stagedSelected.filter { CommitDigest.isNoise($0.identityPath.display) }
+        let stagedMaterial = try await service.commitMaterial(
+            for: key,
+            paths: stagedSelection.paths.filter { !CommitDigest.isNoise($0) },
+            untrackedPaths: stagedSelection.untrackedPaths.filter { !CommitDigest.isNoise($0) },
+            stagedOnly: true
+        )
+        let stagedFitted = CommitDigest.fit(stagedMaterial.diff, budget: CommitMessageGenerator.evidenceCharacters)
+        let stagedBody = CommitMessagePrompt.body(
+            repository: key.basename,
+            branch: "main",
+            files: stagedFiles,
+            generated: stagedGenerated,
+            diff: stagedFitted,
+            recentSubjects: stagedMaterial.recentSubjects,
+            stagedOnly: true
+        )
+
+        #expect(stagedBody.contains("Added Prestel/Review/CommitActionPicker.swift"))
+        #expect(stagedBody.contains("Modified Prestel/Review/CommitComposer.swift"))
+        #expect(stagedFitted.contains("mouseDragged"))
+        #expect(stagedFitted.contains("placePill"))
+        #expect(stagedFitted.contains("stretch"))
+        #expect(stagedFitted.contains("Lume's damped spring"))
+        #expect(stagedFitted.contains("-private struct CommitActionPicker: View"))
+        #expect(!stagedBody.contains("CodeReviewModel"))
+        #expect(!stagedBody.contains("pendingStagingCount"))
+        #expect(!stagedBody.contains("enqueueIndexMutation"))
+        #expect(!stagedBody.contains("ReviewTableView"))
+    }
+
+    @Test func missingDiffEvidenceOmitsRecentSubjectsAndRequestsNoBullets() {
+        #expect(!CommitDigest.hasMeaningfulDiff(""))
+        #expect(!CommitDigest.hasMeaningfulDiff("diff --git a/Big.swift b/Big.swift\n[large change not shown]"))
+        #expect(!CommitDigest.hasMeaningfulDiff("new file Big.bin\n[binary file]"))
+        #expect(CommitDigest.hasMeaningfulDiff("+let x = 1"))
+        #expect(CommitDigest.hasMeaningfulDiff("new file notes.txt\nhello"))
+
+        let stub = "diff --git a/Big.swift b/Big.swift\n[large change not shown]"
+        let body = CommitMessagePrompt.body(
+            repository: "prestel",
+            branch: "main",
+            files: [sample("Big.swift", kind: .added, lanes: [.staged], additions: 500, deletions: 0)],
+            diff: stub,
+            recentSubjects: ["Add per-file staging"]
+        )
+        #expect(body.contains("Subject style:"))
+        #expect(!body.contains("Add per-file staging"))
+        #expect(body.contains("No code diff is available. State only what the file list shows and leave bullets empty."))
+    }
+
+    @Test func styleGuidanceInfersRepoConventionWithoutLeakingTopics() {
+        let sentenceSubjects = [
+            "Add per-file staging",
+            "Match Lume’s commit tab animation in Prestel"
+        ]
+        #expect(CommitMessagePrompt.subjectStyle(from: sentenceSubjects) == .sentenceCase)
+        let sentence = CommitMessagePrompt.styleGuidance(from: sentenceSubjects)
+        #expect(sentence.contains("Plain sentence-case imperative"))
+        #expect(sentence.contains("no prefix or colon"))
+        #expect(!sentence.contains("feat:"))
+        #expect(!sentence.contains("fix:"))
+        #expect(!sentence.contains("refactor:"))
+        #expect(!sentence.contains("chore:"))
+        #expect(!sentence.contains("staging"))
+        #expect(!sentence.contains("Lume"))
+
+        let lowercaseSubjects = [
+            "fix parser edge case",
+            "add retry guard"
+        ]
+        #expect(CommitMessagePrompt.subjectStyle(from: lowercaseSubjects) == .lowercase)
+        let lowercase = CommitMessagePrompt.styleGuidance(from: lowercaseSubjects)
+        #expect(lowercase.contains("Plain lowercase imperative"))
+        #expect(lowercase.contains("no prefix or colon"))
+        #expect(!lowercase.contains("feat:"))
+        #expect(!lowercase.contains("refactor:"))
+
+        let conventionalSubjects = [
+            "feat(review): add staging",
+            "fix: handle empty diff"
+        ]
+        #expect(CommitMessagePrompt.subjectStyle(from: conventionalSubjects) == .conventional)
+        let conventional = CommitMessagePrompt.styleGuidance(from: conventionalSubjects)
+        #expect(conventional.contains("Conventional commit format"))
+    }
+
+    @Test func subjectCleanupStripsUnwantedConventionalPrefixAndDanglingConnectors() {
+        #expect(
+            CommitMessage.subject(from: "feat(review): implement staged-only diff formatting", style: .sentenceCase)
+                == "Implement staged-only diff formatting"
+        )
+        #expect(
+            CommitMessage.subject(from: "refactor!: simplify staging queue", style: .lowercase)
+                == "simplify staging queue"
+        )
+        #expect(
+            CommitMessage.subject(from: "feat: iOS keychain sync", style: .sentenceCase)
+                == "iOS keychain sync"
+        )
+        #expect(
+            CommitMessage.subject(from: "feat(review): implement staged-only diff formatting", style: .conventional)
+                == "feat(review): implement staged-only diff formatting"
+        )
+        #expect(
+            CommitMessage.subject(from: "Fix EQ gear gliding on Dynamic toggle: decouple icon fade", style: .sentenceCase)
+                == "Fix EQ gear gliding on Dynamic toggle: decouple icon fade"
+        )
+        #expect(
+            CommitMessage.subject(from: "Review: Improve staging logic and UI styling", style: .sentenceCase)
+                == "Improve staging logic and UI styling"
+        )
+        #expect(
+            CommitMessage.subject(from: "Review: Improve staging logic and UI styling", style: .conventional)
+                == "Review: Improve staging logic and UI styling"
+        )
+        #expect(
+            CommitMessage.subject(from: "Review: Improve staging logic and UI styling")
+                == "Review: Improve staging logic and UI styling"
+        )
+        #expect(
+            CommitMessage.subject(from: "Review: ok", style: .sentenceCase)
+                == "Review: ok"
+        )
+
+        let danglingAnd = CommitMessage.subject(
+            from: "Implement staged-only commit message formatting and diff trimming for very long working trees"
+        )
+        #expect(danglingAnd.count <= CommitMessage.maxSubjectLength)
+        #expect(!danglingAnd.hasSuffix(" and"))
+        #expect(!danglingAnd.hasSuffix(" for"))
+        #expect(!danglingAnd.hasSuffix(" of"))
+        #expect(!danglingAnd.hasSuffix(" with"))
+        #expect(!danglingAnd.hasSuffix(" or"))
+
+        let danglingOf = CommitMessage.subject(
+            from: "Implement staged-only commit message formatting and handling of long repository diffs"
+        )
+        #expect(danglingOf.count <= CommitMessage.maxSubjectLength)
+        #expect(!danglingOf.hasSuffix(" of"))
+        #expect(!danglingOf.hasSuffix(" and"))
+    }
+
+    @Test func trimmedModifiedDiffNeverEmitsEmptyHunkHeadersAndDeweightsTests() {
+        func hunk(_ line: Int, _ ctx: String, body: [String]) -> String {
+            (["@@ -\(line),2 +\(line),\(body.count + 2) @@ \(ctx)"] + body).joined(separator: "\n")
+        }
+
+        let smallProdA = (["diff --git a/Prestel/Review/GitRepositoryService.swift b/Prestel/Review/GitRepositoryService.swift"]
+            + (1...6).map { idx in
+                hunk(idx * 20, "private func helper\(idx)() {", body: [
+                    "-        let old\(idx) = 0",
+                    "+        let new\(idx) = \(idx)"
+                ])
+            }).joined(separator: "\n")
+
+        let smallProdB = (["diff --git a/Prestel/Review/CommitMessageGenerator.swift b/Prestel/Review/CommitMessageGenerator.swift"]
+            + (1...5).map { idx in
+                hunk(idx * 15, "static func step\(idx)() {", body: [
+                    "-        return oldStep\(idx)()",
+                    "+        return newStep\(idx)()"
+                ])
+            }).joined(separator: "\n")
+
+        let addedProdLines = (1...30).flatMap { idx in
+            [
+                "+    private static func extractedHelper\(idx)() -> Int {",
+                "+        let value = \(idx) * 2",
+                "+        let adjusted = value + 1",
+                "+        return adjusted",
+                "+    }"
+            ]
+        }
+        let largeProd = (["diff --git a/Prestel/Review/CommitPlanner.swift b/Prestel/Review/CommitPlanner.swift"]
+            + [hunk(120, "enum CommitDigest {", body: ["-        let legacy = true"] + addedProdLines)]).joined(separator: "\n")
+
+        let largeTest = #"""
+        diff --git a/PrestelTests/CommitTests.swift b/PrestelTests/CommitTests.swift
+        @@ -350,2 +350,120 @@ struct CommitTests {
+        +    @Test func verifyFixtureParsing() {
+        +        let fixture = """
+        +        struct FakePicker {
+        +            func decoyMethod() {}
+        +        }
+        +        """
+        +        let lines = Array(repeating: "+        let padding = 1", count: 80).joined(separator: "\n")
+        +        #expect(!fixture.isEmpty && !lines.isEmpty)
+        +    }
+        """#
+
+        let combined = [smallProdA, smallProdB, largeProd, largeTest].joined(separator: "\n")
+        let fitted = CommitDigest.fit(combined, budget: 2_500)
+
+        let fittedLines = fitted.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for index in fittedLines.indices where fittedLines[index] == "@@" || fittedLines[index].hasPrefix("@@ ") {
+            #expect(index + 1 < fittedLines.count, "Hunk header at end of diff with no body: \(fittedLines[index])")
+            let next = fittedLines[index + 1]
+            #expect(next.hasPrefix("+") || next.hasPrefix("-"), "Empty hunk header \(fittedLines[index]) followed by \(next)")
+        }
+
+        #expect(fitted.contains("let new1 = 1") || fitted.contains("let new2 = 2") || fitted.contains("let new3 = 3"))
+        #expect(fitted.contains("return newStep1()") || fitted.contains("return newStep2()"))
+        #expect(fitted.contains("@Test func verifyFixtureParsing()"))
+        #expect(!fitted.contains("struct FakePicker"))
+    }
+
+    @Test func bulletsCompositionStripsDuplicateMarkersAndBackticks() {
+        let composed = CommitMessage.composed(
+            subject: "Add spring-animated commit action picker.",
+            bullets: [
+                "- Added `CommitActionPicker` with spring motion",
+                "• Updated `CommitComposer` button transitions",
+                "   "
+            ]
+        )
+        #expect(composed == "Add spring-animated commit action picker\n\n- Added CommitActionPicker with spring motion\n- Updated CommitComposer button transitions")
+
+        let recovered = CommitMessage.composed(
+            subject: "The commit subject line",
+            bullets: [
+                "- Add spring-animated commit action picker",
+                "- Update CommitComposer transitions"
+            ]
+        )
+        #expect(recovered == "Add spring-animated commit action picker\n\n- Update CommitComposer transitions")
+    }
 }
 
 @Suite
@@ -407,6 +936,29 @@ struct CommitComposerModelTests {
         await waitUntil { await service.recorded() != nil }
         let recorded = await service.recorded()
         #expect(recorded?.paths == ["Staged.swift"])
+        #expect(recorded?.stagedOnly == true)
+    }
+
+    @Test func draftWaitsForInFlightStagingBeforeReadingCommitMaterial() async throws {
+        let service = GatedStagingCommitService()
+        let model = CodeReviewModel(service: service, watcher: CommitNullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
+        model.bind(visible: true, windowID: UUID(), session: session)
+        await waitUntil { model.loadState == .ready }
+
+        let target = try #require(model.snapshot?.files.first { $0.identityPath.display == "File.swift" })
+        model.stageFile(target)
+        model.openCommitComposer()
+        model.draftCommitName()
+
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(await service.recordedMaterial() == nil)
+
+        await service.releaseStaging()
+        await waitUntil { await service.recordedMaterial() != nil }
+        let recorded = await service.recordedMaterial()
+        #expect(recorded?.paths == ["File.swift"])
+        #expect(recorded?.untrackedPaths.isEmpty == true)
         #expect(recorded?.stagedOnly == true)
     }
 }
@@ -520,6 +1072,85 @@ private actor RecordingCommitService: GitReviewServicing {
             return .committedPushFailed(pushFailure)
         }
         return .committed
+    }
+}
+
+private actor GatedStagingCommitService: GitReviewServicing {
+    private var stagingReleased = false
+    private var files: [ChangedFile] = [
+        sample("File.swift", lanes: [.unstaged], additions: 5, deletions: 1),
+        sample("Other.swift", lanes: [.unstaged], additions: 3, deletions: 0)
+    ]
+    private var materialCall: (paths: [String], untrackedPaths: [String], stagedOnly: Bool)?
+
+    func releaseStaging() {
+        stagingReleased = true
+    }
+
+    func recordedMaterial() -> (paths: [String], untrackedPaths: [String], stagedOnly: Bool)? {
+        materialCall
+    }
+
+    func resolveRepository(directory: String) async throws -> RepositoryKey? {
+        RepositoryKey(worktreeRoot: "/tmp/repo-b", gitDirectory: "/tmp/repo-b/.git", commonGitDirectory: "/tmp/repo-b/.git")
+    }
+
+    func loadCatalog(for key: RepositoryKey, generation: UInt64) async throws -> ReviewSnapshot {
+        ReviewSnapshot(
+            revision: RepositoryRevision(
+                key: key,
+                headOID: "abc",
+                branchName: "main",
+                isDetached: false,
+                isUnborn: false,
+                indexFingerprint: "1",
+                generation: generation
+            ),
+            files: files,
+            additions: files.reduce(0) { $0 + $1.additions },
+            deletions: files.reduce(0) { $0 + $1.deletions },
+            isComplete: true,
+            isClean: files.isEmpty,
+            isBare: false,
+            waitingOnIndexLock: false,
+            diagnostic: nil
+        )
+    }
+
+    func loadComparison(
+        for key: RepositoryKey,
+        file: ChangedFile,
+        comparison: ComparisonSummary,
+        generation: UInt64,
+        loadLarge: Bool
+    ) async throws -> FileDiff {
+        FileDiff(
+            fileID: file.id,
+            comparison: comparison.kind,
+            revision: "test",
+            hunks: [],
+            oldSource: nil,
+            newSource: nil,
+            limitation: .none,
+            patchText: "",
+            additions: 0,
+            deletions: 0
+        )
+    }
+
+    func stage(in key: RepositoryKey, paths: [String]) async throws {
+        while !stagingReleased {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let stagedSet = Set(paths)
+        files = files.map { file in
+            stagedSet.contains(file.identityPath.display) ? file.optimisticallyStaged() : file
+        }
+    }
+
+    func commitMaterial(for key: RepositoryKey, paths: [String], untrackedPaths: [String], stagedOnly: Bool) async throws -> CommitMaterial {
+        materialCall = (paths, untrackedPaths, stagedOnly)
+        throw CommitNameError.declined
     }
 }
 

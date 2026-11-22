@@ -71,17 +71,11 @@ struct ReviewFileHeaderRow: View {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(isChevronHovered ? Color.primary : Color.primary.opacity(0.72))
+                    .contentTransition(.identity)
                     .transaction { $0.animation = nil }
                     .frame(width: 24, height: 24)
-                    .background {
-                        if isChevronHovered {
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Color.primary.opacity(0.08))
-                        }
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ReviewHeaderIconButtonStyle(isHovered: isChevronHovered))
             .onHover { isChevronHovered = $0 }
             .help(expanded ? "Collapse file" : "Expand file")
             .padding(.leading, 8)
@@ -130,16 +124,11 @@ struct ReviewFileHeaderRow: View {
                     Image(systemName: symbol)
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(isStageHovered ? Color.primary : Color.primary.opacity(0.72))
+                        .contentTransition(.identity)
+                        .transaction { $0.animation = nil }
                         .frame(width: 24, height: 24)
-                        .background {
-                            if isStageHovered {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(Color.primary.opacity(0.08))
-                            }
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(ReviewHeaderIconButtonStyle(isHovered: isStageHovered))
                 .disabled(indexLocked)
                 .opacity(indexLocked ? 0.35 : 1)
                 .onHover { isStageHovered = $0 }
@@ -232,6 +221,26 @@ struct ReviewFileHeaderRow: View {
 
     private var pathHelp: String {
         file.oldPath.map { "\($0.display) → \(file.identityPath.display)" } ?? file.identityPath.display
+    }
+}
+
+/// Crisp hover/press pill without `.plain`'s opacity flash on press or
+/// implicit symbol cross-fade when icons swap (e.g. `+` ↔ `−`).
+private struct ReviewHeaderIconButtonStyle: ButtonStyle {
+    var isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                if configuration.isPressed {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(0.14))
+                } else if isHovered {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(0.08))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
 

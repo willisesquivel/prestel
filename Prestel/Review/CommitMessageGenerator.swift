@@ -6,7 +6,7 @@ import FoundationModels
 enum CommitMessageGenerator {
     /// The on-device context window is small, so the evidence is trimmed to fit
     /// instead of being summarized by extra model passes.
-    static let evidenceCharacters = 5_000
+    static let evidenceCharacters = 7_000
 
     static func unavailableReason() -> String? {
         switch SystemLanguageModel.default.availability {
@@ -44,6 +44,7 @@ enum CommitMessageGenerator {
         generated: [ChangedFile] = [],
         diff: String,
         recentSubjects: [String],
+        stagedOnly: Bool = false,
         onPartial: @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> String {
         if let reason = unavailableReason() { throw CommitNameError.unavailable(reason) }
@@ -51,19 +52,30 @@ enum CommitMessageGenerator {
         var lastFailure = CommitNameError.tooLarge
         var prompt = ""
         var message = ""
-        for budget in [evidenceCharacters, evidenceCharacters / 2, 1_000, 0] {
+        var allowBullets = false
+        let subjectStyle = CommitMessagePrompt.subjectStyle(from: recentSubjects)
+        for budget in [evidenceCharacters, 4_500, 2_500, 1_000, 0] {
             try Task.checkCancellation()
+            let fittedDiff = budget > 0 ? CommitDigest.fit(diff, budget: budget) : ""
+            let attemptAllowBullets = CommitDigest.hasMeaningfulDiff(fittedDiff)
             let attempt = CommitMessagePrompt.body(
                 repository: repository,
                 branch: branch,
                 files: files,
                 generated: generated,
-                diff: budget > 0 ? CommitDigest.fit(diff, budget: budget) : "",
-                recentSubjects: recentSubjects
+                diff: fittedDiff,
+                recentSubjects: recentSubjects,
+                stagedOnly: stagedOnly
             )
             do {
-                message = try await draft(attempt, onPartial: onPartial)
+                message = try await draft(
+                    attempt,
+                    allowBullets: attemptAllowBullets,
+                    subjectStyle: subjectStyle,
+                    onPartial: onPartial
+                )
                 prompt = attempt
+                allowBullets = attemptAllowBullets
                 break
             } catch let failure as CommitNameError where failure == .tooLarge || failure == .declined {
                 lastFailure = failure
@@ -79,7 +91,7 @@ enum CommitMessageGenerator {
 
                 A previous draft was too vague: \(CommitMessage.subjectLine(message))
                 Make the subject specific, using only facts supported by the changes.
-                """, onPartial: onPartial)
+                """, allowBullets: allowBullets, subjectStyle: subjectStyle, onPartial: onPartial)
         }
         try Task.checkCancellation()
         let subject = CommitMessage.subjectLine(message)
@@ -90,6 +102,8 @@ enum CommitMessageGenerator {
 
     private static func draft(
         _ prompt: String,
+        allowBullets: Bool,
+        subjectStyle: CommitMessagePrompt.SubjectStyle,
         onPartial: @MainActor @Sendable (String) -> Void
     ) async throws -> String {
         let session = LanguageModelSession(instructions: CommitMessagePrompt.instructions)
@@ -100,12 +114,14 @@ enum CommitMessageGenerator {
                 generating: CommitSubjectDraft.self,
                 options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 600)
             )
-            // Fields arrive in declaration order: the subject first, then the body.
-            // The last snapshot is the complete draft.
+            // Fields arrive in declaration order: key changes first so the subject
+            // synthesizes every distinct part of the commit, then the subject line.
             for try await snapshot in stream {
+                let bullets = allowBullets ? (snapshot.content.bullets ?? []) : []
                 message = CommitMessage.composed(
                     subject: snapshot.content.subject ?? "",
-                    detail: snapshot.content.detail ?? ""
+                    bullets: bullets,
+                    style: subjectStyle
                 )
                 if CommitMessage.isSafeToShow(partialSubject: CommitMessage.subjectLine(message)) {
                     await onPartial(message)
@@ -134,9 +150,9 @@ enum CommitNameError: Error, Equatable {
 // `CommitMessagePrompt.instructions`.
 @Generable
 struct CommitSubjectDraft {
+    @Guide(description: "Key changes", .maximumCount(5))
+    var bullets: [String]
+
     @Guide(description: "The commit subject line")
     var subject: String
-
-    @Guide(description: "The commit body")
-    var detail: String
 }

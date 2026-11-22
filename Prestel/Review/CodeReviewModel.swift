@@ -24,6 +24,7 @@ final class CodeReviewModel: ObservableObject {
     private var debounceTask: Task<Void, Never>?
     private var safetyTask: Task<Void, Never>?
     private var stagingTask: Task<Void, Never>?
+    private var stagingGeneration: UInt64 = 0
     private var pendingStagingCount = 0
     private var presentationCache: [RepositoryKey: ReviewPresentationState] = [:]
     private var lastDirectory: String?
@@ -334,39 +335,57 @@ final class CodeReviewModel: ObservableObject {
     ) {
         diagnostic = nil
         pendingStagingCount += 1
+        stagingGeneration += 1
+        let generation = stagingGeneration
+        loadTask?.cancel()
         debounceTask?.cancel()
         let previous = stagingTask
         stagingTask = Task { [weak self] in
             _ = await previous?.value
             guard let self else { return }
+            defer {
+                if self.stagingGeneration == generation {
+                    self.stagingTask = nil
+                }
+            }
             var failedError: Error?
             do {
                 try await operation()
             } catch {
                 failedError = error
             }
-            self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
-            guard self.activeKey == key else { return }
+            guard self.activeKey == key else {
+                self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
+                return
+            }
+            self.evictCachedDiffs(for: evictFileIDs)
             if let failedError {
                 self.diagnostic = Self.commitNotice(failedError)
-                self.evictCachedDiffs(for: evictFileIDs)
-                await self.reloadCatalog(for: key)
-            } else {
-                self.evictCachedDiffs(for: evictFileIDs)
-                if self.pendingStagingCount == 0 {
-                    await self.reloadCatalog(for: key)
-                }
+                await self.reloadCatalog(for: key, expectedPending: self.pendingStagingCount)
+            } else if self.pendingStagingCount == 1 {
+                await self.reloadCatalog(for: key, expectedPending: 1)
             }
+            self.pendingStagingCount = max(0, self.pendingStagingCount - 1)
         }
     }
 
-    private func reloadCatalog(for key: RepositoryKey) async {
+    private func awaitPendingStaging() async {
+        while let pending = stagingTask {
+            let target = stagingGeneration
+            await pending.value
+            if stagingGeneration == target { break }
+        }
+    }
+
+    private func reloadCatalog(for key: RepositoryKey, expectedPending: Int) async {
         let expectedContext = context?.generation
         snapshotGeneration += 1
         let generation = snapshotGeneration
         do {
             let loaded = try await service.loadCatalog(for: key, generation: generation)
-            guard context?.generation == expectedContext, activeKey == key, pendingStagingCount == 0 else { return }
+            guard context?.generation == expectedContext,
+                  activeKey == key,
+                  pendingStagingCount == expectedPending else { return }
             if !loaded.waitingOnIndexLock {
                 publishWithoutAnimation {
                     snapshot = loaded
@@ -451,18 +470,20 @@ final class CodeReviewModel: ObservableObject {
         guard var draft = commitDraft, !draft.isGenerating, !draft.isCommitting else { return }
         guard let snapshot else { return }
         let stagedOnly = effectiveCommitStagedOnly
-        let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
-        guard !selection.paths.isEmpty else {
-            draft.notice = CommitPlanner.refusal(
-                files: snapshot.files,
-                push: draft.push,
-                detached: snapshot.revision.isDetached,
-                indexLocked: snapshot.waitingOnIndexLock,
-                catalogComplete: snapshot.isComplete,
-                stagedOnly: stagedOnly
-            ) ?? "There is nothing to commit."
-            commitDraft = draft
-            return
+        if stagingTask == nil {
+            let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
+            guard !selection.paths.isEmpty else {
+                draft.notice = CommitPlanner.refusal(
+                    files: snapshot.files,
+                    push: draft.push,
+                    detached: snapshot.revision.isDetached,
+                    indexLocked: snapshot.waitingOnIndexLock,
+                    catalogComplete: snapshot.isComplete,
+                    stagedOnly: stagedOnly
+                ) ?? "There is nothing to commit."
+                commitDraft = draft
+                return
+            }
         }
         commitDraftTask?.cancel()
         commitGeneration += 1
@@ -473,19 +494,55 @@ final class CodeReviewModel: ObservableObject {
         draft.isGenerating = true
         draft.notice = nil
         commitDraft = draft
-        let key = snapshot.revision.key
-        let selected = snapshot.files.filter { selection.paths.contains($0.identityPath.display) }
-        // Build output, lockfiles and the like are summarized, never read.
-        let files = selected.filter { !CommitDigest.isNoise($0.identityPath.display) }
-        let generated = selected.filter { CommitDigest.isNoise($0.identityPath.display) }
-        let repository = key.basename
-        let branch = snapshot.revision.isDetached ? "detached" : (snapshot.revision.branchName ?? "unknown")
-        let paths = selection.paths.filter { !CommitDigest.isNoise($0) }
-        let untracked = selection.untrackedPaths.filter { !CommitDigest.isNoise($0) }
         commitDraftTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let material = try await self.service.commitMaterial(for: key, paths: paths, untrackedPaths: untracked, stagedOnly: stagedOnly)
+                await self.awaitPendingStaging()
+                try Task.checkCancellation()
+                guard self.commitGeneration == token,
+                      self.commitDraft?.id == draftID,
+                      let snapshot = self.snapshot else { return }
+                let stagedOnly = self.effectiveCommitStagedOnly
+                let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
+                guard !selection.paths.isEmpty else {
+                    let refusal = CommitPlanner.refusal(
+                        files: snapshot.files,
+                        push: self.commitDraft?.push ?? false,
+                        detached: snapshot.revision.isDetached,
+                        indexLocked: snapshot.waitingOnIndexLock,
+                        catalogComplete: snapshot.isComplete,
+                        stagedOnly: stagedOnly
+                    ) ?? "There is nothing to commit."
+                    self.commitDraft?.message = previousMessage
+                    self.commitDraft?.isGenerating = false
+                    self.commitDraft?.notice = refusal
+                    return
+                }
+                let key = snapshot.revision.key
+                let selected = snapshot.files.filter { selection.paths.contains($0.identityPath.display) }
+                // Build output, lockfiles and the like are summarized, never read.
+                let files = selected.filter { !CommitDigest.isNoise($0.identityPath.display) }
+                let generated = selected.filter { CommitDigest.isNoise($0.identityPath.display) }
+                let repository = key.basename
+                let branch = snapshot.revision.isDetached ? "detached" : (snapshot.revision.branchName ?? "unknown")
+                let untracked = selection.untrackedPaths.filter { !CommitDigest.isNoise($0) }
+                var diffPaths: [String] = []
+                var seenPaths = Set<String>()
+                for path in selection.paths where !CommitDigest.isNoise(path) {
+                    if seenPaths.insert(path).inserted {
+                        diffPaths.append(path)
+                    }
+                }
+                for file in files {
+                    if let oldPath = file.oldPath,
+                       oldPath.isLossless,
+                       CommitPlanner.isSafeRelativePath(oldPath.display),
+                       !CommitDigest.isNoise(oldPath.display),
+                       seenPaths.insert(oldPath.display).inserted {
+                        diffPaths.append(oldPath.display)
+                    }
+                }
+                let material = try await self.service.commitMaterial(for: key, paths: diffPaths, untrackedPaths: untracked, stagedOnly: stagedOnly)
                 let name = try await CommitMessageGenerator.subject(
                     repository: repository,
                     branch: branch,
@@ -493,6 +550,7 @@ final class CodeReviewModel: ObservableObject {
                     generated: generated,
                     diff: material.diff,
                     recentSubjects: material.recentSubjects,
+                    stagedOnly: stagedOnly,
                     onPartial: { [weak self] partial in
                         guard let self, self.commitGeneration == token, self.commitDraft?.id == draftID else { return }
                         self.commitDraft?.message = partial
@@ -513,49 +571,74 @@ final class CodeReviewModel: ObservableObject {
     func commitFromComposer() {
         guard var draft = commitDraft, !draft.isCommitting, !draft.isGenerating, let snapshot else { return }
         let stagedOnly = effectiveCommitStagedOnly
-        let selection = CommitPlanner.selection(from: snapshot.files, stagedOnly: stagedOnly)
         let message = CommitMessage.prepared(draft.message)
-        guard CommitPlanner.canSubmit(
-            files: snapshot.files,
-            message: message,
-            push: draft.push,
-            detached: snapshot.revision.isDetached,
-            indexLocked: snapshot.waitingOnIndexLock,
-            catalogComplete: snapshot.isComplete,
-            stagedOnly: stagedOnly
-        ) else {
-            draft.notice = CommitPlanner.refusal(
+        if stagingTask == nil {
+            guard CommitPlanner.canSubmit(
                 files: snapshot.files,
+                message: message,
                 push: draft.push,
                 detached: snapshot.revision.isDetached,
                 indexLocked: snapshot.waitingOnIndexLock,
                 catalogComplete: snapshot.isComplete,
                 stagedOnly: stagedOnly
-            )
-            commitDraft = draft
-            return
+            ) else {
+                draft.notice = CommitPlanner.refusal(
+                    files: snapshot.files,
+                    push: draft.push,
+                    detached: snapshot.revision.isDetached,
+                    indexLocked: snapshot.waitingOnIndexLock,
+                    catalogComplete: snapshot.isComplete,
+                    stagedOnly: stagedOnly
+                )
+                commitDraft = draft
+                return
+            }
         }
         commitDraftTask?.cancel()
         commitGeneration += 1
         let draftID = draft.id
         let push = draft.push
         let action = draft.action
-        let key = snapshot.revision.key
         draft.isCommitting = true
         draft.notice = nil
         draft.message = message
         commitDraft = draft
         Task { [weak self] in
             guard let self else { return }
+            await self.awaitPendingStaging()
+            guard self.commitDraft?.id == draftID, let settled = self.snapshot else { return }
+            let settledStagedOnly = self.effectiveCommitStagedOnly
+            let settledSelection = CommitPlanner.selection(from: settled.files, stagedOnly: settledStagedOnly)
+            guard CommitPlanner.canSubmit(
+                files: settled.files,
+                message: message,
+                push: push,
+                detached: settled.revision.isDetached,
+                indexLocked: settled.waitingOnIndexLock,
+                catalogComplete: settled.isComplete,
+                stagedOnly: settledStagedOnly
+            ) else {
+                self.commitDraft?.isCommitting = false
+                self.commitDraft?.notice = CommitPlanner.refusal(
+                    files: settled.files,
+                    push: push,
+                    detached: settled.revision.isDetached,
+                    indexLocked: settled.waitingOnIndexLock,
+                    catalogComplete: settled.isComplete,
+                    stagedOnly: settledStagedOnly
+                )
+                return
+            }
+            let settledKey = settled.revision.key
             do {
-                let outcome = try await self.service.commit(in: key, paths: selection.paths, message: message, push: push, stagedOnly: stagedOnly)
-                if self.activeKey == key {
-                    self.evictCachedDiffs(for: Set(selection.paths))
+                let outcome = try await self.service.commit(in: settledKey, paths: settledSelection.paths, message: message, push: push, stagedOnly: settledStagedOnly)
+                if self.activeKey == settledKey {
+                    self.evictCachedDiffs(for: Set(settledSelection.paths))
                     self.refresh(userInitiated: false)
                 }
                 var pullRequest: URL?
                 if action == .pullRequest, outcome == .committed {
-                    pullRequest = await self.service.pullRequestURL(for: key)
+                    pullRequest = await self.service.pullRequestURL(for: settledKey)
                     if let pullRequest {
                         NSWorkspace.shared.open(pullRequest)
                     }
@@ -572,7 +655,7 @@ final class CodeReviewModel: ObservableObject {
                     self.commitDraft?.notice = detail
                 }
             } catch {
-                if self.activeKey == key {
+                if self.activeKey == settledKey {
                     self.refresh(userInitiated: false)
                 }
                 guard self.commitDraft?.id == draftID else { return }
@@ -690,7 +773,7 @@ final class CodeReviewModel: ObservableObject {
             snapshotGeneration += 1
             let generation = snapshotGeneration
             let loaded = try await service.loadCatalog(for: key, generation: generation)
-            guard self.context?.generation == context.generation else { return }
+            guard self.context?.generation == context.generation, pendingStagingCount == 0 else { return }
             if loaded.waitingOnIndexLock {
                 if snapshot == nil {
                     publishWithoutAnimation { loadState = .waitingForGit }
