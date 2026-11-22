@@ -42,6 +42,7 @@
 		A10000000000000000000034 /* CommitPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000034 /* CommitPlanner.swift */; };
 		A10000000000000000000035 /* CommitComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000035 /* CommitComposer.swift */; };
 		A10000000000000000000036 /* CommitMessageGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000036 /* CommitMessageGenerator.swift */; };
+		A10000000000000000000037 /* CommitActionPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000037 /* CommitActionPicker.swift */; };
 		A1000000000000000000002F /* CommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002F /* CommitTests.swift */; };
 		C10000000000000000000001 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000001 /* SwiftTerm */; };
 		C10000000000000000000002 /* Highlighter in Frameworks */ = {isa = PBXBuildFile; productRef = C30000000000000000000002 /* Highlighter */; };
@@ -100,6 +101,7 @@
 		A20000000000000000000034 /* CommitPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitPlanner.swift; sourceTree = "<group>"; };
 		A20000000000000000000035 /* CommitComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitComposer.swift; sourceTree = "<group>"; };
 		A20000000000000000000036 /* CommitMessageGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitMessageGenerator.swift; sourceTree = "<group>"; };
+		A20000000000000000000037 /* CommitActionPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitActionPicker.swift; sourceTree = "<group>"; };
 		A2000000000000000000002F /* CommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommitTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000F101 /* ShellIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellIntegration.swift; sourceTree = "<group>"; };
 		A2000000000000000000F102 /* ShellMarks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellMarks.swift; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 				A20000000000000000000034 /* CommitPlanner.swift */,
 				A20000000000000000000035 /* CommitComposer.swift */,
 				A20000000000000000000036 /* CommitMessageGenerator.swift */,
+				A20000000000000000000037 /* CommitActionPicker.swift */,
 			);
 			path = Review;
 			sourceTree = "<group>";
@@ -342,6 +345,7 @@
 				A10000000000000000000034 /* CommitPlanner.swift in Sources */,
 				A10000000000000000000035 /* CommitComposer.swift in Sources */,
 				A10000000000000000000036 /* CommitMessageGenerator.swift in Sources */,
+				A10000000000000000000037 /* CommitActionPicker.swift in Sources */,
 				A10000000000000000000032 /* AppColors.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
