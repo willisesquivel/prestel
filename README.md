@@ -35,7 +35,7 @@ Unicode, IME input, and selection work as they do anywhere else.
 
 ## Install
 
-Download [Prestel 0.1.3](https://github.com/willisesquivel/prestel/releases/download/v0.1.3/Prestel-0.1.3.dmg).
+Download [Prestel 0.1.4](https://github.com/willisesquivel/prestel/releases/download/v0.1.4/Prestel-0.1.4.dmg).
 
 Open the DMG and drag Prestel into Applications.
 
@@ -45,7 +45,7 @@ opens without a Gatekeeper prompt.
 Prestel checks for newer builds in the background after install. Choose
 **Prestel → Check for Updates…** to look right away. Release notes for the
 current download are on the
-[v0.1.3 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.3).
+[v0.1.4 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.4).
 
 ## Code Review
 
