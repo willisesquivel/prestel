@@ -52,12 +52,15 @@ enum CommitMessageGenerator {
         var lastFailure = CommitNameError.tooLarge
         var prompt = ""
         var message = ""
-        var allowBullets = false
+        var bulletLimit = 0
         let subjectStyle = CommitMessagePrompt.subjectStyle(from: recentSubjects)
         for budget in [evidenceCharacters, 4_500, 2_500, 1_000, 0] {
             try Task.checkCancellation()
             let fittedDiff = budget > 0 ? CommitDigest.fit(diff, budget: budget) : ""
-            let attemptAllowBullets = CommitDigest.hasMeaningfulDiff(fittedDiff)
+            let attemptBulletLimit = CommitMessagePrompt.bulletLimit(
+                forFileCount: files.count,
+                hasMeaningfulDiff: CommitDigest.hasMeaningfulDiff(fittedDiff)
+            )
             let attempt = CommitMessagePrompt.body(
                 repository: repository,
                 branch: branch,
@@ -70,12 +73,12 @@ enum CommitMessageGenerator {
             do {
                 message = try await draft(
                     attempt,
-                    allowBullets: attemptAllowBullets,
+                    bulletLimit: attemptBulletLimit,
                     subjectStyle: subjectStyle,
                     onPartial: onPartial
                 )
                 prompt = attempt
-                allowBullets = attemptAllowBullets
+                bulletLimit = attemptBulletLimit
                 break
             } catch let failure as CommitNameError where failure == .tooLarge || failure == .declined {
                 lastFailure = failure
@@ -91,7 +94,7 @@ enum CommitMessageGenerator {
 
                 A previous draft was too vague: \(CommitMessage.subjectLine(message))
                 Make the subject specific, using only facts supported by the changes.
-                """, allowBullets: allowBullets, subjectStyle: subjectStyle, onPartial: onPartial)
+                """, bulletLimit: bulletLimit, subjectStyle: subjectStyle, onPartial: onPartial)
         }
         try Task.checkCancellation()
         let subject = CommitMessage.subjectLine(message)
@@ -102,29 +105,49 @@ enum CommitMessageGenerator {
 
     private static func draft(
         _ prompt: String,
-        allowBullets: Bool,
+        bulletLimit: Int,
         subjectStyle: CommitMessagePrompt.SubjectStyle,
         onPartial: @MainActor @Sendable (String) -> Void
     ) async throws -> String {
         let session = LanguageModelSession(instructions: CommitMessagePrompt.instructions)
+        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 600)
         var message = ""
-        do {
-            let stream = session.streamResponse(
-                to: prompt,
-                generating: CommitSubjectDraft.self,
-                options: GenerationOptions(temperature: 0.2, maximumResponseTokens: 600)
+
+        func publish(subject: String?, bullets: [String]?) async {
+            message = CommitMessage.composed(
+                subject: subject ?? "",
+                bullets: bulletLimit > 0 ? (bullets ?? []) : [],
+                style: subjectStyle,
+                maxBullets: bulletLimit
             )
+            if CommitMessage.isSafeToShow(partialSubject: CommitMessage.subjectLine(message)) {
+                await onPartial(message)
+            }
+        }
+
+        do {
             // Fields arrive in declaration order: key changes first so the subject
             // synthesizes every distinct part of the commit, then the subject line.
-            for try await snapshot in stream {
-                let bullets = allowBullets ? (snapshot.content.bullets ?? []) : []
-                message = CommitMessage.composed(
-                    subject: snapshot.content.subject ?? "",
-                    bullets: bullets,
-                    style: subjectStyle
-                )
-                if CommitMessage.isSafeToShow(partialSubject: CommitMessage.subjectLine(message)) {
-                    await onPartial(message)
+            switch bulletLimit {
+            case ...0:
+                for try await snapshot in session.streamResponse(to: prompt, generating: CommitSubjectOnlyDraft.self, options: options) {
+                    await publish(subject: snapshot.content.subject, bullets: nil)
+                }
+            case 1, 2:
+                for try await snapshot in session.streamResponse(to: prompt, generating: CommitDraft2.self, options: options) {
+                    await publish(subject: snapshot.content.subject, bullets: snapshot.content.bullets)
+                }
+            case 3:
+                for try await snapshot in session.streamResponse(to: prompt, generating: CommitDraft3.self, options: options) {
+                    await publish(subject: snapshot.content.subject, bullets: snapshot.content.bullets)
+                }
+            case 4:
+                for try await snapshot in session.streamResponse(to: prompt, generating: CommitDraft4.self, options: options) {
+                    await publish(subject: snapshot.content.subject, bullets: snapshot.content.bullets)
+                }
+            default:
+                for try await snapshot in session.streamResponse(to: prompt, generating: CommitDraft5.self, options: options) {
+                    await publish(subject: snapshot.content.subject, bullets: snapshot.content.bullets)
                 }
             }
             return message
@@ -149,7 +172,40 @@ enum CommitNameError: Error, Equatable {
 // constraint wording into the field ("at most 72 characters"). The rules are in
 // `CommitMessagePrompt.instructions`.
 @Generable
-struct CommitSubjectDraft {
+private struct CommitSubjectOnlyDraft {
+    @Guide(description: "The commit subject line")
+    var subject: String
+}
+
+@Generable
+private struct CommitDraft2 {
+    @Guide(description: "Key changes", .maximumCount(2))
+    var bullets: [String]
+
+    @Guide(description: "The commit subject line")
+    var subject: String
+}
+
+@Generable
+private struct CommitDraft3 {
+    @Guide(description: "Key changes", .maximumCount(3))
+    var bullets: [String]
+
+    @Guide(description: "The commit subject line")
+    var subject: String
+}
+
+@Generable
+private struct CommitDraft4 {
+    @Guide(description: "Key changes", .maximumCount(4))
+    var bullets: [String]
+
+    @Guide(description: "The commit subject line")
+    var subject: String
+}
+
+@Generable
+private struct CommitDraft5 {
     @Guide(description: "Key changes", .maximumCount(5))
     var bullets: [String]
 

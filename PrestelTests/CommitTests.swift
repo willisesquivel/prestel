@@ -879,6 +879,31 @@ struct CommitTests {
         )
         #expect(recovered == "Add spring-animated commit action picker\n\n- Update CommitComposer transitions")
     }
+
+    @Test func bulletLimitScalesWithChangedFileCountAndEnforcesCap() {
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 0, hasMeaningfulDiff: false) == 0)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 4, hasMeaningfulDiff: false) == 0)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 1, hasMeaningfulDiff: true) == 2)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 2, hasMeaningfulDiff: true) == 2)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 3, hasMeaningfulDiff: true) == 3)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 4, hasMeaningfulDiff: true) == 4)
+        #expect(CommitMessagePrompt.bulletLimit(forFileCount: 8, hasMeaningfulDiff: true) == 5)
+
+        let capped = CommitMessage.composed(
+            subject: "Update configs",
+            bullets: ["One", "Two", "Three", "Four", "Five"],
+            maxBullets: 4
+        )
+        #expect(capped == "Update configs\n\n- One\n- Two\n- Three\n- Four")
+        #expect(!capped.contains("Five"))
+
+        let suppressed = CommitMessage.composed(
+            subject: "Add file",
+            bullets: ["Invented"],
+            maxBullets: 0
+        )
+        #expect(suppressed == "Add file")
+    }
 }
 
 @Suite
