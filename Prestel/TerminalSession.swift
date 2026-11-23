@@ -144,6 +144,7 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     @Published private(set) var customTitle: String?
     @Published private(set) var directory: String
     @Published private(set) var state: State = .ready
+    @Published private(set) var attention: SessionAttention?
     private(set) var surface: PrestelView?
     private(set) var process: LocalProcess?
     private var adapter: ProcessAdapter?
@@ -234,17 +235,34 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
     /// thread, so it stamps arrival there and hops over with a plain value.
     private func observeShellMarks(on surface: PrestelView) {
         oscObservation = surface.observeOscEvents { [weak self] event in
-            guard event.code == 133, let mark = ShellMark(payload: event.payload) else { return }
             let date = Date()
-            Task { @MainActor in self?.handle(mark, at: date) }
+            if event.code == 133 {
+                guard let mark = ShellMark(payload: event.payload) else { return }
+                Task { @MainActor in self?.handle(mark, at: date) }
+            } else if let message = TerminalNotification.message(code: event.code, payload: event.payload) {
+                Task { @MainActor in self?.requestAttention(.notification(message), at: date) }
+            }
         }
     }
     func handle(_ mark: ShellMark, at date: Date) {
         guard state == .running, let finished = commandTracker.handle(mark, at: date) else { return }
-        let visible = NSApp.isActive && surface?.window?.occlusionState.contains(.visible) == true
+        let visible = isOnScreen
+        if !visible, finished.duration >= CommandNotifier.minimumDuration {
+            attention = SessionAttention(reason: .commandFinished(finished), date: date)
+        }
         if CommandNotifier.shouldNotify(finished, enabled: CommandNotifier.isEnabled, isVisible: visible) {
             CommandNotifier.post(finished, session: self)
         }
+    }
+    private var isOnScreen: Bool {
+        NSApp.isActive && surface?.window?.occlusionState.contains(.visible) == true
+    }
+    func requestAttention(_ reason: SessionAttention.Reason, at date: Date = Date()) {
+        guard state == .running, !isOnScreen else { return }
+        attention = SessionAttention(reason: reason, date: date)
+    }
+    func clearAttention() {
+        if attention != nil { attention = nil }
     }
     /// Scrolls to the closest OSC 133 prompt above or below the viewport;
     /// past the last prompt it returns to the live bottom.
@@ -281,6 +299,10 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, TerminalV
         }
     }
     func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) { process?.send(data: data) }
+    func bell(source: SwiftTerm.TerminalView) {
+        NSSound.beep()
+        requestAttention(.bell)
+    }
     func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
         guard var size = adapter?.updateSize(columns: newCols, rows: newRows) else { return }
         _ = process?.updateWindowSize(&size)

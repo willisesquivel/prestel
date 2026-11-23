@@ -145,10 +145,9 @@ struct ReviewFileHeaderRow: View {
                     .foregroundStyle(isMenuHovered ? Color.primary : Color.primary.opacity(0.72))
                     .frame(width: 24, height: 24)
                     .background {
-                        if isMenuHovered {
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(Color.primary.opacity(0.08))
-                        }
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(isMenuHovered ? 0.08 : 0))
+                            .animation(.easeInOut(duration: 0.14), value: isMenuHovered)
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
@@ -232,13 +231,9 @@ private struct ReviewHeaderIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .background {
-                if configuration.isPressed {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(0.14))
-                } else if isHovered {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(0.08))
-                }
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity(configuration.isPressed ? 0.14 : (isHovered ? 0.08 : 0)))
+                    .animation(.easeInOut(duration: 0.14), value: isHovered)
             }
             .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }

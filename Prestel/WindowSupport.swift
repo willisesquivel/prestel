@@ -121,7 +121,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             model: model,
             review: review,
             closeTab: { [weak self] id in self?.requestCloseTab(id) },
-            closeArchivedTab: { [weak self] id in self?.requestCloseArchivedTab(id) }
+            closeSettledTab: { [weak self] id in self?.requestCloseSettledTab(id) }
         ))
         // Put the entire SwiftUI hierarchy in the glass view's documented
         // content slot. Keeping the glass as a sibling backdrop lets AppKit
@@ -308,12 +308,17 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func newTab(_ sender: Any?) { model.newTab() }
     @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
     func requestCloseTab(_ id: UUID) {
-        if model.archived.contains(where: { $0.id == id }) {
-            requestCloseArchivedTab(id)
+        if model.settled.contains(where: { $0.id == id }) {
+            requestCloseSettledTab(id)
             return
         }
-        guard let tab = model.tabs.first(where: { $0.id == id }) else { return }
-        if model.tabs.count == 1 { window?.performClose(nil); return }
+        guard let tab = model.tabs.first(where: { $0.id == id }) else {
+            guard let parkedTab = model.allSessions.first(where: { $0.id == id }) else { return }
+            guard CloseConfirmation.confirm(tabs: parkedTab.hasActiveJobs ? [parkedTab] : [], action: "Close Tab") else { return }
+            model.closeTabInAnySpace(id)
+            return
+        }
+        if model.tabs.count == 1, model.spaces.count == 1, model.settled.isEmpty { window?.performClose(nil); return }
         guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true
@@ -321,16 +326,70 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
             model.closeTab(id)
         }
     }
-    func requestCloseArchivedTab(_ id: UUID) {
-        guard let tab = model.archived.first(where: { $0.id == id }) else { return }
+    func requestCloseSettledTab(_ id: UUID) {
+        guard let tab = model.settled.first(where: { $0.id == id }) else { return }
         guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            model.closeArchivedTab(id)
+            model.closeSettledTab(id)
         }
     }
     @objc func closeTerminalWindow(_ sender: Any?) { window?.performClose(sender) }
+    @objc func newSpace(_ sender: Any?) { model.newSpace() }
+    @objc func nextSpace(_ sender: Any?) { model.cycleSpace(1) }
+    @objc func previousSpace(_ sender: Any?) { model.cycleSpace(-1) }
+    func requestCloseFolder(_ id: UUID) {
+        guard let folder = model.folders.first(where: { $0.id == id }) else { return }
+        let members = model.tabs.filter { folder.tabIDs.contains($0.id) }
+        guard !members.isEmpty, let window else {
+            model.closeFolder(id, closingTabs: false)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close “\(folder.name)”"
+        alert.informativeText = members.count == 1
+            ? "This folder still holds a tab. Close it too, or keep it and remove only the folder?"
+            : "This folder still holds \(members.count) tabs. Close them too, or keep the tabs and remove only the folder?"
+        alert.addButton(withTitle: "Close Folder and Tabs")
+        alert.addButton(withTitle: "Remove Folder Only")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                guard CloseConfirmation.confirm(tabs: members.filter(\.hasActiveJobs), action: "Close Tabs") else { return }
+                self.model.closeFolder(id, closingTabs: true)
+            case .alertSecondButtonReturn:
+                self.model.closeFolder(id, closingTabs: false)
+            default:
+                break
+            }
+        }
+    }
+    func requestRenameSpace(_ id: UUID) {
+        guard let space = model.spaces.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Space"
+        let field = NSTextField(string: space.name)
+        field.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.renameSpace(id, to: field.stringValue)
+    }
+    func requestCloseSpace(_ id: UUID) {
+        guard model.spaces.count > 1 else { return }
+        let running = model.sessions(inSpace: id).filter(\.hasActiveJobs)
+        guard CloseConfirmation.confirm(tabs: running, action: "Close Space") else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            model.closeSpace(id)
+        }
+    }
     @objc func nextTab(_ sender: Any?) { model.cycle(1) }
     @objc func previousTab(_ sender: Any?) { model.cycle(-1) }
     @objc func reopenClosedTab(_ sender: Any?) { model.reopenClosedTab() }
@@ -363,6 +422,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         switch menuItem.action {
         case #selector(reopenClosedTab(_:)): return !model.recentlyClosed.isEmpty
         case #selector(nextTab(_:)), #selector(previousTab(_:)): return model.tabs.count > 1
+        case #selector(nextSpace(_:)), #selector(previousSpace(_:)): return model.spaces.count > 1
         case #selector(clearScrollback(_:)), #selector(closeTab(_:)): return model.selectedTab != nil
         case #selector(toggleCodeReview(_:)):
             if model.reviewVisible { return true }
@@ -386,6 +446,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         onClose?(model.id)
     }
     func windowDidBecomeKey(_ notification: Notification) {
+        model.acknowledgeVisibleTabs()
         AppDelegate.current?.commandRevision &+= 1
         focusTerminal()
     }

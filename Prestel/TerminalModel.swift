@@ -13,6 +13,38 @@ struct TabDescriptor: Codable, Equatable, Identifiable {
     var customTitle: String? = nil
 }
 
+/// A space that is not on screen. The window's top-level tab fields hold the active one.
+struct SpaceDescriptor: Codable, Equatable {
+    var id: UUID
+    var name: String
+    var tabs: [TabDescriptor]
+    var selectedID: UUID?
+    var splits: [SplitState] = []
+    var folders: [TabFolder] = []
+    var settledTabs: [TabDescriptor] = []
+
+    init(id: UUID, name: String, tabs: [TabDescriptor], selectedID: UUID?, splits: [SplitState] = [], folders: [TabFolder] = [], settledTabs: [TabDescriptor] = []) {
+        self.id = id
+        self.name = name
+        self.tabs = tabs
+        self.selectedID = selectedID
+        self.splits = splits
+        self.folders = folders
+        self.settledTabs = settledTabs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        tabs = try container.decode([TabDescriptor].self, forKey: .tabs)
+        selectedID = try container.decodeIfPresent(UUID.self, forKey: .selectedID)
+        splits = try container.decodeIfPresent([SplitState].self, forKey: .splits) ?? []
+        folders = try container.decodeIfPresent([TabFolder].self, forKey: .folders) ?? []
+        settledTabs = try container.decodeIfPresent([TabDescriptor].self, forKey: .settledTabs) ?? []
+    }
+}
+
 struct WindowDescriptor: Codable, Equatable {
     var id: UUID
     var tabs: [TabDescriptor]
@@ -24,6 +56,10 @@ struct WindowDescriptor: Codable, Equatable {
     var reviewWidth: Double
     var splits: [SplitState]
     var folders: [TabFolder]
+    var activeSpaceID: UUID?
+    var activeSpaceName: String?
+    var activeSpaceIndex: Int
+    var otherSpaces: [SpaceDescriptor]
 
     init(
         id: UUID,
@@ -35,7 +71,11 @@ struct WindowDescriptor: Codable, Equatable {
         reviewWidth: Double = 420,
         splits: [SplitState] = [],
         archivedTabs: [TabDescriptor] = [],
-        folders: [TabFolder] = []
+        folders: [TabFolder] = [],
+        activeSpaceID: UUID? = nil,
+        activeSpaceName: String? = nil,
+        activeSpaceIndex: Int = 0,
+        otherSpaces: [SpaceDescriptor] = []
     ) {
         self.id = id
         self.tabs = tabs
@@ -55,6 +95,10 @@ struct WindowDescriptor: Codable, Equatable {
             )
         }
         self.folders = folders
+        self.activeSpaceID = activeSpaceID
+        self.activeSpaceName = activeSpaceName
+        self.activeSpaceIndex = activeSpaceIndex
+        self.otherSpaces = otherSpaces
     }
 
     /// Legacy single-split keys kept for decoding older saved windows.
@@ -108,6 +152,10 @@ struct WindowDescriptor: Codable, Equatable {
             try container.decodeIfPresent([TabFolder].self, forKey: .folders) ?? [],
             tabIDs: knownIDs
         )
+        activeSpaceID = try container.decodeIfPresent(UUID.self, forKey: .activeSpaceID)
+        activeSpaceName = try container.decodeIfPresent(String.self, forKey: .activeSpaceName)
+        activeSpaceIndex = try container.decodeIfPresent(Int.self, forKey: .activeSpaceIndex) ?? 0
+        otherSpaces = try container.decodeIfPresent([SpaceDescriptor].self, forKey: .otherSpaces) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -122,6 +170,10 @@ struct WindowDescriptor: Codable, Equatable {
         try container.encode(reviewWidth, forKey: .reviewWidth)
         try container.encode(splits, forKey: .splits)
         try container.encode(folders, forKey: .folders)
+        try container.encodeIfPresent(activeSpaceID, forKey: .activeSpaceID)
+        try container.encodeIfPresent(activeSpaceName, forKey: .activeSpaceName)
+        try container.encode(activeSpaceIndex, forKey: .activeSpaceIndex)
+        try container.encode(otherSpaces, forKey: .otherSpaces)
     }
 
     static func clampedReviewWidth(_ raw: Double) -> Double {
@@ -132,6 +184,7 @@ struct WindowDescriptor: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, tabs, archivedTabs, selectedID, sidebarVisible, sidebarWidth, reviewVisible, reviewWidth
         case splits, splitLeadingID, splitTrailingID, splitFraction, splitAxis, folders
+        case activeSpaceID, activeSpaceName, activeSpaceIndex, otherSpaces
     }
 }
 
@@ -145,8 +198,12 @@ final class TerminalModel: ObservableObject {
 
     let id: UUID
     @Published private(set) var tabs: [TerminalSession] = []
-    @Published private(set) var archived: [TerminalSession] = []
-    @Published var showingArchive = false
+    @Published private(set) var settled: [TerminalSession] = []
+    /// Every space in this window, in pill order. `tabs`, `splits`, `folders`
+    /// and the selection belong to `activeSpaceID`; the rest wait in `parked`.
+    @Published private(set) var spaces: [SpaceSummary] = []
+    @Published private(set) var activeSpaceID = UUID()
+    private var parked: [UUID: ParkedSpace] = [:]
     @Published private(set) var selectedID: UUID?
     /// Tabs participating in sidebar selection. `selectedID` remains the tab
     /// whose terminal is on screen; this set owns multi-tab reorder intent.
@@ -168,6 +225,7 @@ final class TerminalModel: ObservableObject {
 
     init(directory: String = ShellConfiguration.defaultDirectory, restoration: WindowDescriptor? = nil) {
         id = restoration?.id ?? UUID()
+        spaces = [SpaceSummary(id: activeSpaceID, name: Self.spaceName(number: 1))]
         if restoration == nil { sidebarVisible = Self.opensSidebarInNewWindows }
         if let restoration, !restoration.tabs.isEmpty {
             sidebarVisible = restoration.sidebarVisible
@@ -178,7 +236,7 @@ final class TerminalModel: ObservableObject {
             for descriptor in restoration.tabs where seen.insert(descriptor.id).inserted { append(descriptor) }
             for descriptor in restoration.archivedTabs where seen.insert(descriptor.id).inserted {
                 let tab = TerminalSession(descriptor: descriptor)
-                archived.append(tab)
+                settled.append(tab)
                 observe(tab)
             }
             select(restoration.selectedID ?? tabs[0].id)
@@ -186,8 +244,9 @@ final class TerminalModel: ObservableObject {
             restoreSplit(from: restoration)
             folders = SidebarOutline.sanitized(
                 restoration.folders,
-                tabIDs: Set(tabs.map(\.id)).union(archived.map(\.id))
+                tabIDs: Set(tabs.map(\.id)).union(settled.map(\.id))
             )
+            restoreSpaces(from: restoration, seen: &seen)
         } else {
             append(TabDescriptor(directory: directory))
             select(tabs[0].id)
@@ -197,6 +256,7 @@ final class TerminalModel: ObservableObject {
     /// Owns an existing live session. Does not spawn a replacement shell.
     init(adopting tab: TerminalSession) {
         self.id = UUID()
+        spaces = [SpaceSummary(id: activeSpaceID, name: Self.spaceName(number: 1))]
         sidebarVisible = Self.opensSidebarInNewWindows
         tabs = [tab]
         subscriptions[tab.id] = tab.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
@@ -210,6 +270,7 @@ final class TerminalModel: ObservableObject {
     /// Owns existing live sessions without replacing their PTYs.
     init(adopting adoptedTabs: [TerminalSession], selectedID preferredID: UUID?) {
         id = UUID()
+        spaces = [SpaceSummary(id: activeSpaceID, name: Self.spaceName(number: 1))]
         sidebarVisible = Self.opensSidebarInNewWindows
         tabs = adoptedTabs
         for tab in adoptedTabs {
@@ -225,9 +286,12 @@ final class TerminalModel: ObservableObject {
     }
 
     var selectedTab: TerminalSession? {
-        tabs.first { $0.id == selectedID } ?? archived.first { $0.id == selectedID }
+        tabs.first { $0.id == selectedID }
     }
-    var allSessions: [TerminalSession] { tabs + archived }
+    /// Every live session this window owns: the active space, parked spaces and the archive.
+    var allSessions: [TerminalSession] {
+        spaces.flatMap { sessions(inSpace: $0.id) }
+    }
     /// The split currently on screen. Nil when the selected tab is not in a pair.
     var visibleSplit: SplitState? {
         guard let selectedID else { return nil }
@@ -239,8 +303,8 @@ final class TerminalModel: ObservableObject {
     var filteredTabs: [TerminalSession] {
         filtered(tabs)
     }
-    var filteredArchived: [TerminalSession] {
-        filtered(archived)
+    var filteredSettled: [TerminalSession] {
+        filtered(settled)
     }
     var sidebarItems: [SidebarTabItem] {
         SidebarTabLayout.items(from: filteredTabs, splits: splits)
@@ -271,13 +335,11 @@ final class TerminalModel: ObservableObject {
             setFolderMembership(tab.id, folderID: joinedFolder)
         }
         searchText = ""
-        showingArchive = false
         select(tab.id)
         return tab
     }
 
     func showSettings() {
-        showingArchive = false
         if let existing = tabs.first(where: { $0.kind == .settings }) { select(existing.id) }
         else { select(append(TabDescriptor(kind: .settings, title: "Settings")).id) }
         searchText = ""
@@ -311,9 +373,7 @@ final class TerminalModel: ObservableObject {
     /// Lume-style ordered selection: plain click replaces, Shift selects the
     /// inclusive range from the last plain-click anchor, and Command toggles.
     func select(_ id: UUID, shift: Bool, command: Bool) {
-        let open = tabs.first { $0.id == id }
-        let archivedSession = archived.first { $0.id == id }
-        guard let session = open ?? archivedSession else { return }
+        guard let session = tabs.first(where: { $0.id == id }) else { return }
         if command {
             if selectedTabIDs.contains(id) {
                 var remaining = selectedTabIDs
@@ -330,16 +390,14 @@ final class TerminalModel: ObservableObject {
                 let next = tabs.enumerated()
                     .filter { remaining.contains($0.element.id) }
                     .min { abs($0.offset - from) < abs($1.offset - from) }?.element
-                    ?? archived.first { remaining.contains($0.id) }
                 guard let next else { return }
-                activate(next.id, session: next, isArchived: archived.contains { $0.id == next.id })
+                activate(next.id, session: next)
                 return
             } else {
                 selectedTabIDs.insert(id)
             }
             selectionAnchorID = id
         } else if shift,
-                  open != nil,
                   let selectionAnchorID {
             // Range over the rows actually on screen, in display order, so
             // collapsed-folder and search-hidden tabs are never swept in.
@@ -355,14 +413,12 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = [id]
             selectionAnchorID = id
         }
-        activate(id, session: session, isArchived: archivedSession != nil)
+        activate(id, session: session)
     }
 
-    private func activate(_ id: UUID, session: TerminalSession, isArchived: Bool) {
-        showingArchive = isArchived
-        if !isArchived {
-            reconcileSplit(selecting: id)
-        }
+    private func activate(_ id: UUID, session: TerminalSession) {
+        reconcileSplit(selecting: id)
+        session.clearAttention()
         guard id != selectedID else { return }
         history = Array(history.prefix(historyIndex + 1))
         history.append(id)
@@ -458,7 +514,7 @@ final class TerminalModel: ObservableObject {
     }
 
     func tab(id: UUID) -> TerminalSession? {
-        tabs.first { $0.id == id } ?? archived.first { $0.id == id }
+        tabs.first { $0.id == id } ?? settled.first { $0.id == id }
     }
 
     func cycle(_ offset: Int) {
@@ -486,10 +542,8 @@ final class TerminalModel: ObservableObject {
         guard history.indices.contains(target) else { return }
         historyIndex = target
         let id = history[target]
-        showingArchive = archived.contains { $0.id == id }
-        if !showingArchive {
-            reconcileSplit(selecting: id)
-        }
+        reconcileSplit(selecting: id)
+        tab(id: id)?.clearAttention()
         selectedID = id
         selectedTabIDs = [id]
         selectionAnchorID = id
@@ -581,6 +635,7 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = [selectedID]
             selectionAnchorID = selectedID
         }
+        closeEmptyActiveSpace()
         return tab
     }
 
@@ -613,6 +668,7 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = [selectedID]
             selectionAnchorID = selectedID
         }
+        closeEmptyActiveSpace()
         return moving
     }
 
@@ -635,44 +691,34 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = Set(adoptedTabs.map(\.id))
             selectionAnchorID = activeID
             if let active = tab(id: activeID) {
-                activate(activeID, session: active, isArchived: false)
+                activate(activeID, session: active)
             }
         }
     }
 
     /// Hide a live session from the sidebar without terminating its process.
-    func archiveTab(_ id: UUID) {
-        let wasLast = tabs.count == 1
+    func settleTab(_ id: UUID) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        if tabs.count == 1 { newTab() }
         guard let tab = detachTab(id) else { return }
-        archived.append(tab)
+        settled.append(tab)
         observe(tab)
-        if wasLast { newTab() }
     }
 
-    func unarchiveTab(_ id: UUID) {
-        guard let index = archived.firstIndex(where: { $0.id == id }) else { return }
-        let tab = archived.remove(at: index)
+    func reopenTab(_ id: UUID) {
+        guard let index = settled.firstIndex(where: { $0.id == id }) else { return }
+        let tab = settled.remove(at: index)
         subscriptions.removeValue(forKey: id)
-        showingArchive = false
-        adopt(tab, at: tabs.count, selecting: true)
+        adopt(tab, at: 0, selecting: true)
     }
 
-    func closeArchivedTab(_ id: UUID) {
-        guard let index = archived.firstIndex(where: { $0.id == id }) else { return }
-        recentlyClosed.append(archived[index].descriptor)
+    func closeSettledTab(_ id: UUID) {
+        guard let index = settled.firstIndex(where: { $0.id == id }) else { return }
+        recentlyClosed.append(settled[index].descriptor)
         recentlyClosed = Array(recentlyClosed.suffix(20))
-        archived[index].close()
-        archived.remove(at: index)
+        settled[index].close()
+        settled.remove(at: index)
         subscriptions.removeValue(forKey: id)
-        selectedTabIDs.remove(id)
-        if selectionAnchorID == id { selectionAnchorID = nil }
-        if selectedID == id {
-            if archived.isEmpty {
-                if let first = tabs.first { select(first.id) }
-            } else {
-                select(archived[min(index, archived.count - 1)].id)
-            }
-        }
     }
 
     /// Call only after the window controller has resolved close confirmation.
@@ -699,6 +745,7 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = [selectedID]
             selectionAnchorID = selectedID
         }
+        closeEmptyActiveSpace()
     }
 
     func reopenClosedTab() {
@@ -706,7 +753,6 @@ final class TerminalModel: ObservableObject {
         descriptor.id = UUID() // Replacement session, never a resurrected process.
         let tab = append(descriptor)
         searchText = ""
-        showingArchive = false
         select(tab.id)
     }
 
@@ -720,17 +766,37 @@ final class TerminalModel: ObservableObject {
             reviewVisible: reviewVisible,
             reviewWidth: reviewWidth,
             splits: splits,
-            archivedTabs: archived.map(\.descriptor),
-            folders: normalizedFolders()
+            archivedTabs: settled.map(\.descriptor),
+            folders: normalizedFolders(),
+            activeSpaceID: activeSpaceID,
+            activeSpaceName: activeSpace.name,
+            activeSpaceIndex: spaces.firstIndex { $0.id == activeSpaceID } ?? 0,
+            otherSpaces: spaces.compactMap { space in
+                parked[space.id].map { parkedSpace in
+                    SpaceDescriptor(
+                        id: space.id,
+                        name: space.name,
+                        tabs: parkedSpace.tabs.map(\.descriptor),
+                        selectedID: parkedSpace.selectedID,
+                        splits: parkedSpace.splits,
+                        folders: parkedSpace.folders,
+                        settledTabs: parkedSpace.settled.map(\.descriptor)
+                    )
+                }
+            }
         )
     }
 
     private func restoreSplit(from restoration: WindowDescriptor) {
+        splits = Self.validSplits(restoration.splits, tabIDs: Set(tabs.map(\.id)), selectedID: selectedID)
+    }
+
+    private static func validSplits(_ proposed: [SplitState], tabIDs: Set<UUID>, selectedID: UUID?) -> [SplitState] {
         var seen = Set<UUID>()
-        splits = restoration.splits.compactMap { split in
+        return proposed.compactMap { split in
             guard split.leadingID != split.trailingID,
-                  tabs.contains(where: { $0.id == split.leadingID }),
-                  tabs.contains(where: { $0.id == split.trailingID }),
+                  tabIDs.contains(split.leadingID),
+                  tabIDs.contains(split.trailingID),
                   !seen.contains(split.leadingID),
                   !seen.contains(split.trailingID) else { return nil }
             let focusedID: UUID
@@ -940,7 +1006,24 @@ final class TerminalModel: ObservableObject {
     }
 
     func deleteFolder(_ id: UUID) {
-        Self.animateSidebar { folders.removeAll { $0.id == id } }
+        Self.animateRemoval { folders.removeAll { $0.id == id } }
+    }
+
+    /// A removed row goes at once and the rows after it close the gap on a spring.
+    static func animateRemoval(_ body: () -> Void) {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withAnimation(reduce ? .easeOut(duration: 0.18) : .spring(response: 0.32, dampingFraction: 0.9), body)
+    }
+
+    /// Removes the folder, and with `closingTabs` also closes every tab in it. Call only
+    /// after the window controller has resolved close confirmation.
+    func closeFolder(_ id: UUID, closingTabs: Bool) {
+        guard let folder = folders.first(where: { $0.id == id }) else { return }
+        deleteFolder(id)
+        guard closingTabs else { return }
+        let members = Set(folder.tabIDs)
+        if tabs.allSatisfy({ members.contains($0.id) }) { newTab() }
+        for member in folder.tabIDs { closeTab(member) }
     }
 
     func renameTab(_ id: UUID, to proposed: String) {
@@ -1024,4 +1107,262 @@ final class TerminalModel: ObservableObject {
         reviewWidth = 420
     }
     func closeAll() { allSessions.forEach { $0.close() } }
+
+    // MARK: Spaces
+
+    private struct ParkedSpace {
+        var tabs: [TerminalSession]
+        var settled: [TerminalSession] = []
+        var splits: [SplitState]
+        var folders: [TabFolder]
+        var selectedID: UUID?
+        var selectedTabIDs: Set<UUID>
+    }
+
+    var activeSpace: SpaceSummary {
+        spaces.first { $0.id == activeSpaceID } ?? SpaceSummary(id: activeSpaceID, name: Self.spaceName(number: 1))
+    }
+
+    static func spaceName(number: Int) -> String { "Space \(number)" }
+
+    /// Open and settled sessions of one space.
+    func sessions(inSpace id: UUID) -> [TerminalSession] {
+        if id == activeSpaceID { return tabs + settled }
+        guard let space = parked[id] else { return [] }
+        return space.tabs + space.settled
+    }
+
+    private func restoreSpaces(from restoration: WindowDescriptor, seen: inout Set<UUID>) {
+        if let restoredID = restoration.activeSpaceID { activeSpaceID = restoredID }
+        let activeName = restoration.activeSpaceName.flatMap(Self.cleanedSpaceName) ?? Self.spaceName(number: 1)
+        var order: [SpaceSummary] = []
+        var knownSpaces = Set([activeSpaceID])
+        for space in restoration.otherSpaces where knownSpaces.insert(space.id).inserted {
+            let sessions = space.tabs.filter { seen.insert($0.id).inserted }.map(TerminalSession.init(descriptor:))
+            guard !sessions.isEmpty else { continue }
+            sessions.forEach(observe)
+            let settledSessions = space.settledTabs.filter { seen.insert($0.id).inserted }.map(TerminalSession.init(descriptor:))
+            settledSessions.forEach(observe)
+            let ids = Set(sessions.map(\.id))
+            let selected = space.selectedID.flatMap { ids.contains($0) ? $0 : nil } ?? sessions[0].id
+            parked[space.id] = ParkedSpace(
+                tabs: sessions,
+                settled: settledSessions,
+                splits: Self.validSplits(space.splits, tabIDs: ids, selectedID: selected),
+                folders: SidebarOutline.sanitized(space.folders, tabIDs: ids),
+                selectedID: selected,
+                selectedTabIDs: [selected]
+            )
+            order.append(SpaceSummary(id: space.id, name: Self.cleanedSpaceName(space.name) ?? Self.spaceName(number: order.count + 2)))
+        }
+        order.insert(SpaceSummary(id: activeSpaceID, name: activeName), at: min(max(restoration.activeSpaceIndex, 0), order.count))
+        spaces = order
+    }
+
+    func switchSpace(to id: UUID) {
+        guard id != activeSpaceID, let target = parked.removeValue(forKey: id) else { return }
+        parked[activeSpaceID] = park()
+        load(target, as: id)
+    }
+
+    func cycleSpace(_ offset: Int) {
+        guard spaces.count > 1, let index = spaces.firstIndex(where: { $0.id == activeSpaceID }) else { return }
+        switchSpace(to: spaces[((index + offset) % spaces.count + spaces.count) % spaces.count].id)
+    }
+
+    /// Opens a space with one fresh tab, right after the current one, and shows it.
+    @discardableResult
+    func newSpace() -> UUID {
+        let id = UUID()
+        let index = (spaces.firstIndex { $0.id == activeSpaceID } ?? spaces.count - 1) + 1
+        let used = Set(spaces.map(\.name))
+        let number = (1...).first { !used.contains(Self.spaceName(number: $0)) } ?? spaces.count + 1
+        parked[activeSpaceID] = park()
+        spaces.insert(SpaceSummary(id: id, name: Self.spaceName(number: number)), at: index)
+        let tab = TerminalSession(descriptor: TabDescriptor(directory: ShellConfiguration.defaultDirectory))
+        observe(tab)
+        load(ParkedSpace(tabs: [tab], splits: [], folders: [], selectedID: tab.id, selectedTabIDs: [tab.id]), as: id)
+        return id
+    }
+
+    func renameSpace(_ id: UUID, to proposed: String) {
+        guard let name = Self.cleanedSpaceName(proposed),
+              let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+        spaces[index].name = name
+    }
+
+    /// Call only after the window controller has resolved close confirmation.
+    /// The last space never closes; closing it is closing the window.
+    func closeSpace(_ id: UUID) {
+        guard spaces.count > 1, let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+        let closing: [TerminalSession]
+        if id == activeSpaceID {
+            let neighbor = spaces[index + 1 < spaces.count ? index + 1 : index - 1].id
+            guard let target = parked.removeValue(forKey: neighbor) else { return }
+            closing = tabs + settled
+            load(target, as: neighbor)
+        } else {
+            closing = parked.removeValue(forKey: id).map { $0.tabs + $0.settled } ?? []
+        }
+        spaces.removeAll { $0.id == id }
+        for session in closing {
+            recentlyClosed.append(session.descriptor)
+            subscriptions.removeValue(forKey: session.id)
+            session.close()
+        }
+        recentlyClosed = Array(recentlyClosed.suffix(20))
+    }
+
+    /// Closes an open tab in whichever space holds it. Call only after the window
+    /// controller has resolved close confirmation.
+    func closeTabInAnySpace(_ id: UUID) {
+        if tabs.contains(where: { $0.id == id }) {
+            closeTab(id)
+            return
+        }
+        guard let spaceID = spaces.first(where: { parked[$0.id]?.tabs.contains { $0.id == id } == true })?.id,
+              var space = parked[spaceID],
+              let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
+        objectWillChange.send()
+        let tab = space.tabs.remove(at: index)
+        recentlyClosed.append(tab.descriptor)
+        recentlyClosed = Array(recentlyClosed.suffix(20))
+        subscriptions.removeValue(forKey: id)
+        tab.close()
+        space.splits.removeAll { $0.contains(id) }
+        space.folders = SidebarOutline.sanitized(space.folders, tabIDs: Set(space.tabs.map(\.id)))
+        space.selectedTabIDs.remove(id)
+        if space.tabs.isEmpty, let newest = space.settled.popLast() {
+            space.tabs = [newest]
+        }
+        guard !space.tabs.isEmpty else {
+            parked[spaceID] = space
+            closeSpace(spaceID)
+            return
+        }
+        if space.selectedID == id || space.selectedID.map({ selected in !space.tabs.contains { $0.id == selected } }) == true {
+            space.selectedID = space.tabs[min(index, space.tabs.count - 1)].id
+        }
+        if space.selectedTabIDs.isEmpty, let selected = space.selectedID { space.selectedTabIDs = [selected] }
+        parked[spaceID] = space
+    }
+
+    /// A space always holds an open tab. When its last one leaves, the newest settled
+    /// tab reopens; with none settled, the space goes too.
+    private func closeEmptyActiveSpace() {
+        guard tabs.isEmpty else { return }
+        if let newest = settled.last {
+            reopenTab(newest.id)
+        } else if spaces.count > 1 {
+            closeSpace(activeSpaceID)
+        }
+    }
+
+    private func park() -> ParkedSpace {
+        ParkedSpace(tabs: tabs, settled: settled, splits: splits, folders: normalizedFolders(), selectedID: selectedID, selectedTabIDs: selectedTabIDs)
+    }
+
+    private func load(_ space: ParkedSpace, as id: UUID) {
+        let ids = Set(space.tabs.map(\.id))
+        let selected = space.selectedID.flatMap { ids.contains($0) ? $0 : nil } ?? space.tabs.first?.id
+        activeSpaceID = id
+        searchText = ""
+        tabs = space.tabs
+        settled = space.settled
+        splits = space.splits
+        folders = space.folders
+        let kept = space.selectedTabIDs.intersection(ids)
+        selectedTabIDs = kept.isEmpty ? Set(selected.map { [$0] } ?? []) : kept
+        selectionAnchorID = selected
+        history = selected.map { [$0] } ?? []
+        historyIndex = history.isEmpty ? -1 : 0
+        selectedID = selected
+        if let session = selectedTab {
+            reconcileSplit(selecting: session.id)
+            session.clearAttention()
+            session.refreshDirectoryFromProcess()
+        }
+    }
+
+    private static func cleanedSpaceName(_ proposed: String) -> String? {
+        let trimmed = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(64))
+    }
+
+    // MARK: Activity
+
+    /// Sessions that want the user, newest first, across every space and the archive.
+    var activity: [ActivityItem] {
+        var spaceByTab: [UUID: SpaceSummary] = [:]
+        if spaces.count > 1 {
+            for space in spaces {
+                for session in sessions(inSpace: space.id) { spaceByTab[session.id] = space }
+            }
+        }
+        return allSessions.compactMap { session in
+            session.attention.map { ActivityItem(session: session, attention: $0, space: spaceByTab[session.id]) }
+        }
+        .sorted { $0.attention.date > $1.attention.date }
+    }
+
+    func clearActivity() {
+        allSessions.forEach { $0.clearAttention() }
+    }
+
+    /// The window came forward: whatever is on screen has now been seen.
+    func acknowledgeVisibleTabs() {
+        selectedTab?.clearAttention()
+        if let selectedID, let partner = visibleSplit?.partner(of: selectedID) {
+            tab(id: partner)?.clearAttention()
+        }
+    }
+
+    func owns(_ id: UUID) -> Bool {
+        allSessions.contains { $0.id == id }
+    }
+
+    /// Brings a tab on screen wherever it lives: another space or the archive.
+    func reveal(_ id: UUID) {
+        if let space = spaces.first(where: { space in
+            space.id != activeSpaceID && sessions(inSpace: space.id).contains { $0.id == id }
+        }) {
+            switchSpace(to: space.id)
+        }
+        if settled.contains(where: { $0.id == id }) {
+            reopenTab(id)
+        } else {
+            select(id)
+        }
+    }
+
+    /// Settled tabs of every space, newest settled first within each space.
+    var settledBySpace: [(space: SpaceSummary, tabs: [TerminalSession])] {
+        spaces.compactMap { space in
+            let list = space.id == activeSpaceID ? settled : parked[space.id]?.settled ?? []
+            return list.isEmpty ? nil : (space, list.reversed())
+        }
+    }
+
+    /// Open tabs of every space, in sidebar order for the active one.
+    var openTabsBySpace: [(space: SpaceSummary, tabs: [TerminalSession])] {
+        spaces.compactMap { space in
+            let list = space.id == activeSpaceID
+                ? SidebarOutline.tabOrder(in: SidebarOutline.sections(tabs: tabs, splits: splits, folders: folders, selectedID: selectedID, query: "")).compactMap { id in tabs.first { $0.id == id } }
+                : parked[space.id]?.tabs ?? []
+            return list.isEmpty ? nil : (space, list)
+        }
+    }
+}
+
+struct SpaceSummary: Identifiable, Equatable {
+    let id: UUID
+    var name: String
+}
+
+struct ActivityItem: Identifiable {
+    let session: TerminalSession
+    let attention: SessionAttention
+    /// Nil while the window has a single space.
+    let space: SpaceSummary?
+    var id: UUID { session.id }
 }

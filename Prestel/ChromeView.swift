@@ -43,6 +43,12 @@ struct PrestelCommands: Commands {
         CommandGroup(before: .toolbar) {
             Button("Toggle Sidebar") { app.keyController?.toggleSidebar(nil) }
                 .keyboardShortcut("s").disabled(window == nil)
+            Button("Toggle Activity View") {
+                let defaults = UserDefaults.standard
+                defaults.set(!defaults.bool(forKey: SidebarDefaults.activityView), forKey: SidebarDefaults.activityView)
+            }
+            .keyboardShortcut("u", modifiers: [.command, .option])
+            .disabled(window == nil)
             Button(window?.model.reviewVisible == true ? "Hide Code Review" : "Show Code Review") {
                 app.keyController?.toggleCodeReview(nil)
             }
@@ -52,6 +58,13 @@ struct PrestelCommands: Commands {
                 .keyboardShortcut(.tab, modifiers: [.control]).disabled((window?.model.tabs.count ?? 0) < 2)
             Button("Previous Tab") { app.keyController?.previousTab(nil) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift]).disabled((window?.model.tabs.count ?? 0) < 2)
+            Divider()
+            Button("New Space") { app.keyController?.newSpace(nil) }.disabled(window == nil)
+            Button("Next Space") { app.keyController?.nextSpace(nil) }
+                .disabled((window?.model.spaces.count ?? 0) < 2)
+            Button("Previous Space") { app.keyController?.previousSpace(nil) }
+                .disabled((window?.model.spaces.count ?? 0) < 2)
+            Divider()
             ForEach(1...9, id: \.self) { number in
                 Button(number == 9 ? "Select Last Tab" : "Select Tab \(number)") {
                     app.keyController?.model.selectTab(number: number)
@@ -133,7 +146,7 @@ struct NavigationCapsule: View {
         }
         .frame(width: compact ? ShellMetrics.navigationHeight : ShellMetrics.navigationWidth,
                height: ShellMetrics.navigationHeight)
-        .chromeGlass()
+        .chromeGlass(interactive: true)
         .accessibilityElement(children: .contain)
     }
 }
@@ -174,7 +187,7 @@ struct CodeReviewToggle: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .chromeGlass()
+        .chromeGlass(interactive: true)
         .focusable(false)
         .help(model.reviewVisible ? "Hide Code Review" : "Show Code Review")
         .accessibilityLabel("Code Review")
@@ -193,6 +206,7 @@ struct ChromeDivider: View {
 
 /// The floating chrome’s material: a tinted capsule of regular glass with a hairline edge.
 private struct ChromeGlass: ViewModifier {
+    var interactive: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
@@ -204,7 +218,7 @@ private struct ChromeGlass: ViewModifier {
                         : Color.white.opacity(0.30)
                 )
             }
-            .glassEffect(.regular, in: Capsule())
+            .glassEffect(.regular.interactive(interactive), in: Capsule())
             .overlay {
                 Capsule().strokeBorder(
                     Color.white.opacity(colorScheme == .dark ? 0.10 : 0.48),
@@ -215,7 +229,8 @@ private struct ChromeGlass: ViewModifier {
 }
 
 extension View {
-    func chromeGlass() -> some View {
-        modifier(ChromeGlass())
+    /// `interactive` gives header buttons the system glass press response.
+    func chromeGlass(interactive: Bool = false) -> some View {
+        modifier(ChromeGlass(interactive: interactive))
     }
 }

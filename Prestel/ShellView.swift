@@ -7,7 +7,7 @@ struct ShellView: View {
     /// publishes with `disablesAnimations`, and observing them here snaps the slide.
     let review: CodeReviewModel
     var closeTab: (UUID) -> Void = { _ in }
-    var closeArchivedTab: (UUID) -> Void = { _ in }
+    var closeSettledTab: (UUID) -> Void = { _ in }
     @State private var sidebarResizeStartWidth: CGFloat?
     @State private var reviewResizeStartWidth: CGFloat?
     @State private var openReviewBindTask: Task<Void, Never>?
@@ -57,7 +57,7 @@ struct ShellView: View {
                         model: model,
                         width: layout.restingSidebarWidth,
                         closeTab: closeTab,
-                        closeArchivedTab: closeArchivedTab
+                        closeSettledTab: closeSettledTab
                     )
                 }
 

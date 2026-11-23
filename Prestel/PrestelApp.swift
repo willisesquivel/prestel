@@ -14,13 +14,17 @@ struct PrestelApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, SPUUpdaterDelegate, ObservableObject {
     @Published var commandRevision = 0
     static weak var current: AppDelegate?
     override init() { super.init(); Self.current = self }
     var keyController: TerminalWindowController? { (NSApp.keyWindow ?? NSApp.mainWindow)?.windowController as? TerminalWindowController }
     private(set) var controllers: [UUID: TerminalWindowController] = [:]
-    let updaterController = SPUStandardUpdaterController(startingUpdater: !AppDelegate.isTesting, updaterDelegate: nil, userDriverDelegate: nil)
+    private(set) lazy var updaterController = SPUStandardUpdaterController(
+        startingUpdater: !AppDelegate.isTesting,
+        updaterDelegate: self,
+        userDriverDelegate: nil
+    )
     private var quitting = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -28,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = updaterController
         PrestelAppearance.apply(UserDefaults.standard.string(forKey: "appearanceMode") ?? "system")
         NSWindow.allowsAutomaticWindowTabbing = false
         guard !Self.isTesting else { return }
@@ -172,12 +177,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         guard let raw = response.notification.request.content.userInfo["tabID"] as? String, let id = UUID(uuidString: raw) else { return }
         await MainActor.run {
-            for controller in controllers.values where controller.model.tabs.contains(where: { $0.id == id }) {
-                controller.model.select(id)
+            for controller in controllers.values where controller.model.owns(id) {
+                controller.model.reveal(id)
                 controller.window?.makeKeyAndOrderFront(nil)
                 NSApp.activate()
             }
         }
+    }
+    // MARK: Updates
+    func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        UpdateStatus.shared.ready(version: item.displayVersionString, install: immediateInstallHandler)
+        return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -190,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if quitting { return .terminateNow }
-        let active = controllers.values.flatMap { $0.model.tabs }.filter(\.hasActiveJobs)
+        let active = controllers.values.flatMap { $0.model.allSessions }.filter(\.hasActiveJobs)
         guard CloseConfirmation.confirm(tabs: active, action: "Quit Prestel") else { return .terminateCancel }
         quitting = true
         for controller in controllers.values {
@@ -635,4 +645,19 @@ enum TestHostConcealment {
             return block
         }
     }
+}
+
+/// A downloaded update waiting for a relaunch. The sidebar shows a row while it is set.
+@MainActor
+final class UpdateStatus: ObservableObject {
+    static let shared = UpdateStatus()
+    @Published private(set) var readyVersion: String?
+    private var install: (() -> Void)?
+
+    func ready(version: String, install: @escaping () -> Void) {
+        self.install = install
+        readyVersion = version
+    }
+
+    func restart() { install?() }
 }

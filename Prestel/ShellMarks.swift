@@ -103,3 +103,56 @@ enum CommandNotifier {
         }
     }
 }
+
+/// Why a tab wants the user. A session keeps only the latest one; viewing the
+/// tab clears it.
+struct SessionAttention: Equatable {
+    enum Reason: Equatable {
+        case commandFinished(FinishedCommand)
+        case bell
+        /// Desktop notification requested by the program (OSC 9, 99 or 777).
+        /// CLI agents send these when they stop and wait for input.
+        case notification(String)
+    }
+
+    var reason: Reason
+    var date: Date
+}
+
+/// Message text of a terminal desktop notification, or nil for sequences that
+/// share the code but are not notifications (ConEmu's `OSC 9;4` progress).
+enum TerminalNotification {
+    static let maximumLength = 200
+
+    static func message(code: Int, payload: [UInt8]) -> String? {
+        let text = String(decoding: payload, as: UTF8.self)
+        switch code {
+        case 9:
+            if text.prefix(while: \.isNumber).count > 0, text.drop(while: \.isNumber).first == ";" { return nil }
+            return cleaned(text)
+        case 777:
+            let fields = text.split(separator: ";", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+            guard fields.first == "notify" else { return nil }
+            let title = fields.count > 1 ? fields[1] : ""
+            let body = fields.count > 2 ? fields[2] : ""
+            return cleaned(body) ?? cleaned(title)
+        case 99:
+            guard let separator = text.firstIndex(of: ";") else { return nil }
+            let metadata = text[..<separator]
+            var body = String(text[text.index(after: separator)...])
+            if metadata.split(separator: ":").contains("e=1") {
+                guard let data = Data(base64Encoded: body) else { return nil }
+                body = String(decoding: data, as: UTF8.self)
+            }
+            return cleaned(body)
+        default:
+            return nil
+        }
+    }
+
+    private static func cleaned(_ text: String) -> String? {
+        let visible = String(text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return visible.isEmpty ? nil : String(visible.prefix(maximumLength))
+    }
+}

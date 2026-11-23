@@ -5,69 +5,27 @@ struct SidebarView: View {
     @ObservedObject private var dragCoordinator = TabDragCoordinator.shared
     let width: CGFloat
     var closeTab: (UUID) -> Void
-    var closeArchivedTab: (UUID) -> Void = { _ in }
+    var closeSettledTab: (UUID) -> Void = { _ in }
     @FocusState private var focusedTarget: SidebarFocusTarget?
     @State private var renaming: SidebarRenameTarget?
+    @AppStorage(SidebarDefaults.activityView) private var showsActivity = false
+    @Namespace private var rowSpace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var rowWidth: CGFloat { width - ShellMetrics.sidebarInset * 2 }
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(spacing: ShellMetrics.sidebarRowSpacing) {
-                if model.showingArchive {
-                    archivedList
-                } else {
-                    let sections = model.sidebarSections
-                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        switch section {
-                        case .loose(let item):
-                            SidebarItemRow(
-                                model: model,
-                                item: item,
-                                previousItem: looseItem(at: index - 1, in: sections),
-                                nextItem: looseItem(at: index + 1, in: sections),
-                                width: rowWidth,
-                                renaming: renaming,
-                                closeTab: closeTab,
-                                beginRename: beginRename,
-                                commitRename: commitRename,
-                                cancelRename: { renaming = nil }
-                            )
-                            .focused($focusedTarget, equals: .item(item.id))
-                        case .folder(let group):
-                            FolderSection(
-                                model: model,
-                                group: group,
-                                width: rowWidth,
-                                renaming: renaming,
-                                closeTab: closeTab,
-                                beginRename: beginRename,
-                                commitRename: commitRename,
-                                cancelRename: { renaming = nil }
-                            )
-                            .focused($focusedTarget, equals: .item(group.id))
-                        }
-                    }
-                }
+            if showsActivity {
+                SidebarActivityList(model: model, width: rowWidth, closeTab: closeTab, closeSettledTab: closeSettledTab)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, ShellMetrics.sidebarInset)
+            } else {
+                tabList
             }
-            .frame(maxWidth: .infinity)
-            .overlay(alignment: .topLeading) {
-                if !model.showingArchive, let pin = dragCoordinator.pin, pin.windowID == model.id {
-                    TabInsertionPin(
-                        width: rowWidth,
-                        leadingIndent: pin.folderID == nil ? 0 : ShellMetrics.sidebarGroupSpacing
-                    )
-                    .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
-                }
-            }
-            .background {
-                if !model.showingArchive {
-                    TabListDropZone(windowID: model.id).frame(width: 0, height: 0)
-                }
-            }
-            .padding(.top, ShellMetrics.sidebarInset)
-            .padding(.bottom, ShellMetrics.sidebarInset)
         }
+        .environment(\.sidebarRowNamespace, rowSpace)
+        .animation(reduceMotion ? nil : .smooth(duration: 0.3), value: showsActivity)
         // AppKit needs the native scroller to render the safe-area edge effect.
         .scrollIndicators(.automatic)
         .safeAreaBar(edge: .top, spacing: 0) {
@@ -80,57 +38,77 @@ struct SidebarView: View {
                 .focused($focusedTarget, equals: .search)
         }
         .safeAreaBar(edge: .bottom, spacing: 0) {
-            ArchivedSidebarButton(
-                isSelected: model.showingArchive,
-                width: rowWidth
-            ) {
-                model.showingArchive.toggle()
-            }
-            .padding(.horizontal, ShellMetrics.sidebarInset)
-            .padding(.top, ShellMetrics.sidebarInset)
-            .padding(.bottom, ShellMetrics.sidebarInset)
-            .frame(width: width)
-            .focused($focusedTarget, equals: .archived)
+            SidebarFooter(model: model, width: rowWidth)
+                .padding(.horizontal, ShellMetrics.sidebarInset)
+                .padding(.top, ShellMetrics.sidebarInset)
+                .padding(.bottom, ShellMetrics.sidebarInset)
+                .frame(width: width)
         }
         .scrollClipDisabled()
         .scrollEdgeEffectStyle(.hard, for: .vertical)
         .frame(width: width)
     }
 
+    private var tabList: some View {
+        VStack(spacing: ShellMetrics.sidebarRowSpacing) {
+            VStack(spacing: ShellMetrics.sidebarRowSpacing) {
+                let sections = model.sidebarSections
+                ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                    switch section {
+                    case .loose(let item):
+                        SidebarItemRow(
+                            model: model,
+                            item: item,
+                            previousItem: looseItem(at: index - 1, in: sections),
+                            nextItem: looseItem(at: index + 1, in: sections),
+                            width: rowWidth,
+                            renaming: renaming,
+                            closeTab: closeTab,
+                            beginRename: beginRename,
+                            commitRename: commitRename,
+                            cancelRename: { renaming = nil }
+                        )
+                        .focused($focusedTarget, equals: .item(item.id))
+                        .transition(.identity)
+                    case .folder(let group):
+                        FolderSection(
+                            model: model,
+                            group: group,
+                            width: rowWidth,
+                            renaming: renaming,
+                            closeTab: closeTab,
+                            beginRename: beginRename,
+                            commitRename: commitRename,
+                            cancelRename: { renaming = nil }
+                        )
+                        .focused($focusedTarget, equals: .item(group.id))
+                        .transition(.sidebarRowRemoval)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .topLeading) {
+                if let pin = dragCoordinator.pin, pin.windowID == model.id {
+                    TabInsertionPin(
+                        width: rowWidth,
+                        leadingIndent: pin.folderID == nil ? 0 : ShellMetrics.sidebarGroupSpacing
+                    )
+                    .offset(x: ShellMetrics.sidebarInset, y: TabInsertionGeometry.pinOffsetY(insertionIndex: pin.insertionIndex))
+                }
+            }
+            .background {
+                TabListDropZone(windowID: model.id).frame(width: 0, height: 0)
+            }
+            SettledSection(model: model, width: rowWidth, closeSettledTab: closeSettledTab)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, ShellMetrics.sidebarInset)
+        .padding(.bottom, ShellMetrics.sidebarInset)
+    }
+
     private func looseItem(at index: Int, in sections: [SidebarSection]) -> SidebarTabItem? {
         guard sections.indices.contains(index), case .loose(let item) = sections[index] else { return nil }
         return item
-    }
-
-    @ViewBuilder
-    private var archivedList: some View {
-        let items = model.filteredArchived
-        if items.isEmpty {
-            Text(model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                 ? "No archived tabs"
-                 : "No matching tabs")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .containerRelativeFrame(.vertical)
-        } else {
-            ForEach(items) { session in
-                ArchivedTabRow(
-                    session: session,
-                    isSelected: model.selectedID == session.id,
-                    width: rowWidth,
-                    isRenaming: renaming == .tab(session.id),
-                    onSelect: { model.select(session.id) },
-                    onUnarchive: { model.unarchiveTab(session.id) },
-                    onClose: { closeArchivedTab(session.id) },
-                    onBeginRename: { beginRename(.tab(session.id)) },
-                    onCommitRename: { commitRename(.tab(session.id), $0) },
-                    onCancelRename: { renaming = nil }
-                )
-                .focused($focusedTarget, equals: .item(session.id))
-            }
-        }
     }
 
     private func beginRename(_ target: SidebarRenameTarget) {
@@ -156,7 +134,6 @@ struct SidebarView: View {
 private enum SidebarFocusTarget: Hashable {
     case search
     case item(UUID)
-    case archived
     case settings
 }
 
@@ -216,7 +193,8 @@ private struct FolderSection: View {
                 onBeginRename: { beginRename(.folder(group.folder.id)) },
                 onCommitRename: { commitRename(.folder(group.folder.id), $0) },
                 onCancelRename: cancelRename,
-                onDelete: { model.deleteFolder(group.folder.id) }
+                onDelete: { model.deleteFolder(group.folder.id) },
+                onClose: { AppDelegate.current?.controllers[model.id]?.requestCloseFolder(group.folder.id) }
             )
             VStack(alignment: .trailing, spacing: ShellMetrics.sidebarRowSpacing) {
                 ForEach(Array(group.children.enumerated()), id: \.element.id) { index, item in
@@ -288,6 +266,7 @@ private struct SidebarItemRow: View {
                 )
             }
             .animation(.easeInOut(duration: 0.16), value: model.selectedTabIDs)
+            .sidebarRowMatch(item.members.first ?? item.id, enabled: acceptsPointer)
     }
 
     @ViewBuilder
@@ -312,7 +291,7 @@ private struct SidebarItemRow: View {
                 onClose: closeTab,
                 onSplitWithActive: { model.split(with: $0, on: .trailing) },
                 onUnsplit: { model.unsplit(tabID: leading.id) },
-                onArchive: { model.archiveTab($0) },
+                onArchive: { model.settleTab($0) },
                 onBeginRename: { beginRename(.tab($0)) },
                 onDoubleClick: { model.focusTab($0) },
                 onCommitRename: { commitRename(.tab($0), $1) },
@@ -341,7 +320,7 @@ private struct SidebarItemRow: View {
                 splitWithActiveEnabled: model.selectedID != session.id,
                 onSplitWithActive: { model.split(with: session.id, on: .trailing) },
                 onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) },
-                onArchive: { model.archiveTab(session.id) },
+                onArchive: { model.settleTab(session.id) },
                 onBeginRename: { beginRename(.tab(session.id)) },
                 onDoubleClick: { model.focusTab(session.id) },
                 onCommitRename: { commitRename(.tab(session.id), $0) },
@@ -727,147 +706,6 @@ private struct CombinedSidebarRow: View {
     }
 }
 
-private struct ArchivedSidebarButton: View {
-    let isSelected: Bool
-    let width: CGFloat
-    let onSelect: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: 8) {
-                SidebarTile(symbol: isSelected ? "archivebox.fill" : "archivebox")
-
-                Text("Archived")
-                    .font(.system(size: 13, weight: isSelected ? .medium : .regular))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: ShellMetrics.sidebarRowHeight)
-            .contentShape(
-                .interaction,
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-        }
-        .buttonStyle(.plain)
-        .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(backgroundColor)
-        }
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: 0.14), value: isHovered)
-        .animation(.easeInOut(duration: 0.16), value: isSelected)
-        .frame(width: width)
-        .contentShape(
-            .focusEffect,
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-        )
-        .accessibilityLabel("Archived")
-        .accessibilityIdentifier("archived-tabs")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .help("Archived tabs")
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return Color.primary.opacity(0.16)
-        }
-        if isHovered {
-            return Color.primary.opacity(0.075)
-        }
-        return .clear
-    }
-}
-
-private struct ArchivedTabRow: View {
-    @ObservedObject var session: TerminalSession
-    let isSelected: Bool
-    let width: CGFloat
-    var isRenaming = false
-    let onSelect: () -> Void
-    let onUnarchive: () -> Void
-    let onClose: () -> Void
-    var onBeginRename: () -> Void = {}
-    var onCommitRename: (String) -> Void = { _ in }
-    var onCancelRename: () -> Void = {}
-
-    @State private var isHovered = false
-
-    var body: some View {
-        rowChrome
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(backgroundColor)
-                    .animation(.easeInOut(duration: 0.14), value: isHovered)
-                    .animation(.easeInOut(duration: 0.16), value: isSelected)
-            }
-            .overlay(alignment: .trailing) {
-                SidebarTabCloseHitButton(action: onClose)
-                    .padding(.trailing, TabCloseMetrics.trailingInset)
-                    .opacity(isHovered && !isRenaming ? 1 : 0)
-                    .animation(.easeInOut(duration: TabCloseMetrics.fadeDuration), value: isHovered)
-                    .allowsHitTesting(isHovered && !isRenaming)
-                    .accessibilityHidden(!isHovered || isRenaming)
-            }
-            .onHover { isHovered = $0 }
-            .animation(.easeInOut(duration: 0.16), value: isSelected)
-            .frame(width: width)
-            .help("\(session.displayTitle) — \(session.directory)")
-            .accessibilityLabel(session.displayTitle)
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    @ViewBuilder
-    private var rowChrome: some View {
-        if isRenaming {
-            label
-        } else {
-            Button(action: onSelect) { label }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button("Rename Tab", action: onBeginRename)
-                    Button("Unarchive", action: onUnarchive)
-                    Button("Close Tab", action: onClose)
-                }
-        }
-    }
-
-    private var label: some View {
-        HStack(spacing: 8) {
-            SidebarTile(symbol: session.kind == .settings ? "gearshape.fill" : "terminal")
-            SidebarTitleLabel(
-                title: session.displayTitle,
-                isSelected: isSelected,
-                isRenaming: isRenaming,
-                onCommit: onCommitRename,
-                onCancel: onCancelRename
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8)
-        .frame(height: ShellMetrics.sidebarRowHeight)
-        .contentShape(
-            .interaction,
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-        )
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return Color.primary.opacity(0.16)
-        }
-        if isHovered {
-            return Color.primary.opacity(0.075)
-        }
-        return .clear
-    }
-}
-
 // MARK: - Folder row
 
 private struct FolderSidebarRow: View {
@@ -881,8 +719,10 @@ private struct FolderSidebarRow: View {
     let onCommitRename: (String) -> Void
     let onCancelRename: () -> Void
     let onDelete: () -> Void
+    let onClose: () -> Void
 
     @ObservedObject private var hover = TabDragCoordinator.shared
+    @AppStorage(SidebarDefaults.activityView) private var showsActivity = false
 
     private var isHovered: Bool { hover.hoveredRowKey == folder.id }
 
@@ -917,7 +757,7 @@ private struct FolderSidebarRow: View {
                     title: folder.name,
                     symbol: "folder",
                     onSelect: onToggle,
-                    onClose: {},
+                    onClose: onClose,
                     onHover: { _ in },
                     onRename: onBeginRename,
                     onDeleteFolder: onDelete,
@@ -927,6 +767,11 @@ private struct FolderSidebarRow: View {
         }
         .animation(.easeInOut(duration: 0.14), value: hover.hoveredRowKey)
         .animation(.easeInOut(duration: 0.16), value: isActive)
+        // The activity view has no folder row: this one clears out at once when it opens, and
+        // slides back from its first tab's row when it closes (see `SidebarActivityList`).
+        .opacity(showsActivity ? 0 : 1)
+        .animation(showsActivity ? .easeOut(duration: 0.06) : nil, value: showsActivity)
+        .sidebarRowMatch(folder.id)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(folder.name), folder")
         .accessibilityAddTraits(.isButton)
@@ -1287,54 +1132,6 @@ final class SidebarInlineNameView: NSTextView {
 
     isolated deinit {
         if let mouseDownMonitor { NSEvent.removeMonitor(mouseDownMonitor) }
-    }
-}
-
-// MARK: - Hover close button
-
-/// Drawn over the row. It is not in the title stack, so hover does not move the label.
-private struct TabCloseButtonChrome: View {
-    var isHot: Bool
-    var isPressed: Bool
-
-    var body: some View {
-        Image(systemName: "xmark")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.primary)
-            .frame(width: TabCloseMetrics.side, height: TabCloseMetrics.side)
-            .background {
-                RoundedRectangle(cornerRadius: TabCloseMetrics.cornerRadius, style: .continuous)
-                    .fill(Color.primary.opacity(isPressed ? 0.20 : (isHot ? 0.10 : 0)))
-            }
-    }
-}
-
-/// Archived rows have no row hit view, so the button takes the click itself.
-private struct SidebarTabCloseHitButton: View {
-    let action: () -> Void
-    @State private var isHot = false
-
-    var body: some View {
-        Button(action: action) {
-            Color.clear
-                .frame(width: TabCloseMetrics.side, height: TabCloseMetrics.side)
-        }
-        .buttonStyle(SidebarTabCloseStyle(isHot: isHot))
-        .onHover { isHot = $0 }
-        .focusable(false)
-        .help("Close Tab")
-        .accessibilityLabel("Close Tab")
-    }
-}
-
-private struct SidebarTabCloseStyle: ButtonStyle {
-    var isHot: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        TabCloseButtonChrome(isHot: isHot, isPressed: configuration.isPressed)
-            .contentShape(
-                RoundedRectangle(cornerRadius: TabCloseMetrics.cornerRadius, style: .continuous)
-            )
     }
 }
 

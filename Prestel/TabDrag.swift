@@ -1059,8 +1059,8 @@ enum TabCloseMetrics {
 
 /// Painted inside the tab hit view. `hitTest` returns nil so the row keeps the click.
 final class TabCloseChromeView: NSView {
-    var isHot = false { didSet { if isHot != oldValue { needsDisplay = true } } }
-    var isPressed = false { didSet { if isPressed != oldValue { needsDisplay = true } } }
+    var isHot = false { didSet { if isHot != oldValue { updatePlate(animated: true) } } }
+    var isPressed = false { didSet { if isPressed != oldValue { updatePlate(animated: false) } } }
     var onPress: (() -> Void)?
 
     override var isFlipped: Bool { true }
@@ -1069,6 +1069,8 @@ final class TabCloseChromeView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        layer?.cornerRadius = TabCloseMetrics.cornerRadius
+        layer?.cornerCurve = .continuous
         alphaValue = 0
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
@@ -1086,17 +1088,36 @@ final class TabCloseChromeView: NSView {
         return true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        if isPressed || isHot {
-            NSColor.labelColor.withAlphaComponent(isPressed ? 0.20 : 0.10).setFill()
-            NSBezierPath(
-                roundedRect: bounds,
-                xRadius: TabCloseMetrics.cornerRadius,
-                yRadius: TabCloseMetrics.cornerRadius
-            ).fill()
+    /// The hover plate is the layer's background so it can fade with the row hover; a press shows at once.
+    private func updatePlate(animated: Bool) {
+        guard let layer else { return }
+        var color = NSColor.clear.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            color = NSColor.labelColor.withAlphaComponent(self.isPressed ? 0.20 : (self.isHot ? 0.10 : 0)).cgColor
         }
+        let from = layer.presentation()?.backgroundColor ?? layer.backgroundColor
+        layer.removeAnimation(forKey: "plate")
+        layer.backgroundColor = color
+        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let fade = CABasicAnimation(keyPath: "backgroundColor")
+        fade.fromValue = from
+        fade.toValue = color
+        fade.duration = TabCloseMetrics.fadeDuration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(fade, forKey: "plate")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updatePlate(animated: false)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let label = NSColor.labelColor.usingColorSpace(.sRGB) ?? .labelColor
+        let glyph = label.withAlphaComponent(label.alphaComponent * SidebarIconStyle.opacity)
         let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+            .applying(NSImage.SymbolConfiguration(paletteColors: [glyph]))
         guard let image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) else { return }
         let side: CGFloat = 9
@@ -1243,9 +1264,9 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     func updateCloseChrome() {
         positionCloseChrome()
-        let show = showsTabCloseButton && TabDragCoordinator.shared.hoveredRowKey == tabID
-        closeChrome.isHot = TabDragCoordinator.shared.closeHoverKey == tabID
-        closeChrome.isPressed = TabDragCoordinator.shared.closePressKey == tabID
+        let show = showsTabCloseButton && TabDragCoordinator.shared.hoveredRowKey == rowKey
+        closeChrome.isHot = TabDragCoordinator.shared.closeHoverKey == rowKey
+        closeChrome.isPressed = TabDragCoordinator.shared.closePressKey == rowKey
         fadeCloseButton(toVisible: show)
     }
 
@@ -1338,14 +1359,14 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         didStartDrag = false
         suppressMouseUpSelection = false
         closeArmed = showsTabCloseButton
-            && TabDragCoordinator.shared.hoveredRowKey == tabID
+            && TabDragCoordinator.shared.hoveredRowKey == rowKey
             && closeButtonContains(event)
-        TabDragCoordinator.shared.setClosePress(closeArmed ? tabID : nil)
+        TabDragCoordinator.shared.setClosePress(closeArmed ? rowKey : nil)
     }
 
     override func mouseDragged(with event: NSEvent) {
         if closeArmed {
-            TabDragCoordinator.shared.setClosePress(closeButtonContains(event) ? tabID : nil)
+            TabDragCoordinator.shared.setClosePress(closeButtonContains(event) ? rowKey : nil)
             return
         }
         guard allowsDrag, !didStartDrag, let mouseDownEvent else { return }
@@ -1371,9 +1392,9 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
         if suppressMouseUpSelection { return }
         if event.clickCount >= 2 {
-            // Folders still rename from a double-click on the name. Tabs focus instead.
+            // A double-click destroys a folder and frees its tabs. Tabs focus instead.
             if isFolder {
-                if clickIsOnTitle(event) { onRename?() }
+                onDeleteFolder?()
             } else if !event.modifierFlags.contains(.shift), !event.modifierFlags.contains(.command) {
                 onDoubleClick?()
             }
@@ -1453,7 +1474,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
         menu.addItem(.separator())
         if onArchive != nil {
-            let archiveItem = NSMenuItem(title: "Archive", action: #selector(archiveFromMenu(_:)), keyEquivalent: "")
+            let archiveItem = NSMenuItem(title: "Settle", action: #selector(archiveFromMenu(_:)), keyEquivalent: "")
             archiveItem.target = self
             archiveItem.isEnabled = true
             menu.addItem(archiveItem)
@@ -1471,15 +1492,11 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         menu.addItem(renameItem)
     }
 
-    var showsTabCloseButton: Bool { tabID != nil && !isFolder }
+    var showsTabCloseButton: Bool { isFolder ? listRowID != nil : tabID != nil }
+    private var rowKey: UUID? { isFolder ? listRowID : tabID }
 
     private func closeButtonContains(_ event: NSEvent) -> Bool {
         TabCloseMetrics.frame(in: bounds).contains(convert(event.locationInWindow, from: nil))
-    }
-
-    private func clickIsOnTitle(_ event: NSEvent) -> Bool {
-        let local = convert(event.locationInWindow, from: nil)
-        return local.x >= 36 && !TabCloseMetrics.frame(in: bounds).contains(local)
     }
 
     @objc private func closeFromMenu(_ sender: Any?) {

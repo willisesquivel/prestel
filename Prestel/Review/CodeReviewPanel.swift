@@ -295,7 +295,7 @@ struct CodeReviewPanel: View {
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .chromeGlass()
+            .chromeGlass(interactive: true)
             .disabled(snapshot.waitingOnIndexLock)
             .help(snapshot.waitingOnIndexLock ? "Wait for the Git operation to finish." : "Commit these changes")
             .accessibilityLabel("Commit changes")
@@ -359,7 +359,7 @@ struct CodeReviewPanel: View {
                 .accessibilityLabel("More")
             }
             .frame(width: 118, height: ShellMetrics.navigationHeight)
-            .chromeGlass()
+            .chromeGlass(interactive: true)
             .accessibilityElement(children: .contain)
         }
     }

@@ -76,16 +76,16 @@ struct PrestelTests {
     @Test func numberedTabSelectionIgnoresUnavailablePositionsAndArchivedTabs() {
         let model = TerminalModel()
         let first = model.selectedID!
-        let archived = model.newTab().id
-        model.archiveTab(archived)
-        model.select(archived)
+        let settled = model.newTab().id
+        model.settleTab(settled)
+        model.select(settled)
+        #expect(model.selectedID == first)
         for number in [0, 2, 8, 10] {
             model.selectTab(number: number)
-            #expect(model.selectedID == archived)
+            #expect(model.selectedID == first)
         }
         model.selectTab(number: 9)
         #expect(model.selectedID == first)
-        #expect(!model.showingArchive)
         model.showSettings()
         let settings = model.selectedID
         model.selectTab(number: 1)
@@ -144,26 +144,25 @@ struct PrestelTests {
         let first = model.selectedTab!
         let second = model.newTab()
         model.select(first.id)
-        model.archiveTab(first.id)
+        model.settleTab(first.id)
         #expect(model.tabs.map(\.id) == [second.id])
-        #expect(model.archived.map(\.id) == [first.id])
-        #expect(model.archived.first === first)
+        #expect(model.settled.map(\.id) == [first.id])
+        #expect(model.settled.first === first)
         #expect(model.selectedID == second.id)
         #expect(model.recentlyClosed.isEmpty)
         #expect(first.state == .ready)
-        model.unarchiveTab(first.id)
-        #expect(model.tabs.map(\.id) == [second.id, first.id])
-        #expect(model.archived.isEmpty)
+        model.reopenTab(first.id)
+        #expect(model.tabs.map(\.id) == [first.id, second.id])
+        #expect(model.settled.isEmpty)
         #expect(model.selectedID == first.id)
-        #expect(model.tabs.last === first)
-        #expect(!model.showingArchive)
+        #expect(model.tabs.first === first)
     }
 
     @Test func archivingTheLastTabOpensAReplacement() {
         let model = TerminalModel()
         let first = model.selectedTab!
-        model.archiveTab(first.id)
-        #expect(model.archived.map(\.id) == [first.id])
+        model.settleTab(first.id)
+        #expect(model.settled.map(\.id) == [first.id])
         #expect(model.tabs.count == 1)
         #expect(model.tabs[0].id != first.id)
         #expect(model.selectedID == model.tabs[0].id)
@@ -176,9 +175,9 @@ struct PrestelTests {
         model.select(first)
         model.split(with: second, on: .trailing)
         #expect(model.visibleSplit != nil)
-        model.archiveTab(second)
+        model.settleTab(second)
         #expect(model.visibleSplit == nil)
-        #expect(model.archived.map(\.id) == [second])
+        #expect(model.settled.map(\.id) == [second])
         #expect(model.tabs.map(\.id) == [first])
         #expect(model.selectedID == first)
     }
@@ -186,17 +185,17 @@ struct PrestelTests {
     @Test func archivedTabsRestoreAndLegacyWindowsDecode() throws {
         let model = TerminalModel()
         let keep = model.selectedID!
-        let archived = model.newTab(directory: "/private/tmp")
-        model.archiveTab(archived.id)
+        let settled = model.newTab(directory: "/private/tmp")
+        model.settleTab(settled.id)
         let encoded = try JSONEncoder().encode(model.descriptor)
         let descriptor = try JSONDecoder().decode(WindowDescriptor.self, from: encoded)
-        #expect(descriptor.archivedTabs.map(\.id) == [archived.id])
+        #expect(descriptor.archivedTabs.map(\.id) == [settled.id])
         #expect(descriptor.tabs.map(\.id) == [keep])
         let restored = TerminalModel(restoration: descriptor)
         #expect(restored.tabs.map(\.id) == [keep])
-        #expect(restored.archived.map(\.id) == [archived.id])
-        #expect(restored.archived[0].directory == "/private/tmp")
-        #expect(restored.archived[0].process == nil)
+        #expect(restored.settled.map(\.id) == [settled.id])
+        #expect(restored.settled[0].directory == "/private/tmp")
+        #expect(restored.settled[0].process == nil)
         #expect(restored.selectedID == keep)
 
         let legacy = try JSONDecoder().decode(
@@ -211,9 +210,9 @@ struct PrestelTests {
         let model = TerminalModel()
         let first = model.selectedTab!
         let second = model.newTab()
-        model.archiveTab(second.id)
-        model.closeArchivedTab(second.id)
-        #expect(model.archived.isEmpty)
+        model.settleTab(second.id)
+        model.closeSettledTab(second.id)
+        #expect(model.settled.isEmpty)
         #expect(model.recentlyClosed.last?.directory == second.directory)
         #expect(second.state == .closed)
         #expect(model.tabs.map(\.id) == [first.id])
@@ -241,39 +240,180 @@ struct PrestelTests {
         #expect(titles.contains("Close Tab"))
     }
 
-    @Test func archiveListSearchAndShowingArchive() {
+    @Test func archiveListSearch() {
         let model = TerminalModel()
-        let keep = model.selectedID!
         let tmp = model.newTab(directory: "/private/tmp")
-        model.archiveTab(tmp.id)
-        model.showingArchive = true
-        #expect(model.filteredArchived.map(\.id) == [tmp.id])
+        model.settleTab(tmp.id)
+        #expect(model.filteredSettled.map(\.id) == [tmp.id])
         model.searchText = "tmp"
-        #expect(model.filteredArchived.map(\.id) == [tmp.id])
+        #expect(model.filteredSettled.map(\.id) == [tmp.id])
         model.searchText = "no-such-tab"
-        #expect(model.filteredArchived.isEmpty)
-        model.searchText = ""
-        model.select(keep)
-        #expect(!model.showingArchive)
+        #expect(model.filteredSettled.isEmpty)
     }
 
-    @Test func selectingAnArchivedTabDoesNotUnarchiveIt() {
+    @Test func settledTabsAreOnlyReachedByReopening() {
         let model = TerminalModel()
         let keep = model.selectedID!
-        let archived = model.newTab()
-        model.archiveTab(archived.id)
-        model.showingArchive = true
-        model.select(archived.id)
-        #expect(model.archived.map(\.id) == [archived.id])
-        #expect(model.tabs.map(\.id) == [keep])
-        #expect(model.selectedID == archived.id)
-        #expect(model.selectedTab === archived)
-        #expect(model.showingArchive)
-        model.unarchiveTab(archived.id)
-        #expect(model.archived.isEmpty)
-        #expect(model.tabs.map(\.id) == [keep, archived.id])
-        #expect(model.selectedID == archived.id)
-        #expect(!model.showingArchive)
+        let settled = model.newTab()
+        model.settleTab(settled.id)
+        model.select(settled.id)
+        #expect(model.settled.map(\.id) == [settled.id])
+        #expect(model.selectedID == keep)
+        model.reveal(settled.id)
+        #expect(model.settled.isEmpty)
+        #expect(model.tabs.map(\.id) == [settled.id, keep])
+        #expect(model.selectedID == settled.id)
+    }
+
+    @Test func settledTabsBelongToTheirSpaceAndRestore() throws {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let homeSettled = model.newTab().id
+        model.settleTab(homeSettled)
+        let work = model.newSpace()
+        #expect(model.settled.isEmpty)
+        model.switchSpace(to: home)
+        #expect(model.settled.map(\.id) == [homeSettled])
+        model.switchSpace(to: work)
+        let workSettled = model.newTab().id
+        model.settleTab(workSettled)
+        let restored = TerminalModel(restoration: try JSONDecoder().decode(
+            WindowDescriptor.self, from: JSONEncoder().encode(model.descriptor)))
+        #expect(restored.settled.map(\.id) == [workSettled])
+        #expect(restored.settledBySpace.map(\.space.id) == [home, work])
+        restored.reveal(homeSettled)
+        #expect(restored.activeSpaceID == home)
+        #expect(restored.tabs.first?.id == homeSettled)
+        #expect(restored.settled.isEmpty)
+    }
+
+    @Test func closingTheLastOpenTabReopensTheNewestSettledOne() {
+        let model = TerminalModel()
+        let older = model.newTab().id
+        let newer = model.newTab().id
+        let last = model.tabs[0].id
+        model.settleTab(older)
+        model.settleTab(newer)
+        model.closeTab(last)
+        #expect(model.tabs.map(\.id) == [newer])
+        #expect(model.settled.map(\.id) == [older])
+        #expect(model.selectedID == newer)
+    }
+
+    @Test func closingAFolderKeepsOrClosesItsTabs() throws {
+        let model = TerminalModel()
+        let a = model.selectedID!
+        let b = model.newTab().id
+        let c = model.newTab().id
+        model.select(a)
+        let keep = try #require(model.makeFolder(containing: a))
+        model.add(b, to: keep.id)
+        model.closeFolder(keep.id, closingTabs: false)
+        #expect(model.folders.isEmpty)
+        #expect(model.tabs.map(\.id) == [a, b, c])
+
+        let close = try #require(model.makeFolder(containing: a))
+        model.add(b, to: close.id)
+        model.closeFolder(close.id, closingTabs: true)
+        #expect(model.folders.isEmpty)
+        #expect(model.tabs.map(\.id) == [c])
+        #expect(model.recentlyClosed.count == 2)
+    }
+
+    @Test func closingAFolderThatHoldsEveryTabLeavesAFreshOne() throws {
+        let model = TerminalModel()
+        let only = model.selectedID!
+        let folder = try #require(model.makeFolder(containing: only))
+        model.closeFolder(folder.id, closingTabs: true)
+        #expect(model.tabs.count == 1)
+        #expect(model.tabs[0].id != only)
+        #expect(model.folders.isEmpty)
+    }
+
+    @Test func closingATabInAnotherSpaceLeavesTheActiveSpaceAlone() {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let homeTab = model.selectedID!
+        let work = model.newSpace()
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.switchSpace(to: home)
+        model.closeTabInAnySpace(second)
+        #expect(model.activeSpaceID == home)
+        #expect(model.selectedID == homeTab)
+        #expect(model.sessions(inSpace: work).map(\.id) == [first])
+        model.closeTabInAnySpace(first)
+        #expect(model.spaces.map(\.id) == [home])
+        #expect(model.recentlyClosed.count == 2)
+    }
+
+    @Test func spacesKeepTheirOwnTabsAndSelection() {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let first = model.selectedID!
+        let second = model.newTab().id
+        model.select(first)
+        let work = model.newSpace()
+        #expect(model.spaces.map(\.id) == [home, work])
+        #expect(model.tabs.count == 1)
+        let workTab = model.selectedID!
+        #expect(!model.canGoBack)
+        model.switchSpace(to: home)
+        #expect(model.tabs.map(\.id) == [first, second])
+        #expect(model.selectedID == first)
+        #expect(Set(model.allSessions.map(\.id)) == [first, second, workTab])
+        model.reveal(workTab)
+        #expect(model.activeSpaceID == work)
+        #expect(model.selectedID == workTab)
+    }
+
+    @Test func closingTheLastTabOfASpaceClosesTheSpace() {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let first = model.selectedID!
+        model.newSpace()
+        model.closeTab(model.selectedID!)
+        #expect(model.spaces.map(\.id) == [home])
+        #expect(model.activeSpaceID == home)
+        #expect(model.selectedID == first)
+        #expect(model.recentlyClosed.count == 1)
+    }
+
+    @Test func spacesRestoreAndOlderWindowsDecodeIntoOneSpace() throws {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let homeTab = model.selectedID!
+        let work = model.newSpace()
+        model.renameSpace(work, to: "  Work  ")
+        let workTab = model.newTab(directory: "/private/tmp").id
+        model.switchSpace(to: home)
+        let encoded = try JSONEncoder().encode(model.descriptor)
+        let restored = TerminalModel(restoration: try JSONDecoder().decode(WindowDescriptor.self, from: encoded))
+        #expect(restored.spaces.map(\.id) == [home, work])
+        #expect(restored.spaces.map(\.name) == ["Space 1", "Work"])
+        #expect(restored.activeSpaceID == home)
+        #expect(restored.tabs.map(\.id) == [homeTab])
+        restored.switchSpace(to: work)
+        #expect(restored.tabs.count == 2)
+        #expect(restored.selectedID == workTab)
+
+        let legacy = WindowDescriptor(id: UUID(), tabs: [TabDescriptor()], selectedID: nil, sidebarVisible: true, sidebarWidth: 172)
+        let legacyModel = TerminalModel(restoration: legacy)
+        #expect(legacyModel.spaces.count == 1)
+    }
+
+    @Test func terminalNotificationsParseTheCommonForms() {
+        func parse(_ code: Int, _ text: String) -> String? {
+            TerminalNotification.message(code: code, payload: Array(text.utf8))
+        }
+        #expect(parse(9, "Claude needs your permission") == "Claude needs your permission")
+        #expect(parse(9, "4;1;50") == nil)
+        #expect(parse(777, "notify;Codex;Waiting for input") == "Waiting for input")
+        #expect(parse(777, "notify;Done;") == "Done")
+        #expect(parse(777, "preexec") == nil)
+        #expect(parse(99, "i=1:d=0;Build finished") == "Build finished")
+        #expect(parse(99, "e=1;SGVsbG8=") == "Hello")
+        #expect(parse(9, "   ") == nil)
     }
 
     @Test func restorationIsOnlyLightweightContext() throws {
