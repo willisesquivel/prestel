@@ -15,6 +15,11 @@ Unicode, IME input, and selection work as they do anywhere else.
   [TUI transparency](#tui-transparency-glass-background).
 - **Sidebar tabs.** Every row is a terminal tab. Search them, reopen closed
   ones, and open new tabs in the current directory.
+- **Spaces and settled tabs.** Spaces keep separate groups of tabs in one
+  window. Settling a tab tucks it away while its shell keeps running, so it
+  can come back exactly where it was.
+- **Activity view.** The bell rearranges the sidebar around tabs that need
+  attention, then the open tabs in every space.
 - **Code Review.** A panel on the right shows the staged and unstaged changes
   of the selected terminal's working directory, with syntax-highlighted diffs.
 - **Commit from the panel.** Write a message, or press Draft to have the
@@ -35,7 +40,7 @@ Unicode, IME input, and selection work as they do anywhere else.
 
 ## Install
 
-Download [Prestel 0.1.4](https://github.com/willisesquivel/prestel/releases/download/v0.1.4/Prestel-0.1.4.dmg).
+Download [Prestel 0.1.5](https://github.com/willisesquivel/prestel/releases/download/v0.1.5/Prestel-0.1.5.dmg).
 
 Open the DMG and drag Prestel into Applications.
 
@@ -45,7 +50,7 @@ opens without a Gatekeeper prompt.
 Prestel checks for newer builds in the background after install. Choose
 **Prestel → Check for Updates…** to look right away. Release notes for the
 current download are on the
-[v0.1.4 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.4).
+[v0.1.5 release](https://github.com/willisesquivel/prestel/releases/tag/v0.1.5).
 
 ## Code Review
 
@@ -90,10 +95,11 @@ so the sheet never changes size.
   ⇧⌘T reopen closed tab
 - ⌃Tab / ⌃⇧Tab cycle tabs
 - ⌘1–⌘8 select tabs by sidebar order, ⌘9 selects the last tab. Folders and
-  split panes count; archived tabs do not. Search does not change the numbering.
+  split panes count; settled tabs do not. Search does not change the numbering.
 - ⌘K clear
 - ⌘F find in the terminal (⌘G / ⇧⌘G next / previous, Esc closes)
 - ⌘S toggle the sidebar
+- ⌥⌘U toggle Activity view
 - ⌘R toggle Code Review
 - ⌘+ / ⌘= larger text, ⌘- smaller, ⌘0 default size. The window resizes to
   keep the same grid, so nothing rewraps.
