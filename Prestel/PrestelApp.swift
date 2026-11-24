@@ -17,7 +17,17 @@ struct PrestelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, SPUUpdaterDelegate, ObservableObject {
     @Published var commandRevision = 0
     static weak var current: AppDelegate?
-    override init() { super.init(); Self.current = self }
+    private var updaterObservation: NSKeyValueObservation?
+    override init() {
+        super.init()
+        Self.current = self
+        // canCheckForUpdates isn't published to SwiftUI, so "Check for
+        // Updates…" only re-reads it when commandRevision bumps for unrelated
+        // window state. Observe it directly so the item can't go stale.
+        updaterObservation = updaterController.updater.observe(\.canCheckForUpdates) { [weak self] _, _ in
+            Task { @MainActor in self?.commandRevision &+= 1 }
+        }
+    }
     var keyController: TerminalWindowController? { (NSApp.keyWindow ?? NSApp.mainWindow)?.windowController as? TerminalWindowController }
     private(set) var controllers: [UUID: TerminalWindowController] = [:]
     private(set) lazy var updaterController = SPUStandardUpdaterController(
