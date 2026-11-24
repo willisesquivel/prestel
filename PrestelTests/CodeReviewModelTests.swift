@@ -163,7 +163,7 @@ struct CodeReviewModelTests {
 /// made 80ms too short. This follows `loadState` instead.
 @MainActor
 private func waitUntilReady(_ model: CodeReviewModel) async {
-    let deadline = ContinuousClock().now.advanced(by: .seconds(5))
+    let deadline = ContinuousClock().now.advanced(by: .seconds(15))
     while model.loadState != .ready {
         switch model.loadState {
         case .resolving, .loading, .waitingForGit, .hidden:

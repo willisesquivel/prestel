@@ -986,6 +986,30 @@ struct CommitComposerModelTests {
         #expect(recorded?.untrackedPaths.isEmpty == true)
         #expect(recorded?.stagedOnly == true)
     }
+
+    @Test func hiddenReviewDuringCommitResetsTheDraft() async {
+        let service = RecordingCommitService(pushFailure: nil)
+        let model = CodeReviewModel(service: service, watcher: CommitNullWatcher(), expandByDefault: false)
+        let session = TerminalSession(descriptor: TabDescriptor(directory: "/tmp/repo-b"))
+        let windowID = UUID()
+        model.bind(visible: true, windowID: windowID, session: session)
+        await waitUntil { model.loadState == .ready }
+        model.openCommitComposer()
+        model.updateCommitMessage("Fix send slot visibility")
+        model.commitFromComposer()
+        // Sliding the review closed mid-commit drops the snapshot but keeps the draft.
+        model.bind(visible: false, windowID: windowID, session: session)
+        model.releaseHiddenContents()
+        await waitUntil { model.commitDraft?.isCommitting == false }
+        #expect(model.commitDraft?.isCommitting == false)
+        #expect(model.commitDraft?.notice == "Nothing was committed. Try again.")
+        #expect(await service.recorded() == nil)
+        // The draft must reopen dismissable instead of spinning forever.
+        model.bind(visible: true, windowID: windowID, session: session)
+        await waitUntil { model.loadState == .ready }
+        model.closeCommitComposer()
+        #expect(model.commitDraft == nil)
+    }
 }
 
 private func waitUntil(_ ready: @MainActor () async -> Bool) async {

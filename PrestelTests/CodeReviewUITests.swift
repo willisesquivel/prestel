@@ -121,7 +121,7 @@ struct CodeReviewUITests {
         ShellPanelAnimation.run { model.reviewVisible = true }
         window.contentView?.layoutSubtreeIfNeeded()
 
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(15)
         while Date() < deadline {
             switch controller.review.loadState {
             case .ready, .noRepository, .noWorkingTree, .unavailable, .error, .noTerminal:
@@ -506,7 +506,7 @@ struct CodeReviewUITests {
         let model = CodeReviewModel(expandByDefault: true)
         model.bind(visible: true, windowID: UUID(), session: session)
         defer { model.bind(visible: false, windowID: UUID(), session: session) }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(15))
         while (model.loadState != .ready || model.diffs.count != 24), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

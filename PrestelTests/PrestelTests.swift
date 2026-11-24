@@ -236,7 +236,7 @@ struct PrestelTests {
         let titles = hit.menu(for: event)?.items.map(\.title) ?? []
         #expect(titles.contains("Rename Tab"))
         #expect(titles.contains("New Folder"))
-        #expect(titles.contains("Archive"))
+        #expect(titles.contains("Settle"))
         #expect(titles.contains("Close Tab"))
     }
 
@@ -1395,34 +1395,10 @@ struct PrestelTests {
     }
 
     @Test func tabDragSessionDoesNotFanOutItsPreview() {
-        let preview = TabDragPreview.image(
-            items: [.init(title: "Local", symbol: "terminal")],
-            totalCount: 1,
-            appearance: NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()
-        )
-        let hit = TabRowHitNSView(frame: NSRect(x: 0, y: 0, width: 160, height: ShellMetrics.sidebarRowHeight))
-        // A pasteboard item needs a type, or AppKit raises before the session exists.
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString("tab", forType: .string)
-        let dragItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        dragItem.setDraggingFrame(NSRect(origin: .zero, size: preview.size), contents: preview)
-        let session = hit.beginDraggingSession(
-            with: [dragItem],
-            event: NSEvent.mouseEvent(
-                with: .leftMouseDown,
-                location: .zero,
-                modifierFlags: [],
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                eventNumber: 0,
-                clickCount: 1,
-                pressure: 1
-            )!,
-            source: hit
-        )
-        session.draggingFormation = .default
-        hit.draggingSession(session, willBeginAt: .zero)
+        // No real NSDraggingSession: starting one would pin a drag image to the
+        // user's cursor with no way to end it from a test.
+        let session = StubDragFormation()
+        TabRowHitNSView.suppressFanOut(session)
         #expect(session.draggingFormation == .none)
     }
 
@@ -2826,4 +2802,8 @@ struct SafeFileOpenerTests {
     @Test func revealsMissingFiles() {
         #expect(SafeFileOpener.runsWhenOpened(URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).txt")))
     }
+}
+
+private final class StubDragFormation: TabDragFormationCarrying {
+    var draggingFormation = NSDraggingFormation.default
 }

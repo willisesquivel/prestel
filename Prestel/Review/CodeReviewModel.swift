@@ -606,7 +606,14 @@ final class CodeReviewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.awaitPendingStaging()
-            guard self.commitDraft?.id == draftID, let settled = self.snapshot else { return }
+            guard self.commitDraft?.id == draftID else { return }
+            // A hidden review drops its snapshot but keeps the committing draft;
+            // returning here would leave isCommitting true forever.
+            guard let settled = self.snapshot else {
+                self.commitDraft?.isCommitting = false
+                self.commitDraft?.notice = "Nothing was committed. Try again."
+                return
+            }
             let settledStagedOnly = self.effectiveCommitStagedOnly
             let settledSelection = CommitPlanner.selection(from: settled.files, stagedOnly: settledStagedOnly)
             guard CommitPlanner.canSubmit(

@@ -1200,6 +1200,14 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     }
 }
 
+/// `NSDraggingSession` has no public initializer, so formation goes through
+/// this seam; tests drive it without opening a real on-screen drag.
+protocol TabDragFormationCarrying: AnyObject {
+    var draggingFormation: NSDraggingFormation { get set }
+}
+
+extension NSDraggingSession: TabDragFormationCarrying {}
+
 final class TabRowHitNSView: NSView, NSDraggingSource {
     var windowID = UUID()
     var tabID: UUID?
@@ -1579,7 +1587,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         item.setDraggingFrame(rest, contents: preview)
         let session = beginDraggingSession(with: [item], event: current, source: self)
         session.animatesToStartingPositionsOnCancelOrFail = true
-        session.draggingFormation = .none
+        Self.suppressFanOut(session)
     }
 
     private func dragPreviewItems(for payload: TabDragPayload) -> [TabDragPreview.Item] {
@@ -1605,8 +1613,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { true }
 
-    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+    static func suppressFanOut(_ session: any TabDragFormationCarrying) {
         session.draggingFormation = .none
+    }
+
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        Self.suppressFanOut(session)
         didStartDrag = true
         suppressMouseUpSelection = true
         guard let payload = activePayload ?? tabID.map({ tabID in
