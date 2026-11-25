@@ -1,5 +1,139 @@
 import SwiftUI
 
+struct SidebarLineStats: Equatable {
+    var additions: Int
+    var deletions: Int
+}
+
+@MainActor
+final class SidebarGitStatsModel: ObservableObject {
+    @Published private(set) var statsByDirectory: [String: SidebarLineStats] = [:]
+
+    private let service: any GitReviewServicing
+    private let watcher: any RepositoryWatching
+    private var keyByDirectory: [String: RepositoryKey] = [:]
+    private var statsByRepository: [RepositoryKey: SidebarLineStats] = [:]
+    private var scanTask: Task<Void, Never>?
+    private var refreshTasks: [RepositoryKey: Task<Void, Never>] = [:]
+    private var watchTasks: [RepositoryKey: Task<Void, Never>] = [:]
+    private var generation = 0
+    private var running = false
+
+    init(service: any GitReviewServicing = GitRepositoryService(), watcher: any RepositoryWatching = RepositoryWatcher()) {
+        self.service = service
+        self.watcher = watcher
+    }
+
+    func start(directories: [String]) {
+        running = true
+        scan(directories: directories)
+    }
+
+    func update(directories: [String]) {
+        guard running else { return }
+        scan(directories: directories)
+    }
+
+    func stop() {
+        running = false
+        generation += 1
+        scanTask?.cancel()
+        scanTask = nil
+        refreshTasks.values.forEach { $0.cancel() }
+        refreshTasks.removeAll()
+        watchTasks.values.forEach { $0.cancel() }
+        watchTasks.removeAll()
+        watcher.stopAll()
+        keyByDirectory.removeAll()
+        statsByRepository.removeAll()
+        statsByDirectory.removeAll()
+    }
+
+    static func standardized(_ directory: String) -> String {
+        URL(fileURLWithPath: directory).standardizedFileURL.path
+    }
+
+    private func scan(directories: [String]) {
+        generation += 1
+        let scanGeneration = generation
+        scanTask?.cancel()
+        let uniqueDirectories = Array(Set(directories.map(Self.standardized))).sorted()
+        scanTask = Task { [service, weak self] in
+            var resolved: [String: RepositoryKey] = [:]
+            await withTaskGroup(of: (String, RepositoryKey?).self) { group in
+                for directory in uniqueDirectories {
+                    group.addTask {
+                        (directory, try? await service.resolveRepository(directory: directory))
+                    }
+                }
+                for await (directory, key) in group {
+                    if let key { resolved[directory] = key }
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.running, self.generation == scanGeneration else { return }
+                self.keyByDirectory = resolved
+                self.reconcileRepositories()
+            }
+        }
+    }
+
+    private func reconcileRepositories() {
+        let needed = Set(keyByDirectory.values)
+        for key in needed {
+            if watchTasks[key] == nil {
+                startWatching(key)
+            }
+            refresh(key)
+        }
+        for key in Array(watchTasks.keys) where !needed.contains(key) {
+            watchTasks.removeValue(forKey: key)?.cancel()
+            watcher.stop(key)
+        }
+        for key in Array(refreshTasks.keys) where !needed.contains(key) {
+            refreshTasks.removeValue(forKey: key)?.cancel()
+        }
+        statsByRepository = statsByRepository.filter { needed.contains($0.key) }
+        publish()
+    }
+
+    private func startWatching(_ key: RepositoryKey) {
+        watchTasks[key] = Task { [watcher, weak self] in
+            let events = watcher.events(for: key)
+            for await _ in events {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.refresh(key)
+                }
+            }
+        }
+    }
+
+    private func refresh(_ key: RepositoryKey) {
+        guard running, keyByDirectory.values.contains(key) else { return }
+        refreshTasks[key]?.cancel()
+        refreshTasks[key] = Task { [service, weak self] in
+            guard let snapshot = try? await service.loadCatalog(for: key, generation: 0), !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.running, self.keyByDirectory.values.contains(key) else { return }
+                self.statsByRepository[key] = SidebarLineStats(additions: snapshot.additions, deletions: snapshot.deletions)
+                self.publish()
+            }
+        }
+    }
+
+    private func publish() {
+        var stats: [String: SidebarLineStats] = [:]
+        for (directory, key) in keyByDirectory {
+            if let value = statsByRepository[key] {
+                stats[directory] = value
+            }
+        }
+        statsByDirectory = stats
+    }
+}
+
 enum SidebarDefaults {
     static let activityView = "sidebarActivityView"
     static let settledCollapsed = "sidebarSettledCollapsed"
@@ -108,7 +242,9 @@ private struct SettledList: View {
                         SettledRow(
                             session: session,
                             width: width,
-                            reopen: { model.reveal(session.id) },
+                            isSelected: session.id == model.selectedID,
+                            open: { model.reveal(session.id) },
+                            reopen: { model.reopenTabInAnySpace(session.id) },
                             close: { closeSettledTab(session.id) }
                         )
                     }
@@ -122,6 +258,8 @@ private struct SettledList: View {
 private struct SettledRow: View {
     @ObservedObject var session: TerminalSession
     let width: CGFloat
+    let isSelected: Bool
+    let open: () -> Void
     let reopen: () -> Void
     let close: () -> Void
 
@@ -129,7 +267,7 @@ private struct SettledRow: View {
     @State private var isCheckHovered = false
 
     var body: some View {
-        Button(action: reopen) {
+        Button(action: open) {
             HStack(spacing: 7) {
                 Button(action: reopen) {
                     Image(systemName: isCheckHovered ? "checkmark.circle" : "checkmark.circle.fill")
@@ -151,11 +289,12 @@ private struct SettledRow: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
-            .frame(width: width, height: 24)
+            .frame(width: width, height: ShellMetrics.sidebarRowHeight)
             .background {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isHovered ? 0.075 : 0))
+                    .fill(Color.primary.opacity(isSelected ? 0.16 : (isHovered ? 0.075 : 0)))
                     .animation(.easeInOut(duration: 0.14), value: isHovered)
+                    .animation(.easeInOut(duration: 0.16), value: isSelected)
             }
             .padding(.vertical, rowGapShare)
             .contentShape(Rectangle())
@@ -164,11 +303,14 @@ private struct SettledRow: View {
         .focusable(false)
         .onHover { isHovered = $0 }
         .contextMenu {
+            Button("Open Tab", action: open)
             Button("Reopen Tab", action: reopen)
+            Divider()
             Button("Close Tab", action: close)
         }
         .help("\(session.displayTitle) — \(session.directory)")
         .accessibilityLabel("\(session.displayTitle), settled")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .sidebarRowMatch(session.id)
     }
 }
@@ -182,27 +324,42 @@ struct SidebarActivityList: View {
     let width: CGFloat
     var closeTab: (UUID) -> Void
     var closeSettledTab: (UUID) -> Void
+    let renamingTabID: UUID?
+    let beginRename: (UUID) -> Void
+    let commitRename: (UUID, String) -> Void
+    let cancelRename: () -> Void
+    @StateObject private var gitStats = SidebarGitStatsModel()
 
     var body: some View {
         let attention = model.activity
         let attentionIDs = Set(attention.map(\.id))
         let folderAnchors = FolderAnchor.byFirstTab(model)
         let settledIDs = Set(model.settledBySpace.flatMap { $0.tabs.map(\.id) })
+        let activeSessionIDs = Set(model.tabs.map(\.id)).union(model.settled.map(\.id))
+        let directories = Array(Set(model.allSessions.filter { $0.kind == .terminal }.map { SidebarGitStatsModel.standardized($0.directory) })).sorted()
         VStack(spacing: 0) {
             if !attention.isEmpty {
                 ActivityHeader(title: "Needs attention", isFirst: true, width: width)
                 ForEach(attention) { item in
                     ActivityTabRow(
+                        model: model,
                         session: item.session,
                         detail: AttentionText.detail(for: item),
-                        isSelected: item.session.id == model.selectedID && !settledIDs.contains(item.session.id),
+                        lineStats: gitStats.statsByDirectory[SidebarGitStatsModel.standardized(item.session.directory)],
+                        isSelected: item.session.id == model.selectedID,
                         isSettled: settledIDs.contains(item.session.id),
+                        isInActiveSpace: activeSessionIDs.contains(item.session.id),
                         width: width,
                         folderAnchor: folderAnchors[item.session.id],
+                        isRenaming: renamingTabID == item.session.id,
+                        beginRename: { beginRename(item.session.id) },
+                        commitRename: { commitRename(item.session.id, $0) },
+                        cancelRename: cancelRename,
                         close: {
                             if settledIDs.contains(item.session.id) { closeSettledTab(item.session.id) } else { closeTab(item.session.id) }
-                        }
-                    ) { model.reveal(item.session.id) }
+                        },
+                        action: { model.reveal(item.session.id) }
+                    )
                 }
             }
             ForEach(Array(model.openTabsBySpace.enumerated()), id: \.element.space.id) { index, group in
@@ -211,14 +368,22 @@ struct SidebarActivityList: View {
                     ActivityHeader(title: group.space.name, isFirst: attention.isEmpty && index == 0, width: width)
                     ForEach(rest) { session in
                         ActivityTabRow(
+                            model: model,
                             session: session,
                             detail: nil,
+                            lineStats: gitStats.statsByDirectory[SidebarGitStatsModel.standardized(session.directory)],
                             isSelected: session.id == model.selectedID,
                             isSettled: false,
+                            isInActiveSpace: group.space.id == model.activeSpaceID,
                             width: width,
                             folderAnchor: folderAnchors[session.id],
-                            close: { closeTab(session.id) }
-                        ) { model.reveal(session.id) }
+                            isRenaming: renamingTabID == session.id,
+                            beginRename: { beginRename(session.id) },
+                            commitRename: { commitRename(session.id, $0) },
+                            cancelRename: cancelRename,
+                            close: { closeTab(session.id) },
+                            action: { model.reveal(session.id) }
+                        )
                     }
                 }
             }
@@ -229,6 +394,11 @@ struct SidebarActivityList: View {
                 closeSettledTab: closeSettledTab
             )
         }
+        .onAppear { gitStats.start(directories: directories) }
+        .onChange(of: directories) { _, newDirectories in
+            gitStats.update(directories: newDirectories)
+        }
+        .onDisappear { gitStats.stop() }
     }
 }
 
@@ -272,70 +442,102 @@ private struct ActivityHeader: View {
 /// A tab in the activity view: two lines, the title over the folder it is in, or over
 /// what it wants when it needs attention.
 private struct ActivityTabRow: View {
+    @ObservedObject var model: TerminalModel
     @ObservedObject var session: TerminalSession
     let detail: String?
+    let lineStats: SidebarLineStats?
     let isSelected: Bool
     let isSettled: Bool
+    let isInActiveSpace: Bool
     let width: CGFloat
     /// The folder that slides out of this row when the tab list comes back.
     var folderAnchor: FolderAnchor?
+    let isRenaming: Bool
+    let beginRename: () -> Void
+    let commitRename: (String) -> Void
+    let cancelRename: () -> Void
     let close: () -> Void
     let action: () -> Void
 
-    @State private var isHovered = false
+    @ObservedObject private var hover = TabDragCoordinator.shared
+
+    private var isHovered: Bool { hover.hoveredRowKey == session.id }
 
     /// Top and bottom padding of the row; the title's first line sits right below it.
     private static let verticalPadding: CGFloat = 6
     /// One line of 13pt title text.
     private static let titleLineHeight: CGFloat = 16
 
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.displayTitle)
-                        .font(.system(size: 13, weight: isSelected ? .medium : .regular))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    HStack(spacing: 4) {
-                        Image(systemName: detail == nil ? "folder" : session.attention.map { AttentionText.symbol(for: $0.reason) } ?? "bell")
-                            .font(.system(size: 9.5, weight: .semibold))
-                        Text(detail ?? Self.folderName(session.directory))
-                            .font(.system(size: 11))
-                            .lineLimit(detail == nil ? 1 : 2)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-                if session.attention != nil {
-                    Circle()
-                        .fill(Color(red: 0.89, green: 0.80, blue: 0.56))
-                        .frame(width: 7, height: 7)
-                        .padding(.top, 6)
-                        .opacity(isHovered ? 0 : 1)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, Self.verticalPadding)
-            .frame(width: width, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isSelected ? 0.16 : (isHovered ? 0.075 : 0)))
-                    .animation(.easeInOut(duration: 0.14), value: isHovered)
-                    .animation(.easeInOut(duration: 0.16), value: isSelected)
-            }
-            .background(alignment: .top) {
-                if let folderAnchor {
-                    Color.clear
-                        .frame(height: ShellMetrics.sidebarRowHeight)
-                        .padding(.top, folderAnchor.aboveRow ? -(ShellMetrics.sidebarRowHeight + ShellMetrics.sidebarRowSpacing) : 0)
-                        .sidebarRowMatch(folderAnchor.id)
-                }
-            }
-            .padding(.vertical, rowGapShare)
-            .contentShape(Rectangle())
+    private var isOpenTerminal: Bool {
+        !isSettled && session.kind == .terminal
+    }
+
+    private var canUseActiveSpaceActions: Bool {
+        isOpenTerminal && isInActiveSpace
+    }
+
+    private var splitWithActiveEnabled: Bool {
+        guard canUseActiveSpaceActions,
+              let selected = model.selectedID,
+              selected != session.id,
+              model.tabs.contains(where: { $0.id == selected }) else { return false }
+        return true
+    }
+
+    private var folderDestinations: [(title: String, handler: () -> Void)] {
+        guard canUseActiveSpaceActions else { return [] }
+        return model.folders.map { folder in
+            (title: folder.name, handler: {
+                model.add(session.id, to: folder.id)
+            })
         }
-        .buttonStyle(SidebarRowButtonStyle())
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                SidebarInlineName(
+                    text: session.displayTitle,
+                    isSelected: isSelected,
+                    isRenaming: isRenaming,
+                    onCommit: commitRename,
+                    onCancel: cancelRename
+                )
+                detailLine
+            }
+            Spacer(minLength: 0)
+            if session.attention != nil {
+                Circle()
+                    .fill(Color(red: 0.89, green: 0.80, blue: 0.56))
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 6)
+                    .opacity(isHovered ? 0 : 1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, Self.verticalPadding)
+        .frame(width: width, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isSelected ? 0.16 : (isHovered ? 0.075 : 0)))
+                .animation(.easeInOut(duration: 0.14), value: isHovered)
+                .animation(.easeInOut(duration: 0.16), value: isSelected)
+        }
+        .background(alignment: .top) {
+            if let folderAnchor {
+                Color.clear
+                    .frame(height: ShellMetrics.sidebarRowHeight)
+                    .padding(.top, folderAnchor.aboveRow ? -(ShellMetrics.sidebarRowHeight + ShellMetrics.sidebarRowSpacing) : 0)
+                    .sidebarRowMatch(folderAnchor.id)
+            }
+        }
+        .padding(.vertical, rowGapShare)
+        .contentShape(Rectangle())
+        .overlay {
+            if !isRenaming {
+                hitTarget
+            }
+        }
         .overlay(alignment: .topTrailing) {
             ActivityCloseButton(title: session.displayTitle, action: close)
                 .padding(.top, rowGapShare + Self.verticalPadding + (Self.titleLineHeight - TabCloseMetrics.side) / 2)
@@ -346,11 +548,73 @@ private struct ActivityTabRow: View {
                 .accessibilityHidden(!isHovered)
         }
         .focusable(false)
-        .onHover { isHovered = $0 }
-        .help(isSettled ? "Reopen \(session.displayTitle)" : session.directory)
-        .accessibilityLabel([session.displayTitle, detail ?? Self.folderName(session.directory)].joined(separator: ", "))
+        .help(isSettled ? "Open \(session.displayTitle)" : session.directory)
+        .accessibilityLabel([session.displayTitle, detailText].joined(separator: ", "))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .sidebarRowMatch(session.id)
+    }
+
+    private var hitTarget: TabRowHitRepresentable {
+        TabRowHitRepresentable(
+            windowID: model.id,
+            tabID: session.id,
+            listRowID: nil,
+            title: session.displayTitle,
+            symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+            onSelect: action,
+            onModifiedSelect: nil,
+            onPrepareDrag: nil,
+            onClose: close,
+            onHover: { _ in },
+            splitWithActiveEnabled: splitWithActiveEnabled,
+            onSplitWithActive: canUseActiveSpaceActions ? { model.split(with: session.id, on: .trailing) } : nil,
+            onUnsplit: canUseActiveSpaceActions && model.split(containing: session.id) != nil ? { model.unsplit(tabID: session.id) } : nil,
+            onArchive: isOpenTerminal ? { model.settleTabInAnySpace(session.id) } : nil,
+            onReopen: isSettled ? { model.reopenTabInAnySpace(session.id) } : nil,
+            onRename: beginRename,
+            onDoubleClick: nil,
+            onNewFolder: canUseActiveSpaceActions ? { _ = model.makeFolder(containing: session.id) } : nil,
+            onRemoveFromFolder: canUseActiveSpaceActions && model.folderContaining(session.id) != nil ? { model.removeFromFolder(session.id) } : nil,
+            onDeleteFolder: nil,
+            folderDestinations: folderDestinations,
+            allowsDrag: false,
+            fillsHeight: true,
+            closeButtonEnabled: false,
+            isFolder: false
+        )
+    }
+
+    private var detailSymbol: String {
+        guard detail == nil else {
+            return session.attention.map { AttentionText.symbol(for: $0.reason) } ?? "bell"
+        }
+        return "folder"
+    }
+
+    private var detailText: String {
+        detail ?? Self.folderName(session.directory)
+    }
+
+    @ViewBuilder
+    private var detailLine: some View {
+        HStack(spacing: 4) {
+            Image(systemName: detailSymbol)
+                .font(.system(size: 9.5, weight: .semibold))
+            Text(detailText)
+                .font(.system(size: 11))
+                .lineLimit(detail == nil ? 1 : 2)
+            if detail == nil, let lineStats {
+                Text("·")
+                    .font(.system(size: 11))
+                Text("+\(lineStats.additions)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppColors.reviewAddition)
+                Text("−\(lineStats.deletions)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(AppColors.reviewDeletion)
+            }
+        }
+        .foregroundStyle(.secondary)
     }
 
     private static func folderName(_ path: String) -> String {

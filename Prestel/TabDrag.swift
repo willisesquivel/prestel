@@ -1154,6 +1154,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
+    var onReopen: (() -> Void)?
     var onRename: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     var onNewFolder: (() -> Void)?
@@ -1161,6 +1162,8 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var onDeleteFolder: (() -> Void)?
     var folderDestinations: [(title: String, handler: () -> Void)] = []
     var allowsDrag = true
+    var fillsHeight = false
+    var closeButtonEnabled = true
     var isFolder = false
 
     func makeNSView(context: Context) -> TabRowHitNSView {
@@ -1182,6 +1185,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.onSplitWithActive = onSplitWithActive
         nsView.onUnsplit = onUnsplit
         nsView.onArchive = onArchive
+        nsView.onReopen = onReopen
         nsView.onRename = onRename
         nsView.onDoubleClick = onDoubleClick
         nsView.onNewFolder = onNewFolder
@@ -1189,13 +1193,15 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.onDeleteFolder = onDeleteFolder
         nsView.folderDestinations = folderDestinations
         nsView.allowsDrag = allowsDrag
+        nsView.fillsHeight = fillsHeight
+        nsView.closeButtonEnabled = closeButtonEnabled
         nsView.isFolder = isFolder
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: TabRowHitNSView, context: Context) -> CGSize? {
         CGSize(
             width: proposal.width ?? nsView.bounds.width,
-            height: min(proposal.height ?? ShellMetrics.sidebarRowHeight, ShellMetrics.sidebarRowHeight)
+            height: fillsHeight ? (proposal.height ?? ShellMetrics.sidebarRowHeight) : min(proposal.height ?? ShellMetrics.sidebarRowHeight, ShellMetrics.sidebarRowHeight)
         )
     }
 }
@@ -1223,6 +1229,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var onSplitWithActive: (() -> Void)?
     var onUnsplit: (() -> Void)?
     var onArchive: (() -> Void)?
+    var onReopen: (() -> Void)?
     var onRename: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     var onNewFolder: (() -> Void)?
@@ -1230,6 +1237,8 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var onDeleteFolder: (() -> Void)?
     var folderDestinations: [(title: String, handler: () -> Void)] = []
     var allowsDrag = true
+    var fillsHeight = false
+    var closeButtonEnabled = true
     var isFolder = false
 
     private var mouseDownEvent: NSEvent?
@@ -1438,14 +1447,16 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             return menu
         }
 
-        let splitItem = NSMenuItem(
-            title: "Split with Active",
-            action: #selector(splitWithActiveFromMenu(_:)),
-            keyEquivalent: ""
-        )
-        splitItem.target = self
-        splitItem.isEnabled = splitWithActiveEnabled
-        menu.addItem(splitItem)
+        if onSplitWithActive != nil {
+            let splitItem = NSMenuItem(
+                title: "Split with Active",
+                action: #selector(splitWithActiveFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            splitItem.target = self
+            splitItem.isEnabled = splitWithActiveEnabled
+            menu.addItem(splitItem)
+        }
 
         if onUnsplit != nil {
             let unsplitItem = NSMenuItem(
@@ -1460,9 +1471,11 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
         menu.addItem(.separator())
         addRenameItem(to: menu)
-        let newFolder = NSMenuItem(title: "New Folder", action: #selector(newFolderFromMenu(_:)), keyEquivalent: "")
-        newFolder.target = self
-        menu.addItem(newFolder)
+        if onNewFolder != nil {
+            let newFolder = NSMenuItem(title: "New Folder", action: #selector(newFolderFromMenu(_:)), keyEquivalent: "")
+            newFolder.target = self
+            menu.addItem(newFolder)
+        }
         if !folderDestinations.isEmpty {
             let submenu = NSMenu()
             for (index, destination) in folderDestinations.enumerated() {
@@ -1487,6 +1500,12 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
             archiveItem.isEnabled = true
             menu.addItem(archiveItem)
         }
+        if onReopen != nil {
+            let reopenItem = NSMenuItem(title: "Reopen Tab", action: #selector(reopenFromMenu(_:)), keyEquivalent: "")
+            reopenItem.target = self
+            reopenItem.isEnabled = true
+            menu.addItem(reopenItem)
+        }
         let closeItem = NSMenuItem(title: "Close Tab", action: #selector(closeFromMenu(_:)), keyEquivalent: "")
         closeItem.target = self
         closeItem.isEnabled = true
@@ -1500,7 +1519,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         menu.addItem(renameItem)
     }
 
-    var showsTabCloseButton: Bool { isFolder ? listRowID != nil : tabID != nil }
+    var showsTabCloseButton: Bool { closeButtonEnabled && (isFolder ? listRowID != nil : tabID != nil) }
     private var rowKey: UUID? { isFolder ? listRowID : tabID }
 
     private func closeButtonContains(_ event: NSEvent) -> Bool {
@@ -1513,6 +1532,10 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
 
     @objc private func archiveFromMenu(_ sender: Any?) {
         onArchive?()
+    }
+
+    @objc private func reopenFromMenu(_ sender: Any?) {
+        onReopen?()
     }
 
     @objc private func renameFromMenu(_ sender: Any?) {

@@ -14,10 +14,24 @@ struct SidebarView: View {
 
     private var rowWidth: CGFloat { width - ShellMetrics.sidebarInset * 2 }
 
+    private var renamingTabID: UUID? {
+        guard case .tab(let id) = renaming else { return nil }
+        return id
+    }
+
     var body: some View {
         ScrollView(.vertical) {
             if showsActivity {
-                SidebarActivityList(model: model, width: rowWidth, closeTab: closeTab, closeSettledTab: closeSettledTab)
+                SidebarActivityList(
+                    model: model,
+                    width: rowWidth,
+                    closeTab: closeTab,
+                    closeSettledTab: closeSettledTab,
+                    renamingTabID: renamingTabID,
+                    beginRename: { beginRename(.tab($0)) },
+                    commitRename: { commitRename(.tab($0), $1) },
+                    cancelRename: { renaming = nil }
+                )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, ShellMetrics.sidebarInset)
             } else {
@@ -804,7 +818,7 @@ private struct SidebarTitleLabel: View {
     }
 }
 
-private struct SidebarInlineName: NSViewRepresentable {
+struct SidebarInlineName: NSViewRepresentable {
     var text: String
     var isSelected: Bool
     var isRenaming: Bool

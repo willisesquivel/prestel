@@ -239,8 +239,12 @@ final class TerminalModel: ObservableObject {
                 settled.append(tab)
                 observe(tab)
             }
-            select(restoration.selectedID ?? tabs[0].id)
-            if selectedID == nil { select(tabs[0].id) }
+            if let preferred = restoration.selectedID, settled.contains(where: { $0.id == preferred }) {
+                openSettledTab(preferred)
+            } else {
+                select(restoration.selectedID ?? tabs[0].id)
+                if selectedID == nil { select(tabs[0].id) }
+            }
             restoreSplit(from: restoration)
             folders = SidebarOutline.sanitized(
                 restoration.folders,
@@ -286,7 +290,7 @@ final class TerminalModel: ObservableObject {
     }
 
     var selectedTab: TerminalSession? {
-        tabs.first { $0.id == selectedID }
+        tabs.first { $0.id == selectedID } ?? settled.first { $0.id == selectedID }
     }
     /// Every live session this window owns: the active space, parked spaces and the archive.
     var allSessions: [TerminalSession] {
@@ -416,6 +420,13 @@ final class TerminalModel: ObservableObject {
         activate(id, session: session)
     }
 
+    func openSettledTab(_ id: UUID) {
+        guard let session = settled.first(where: { $0.id == id }) else { return }
+        selectedTabIDs = [id]
+        selectionAnchorID = id
+        activate(id, session: session)
+    }
+
     private func activate(_ id: UUID, session: TerminalSession) {
         reconcileSplit(selecting: id)
         session.clearAttention()
@@ -487,7 +498,7 @@ final class TerminalModel: ObservableObject {
             select(tabID)
             return
         }
-        guard let current = selectedID, current != tabID else { return }
+        guard let current = selectedID, current != tabID, tabs.contains(where: { $0.id == current }) else { return }
         dissolvePairs(containing: [current, tabID])
         splits.append(
             SplitState(
@@ -543,10 +554,10 @@ final class TerminalModel: ObservableObject {
         historyIndex = target
         let id = history[target]
         reconcileSplit(selecting: id)
-        tab(id: id)?.clearAttention()
         selectedID = id
         selectedTabIDs = [id]
         selectionAnchorID = id
+        selectedTab?.clearAttention()
         selectedTab?.refreshDirectoryFromProcess()
     }
 
@@ -712,13 +723,92 @@ final class TerminalModel: ObservableObject {
         adopt(tab, at: 0, selecting: true)
     }
 
+    func reopenTabInAnySpace(_ id: UUID) {
+        if settled.contains(where: { $0.id == id }) {
+            reopenTab(id)
+            return
+        }
+        guard let space = spaces.first(where: { self.parked[$0.id]?.settled.contains { $0.id == id } == true }) else { return }
+        switchSpace(to: space.id)
+        reopenTab(id)
+    }
+
+    func settledSession(id: UUID) -> TerminalSession? {
+        settled.first { $0.id == id } ?? spaces.lazy.compactMap { self.parked[$0.id]?.settled.first { $0.id == id } }.first
+    }
+
+    func settleTabInAnySpace(_ id: UUID) {
+        if tabs.contains(where: { $0.id == id }) {
+            settleTab(id)
+            return
+        }
+        guard let spaceID = spaces.first(where: { self.parked[$0.id]?.tabs.contains { $0.id == id } == true })?.id,
+              var space = parked[spaceID],
+              let index = space.tabs.firstIndex(where: { $0.id == id }),
+              space.tabs.count > 1 else { return }
+        objectWillChange.send()
+        let tab = space.tabs.remove(at: index)
+        space.settled.append(tab)
+        space.splits.removeAll { $0.contains(id) }
+        for folder in space.folders.indices {
+            space.folders[folder].tabIDs.removeAll { $0 == id }
+        }
+        space.selectedTabIDs.remove(id)
+        if space.selectedID == id {
+            let replacement = space.tabs[min(index, space.tabs.count - 1)].id
+            space.selectedID = replacement
+            space.selectedTabIDs = [replacement]
+        } else if space.selectedTabIDs.isEmpty, let selected = space.selectedID {
+            space.selectedTabIDs = [selected]
+        }
+        parked[spaceID] = space
+    }
+
     func closeSettledTab(_ id: UUID) {
-        guard let index = settled.firstIndex(where: { $0.id == id }) else { return }
-        recentlyClosed.append(settled[index].descriptor)
+        if let index = settled.firstIndex(where: { $0.id == id }) {
+            let tab = settled[index]
+            recentlyClosed.append(tab.descriptor)
+            recentlyClosed = Array(recentlyClosed.suffix(20))
+            tab.close()
+            settled.remove(at: index)
+            subscriptions.removeValue(forKey: id)
+            selectedTabIDs.remove(id)
+            if selectionAnchorID == id { selectionAnchorID = nil }
+            let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
+            history.removeAll { $0 == id }
+            historyIndex -= removedThroughCursor
+            if selectedID == id {
+                selectedID = nil
+                if let next = settled.indices.contains(index) ? settled[index] : settled.last {
+                    openSettledTab(next.id)
+                } else if let first = tabs.first {
+                    select(first.id)
+                }
+            }
+            return
+        }
+        guard let spaceID = spaces.first(where: { self.parked[$0.id]?.settled.contains { $0.id == id } == true })?.id,
+              var space = parked[spaceID],
+              let index = space.settled.firstIndex(where: { $0.id == id }) else { return }
+        objectWillChange.send()
+        let tab = space.settled.remove(at: index)
+        recentlyClosed.append(tab.descriptor)
         recentlyClosed = Array(recentlyClosed.suffix(20))
-        settled[index].close()
-        settled.remove(at: index)
         subscriptions.removeValue(forKey: id)
+        tab.close()
+        space.selectedTabIDs.remove(id)
+        if space.selectedID == id {
+            if let next = space.settled.indices.contains(index) ? space.settled[index] : space.settled.last {
+                space.selectedID = next.id
+                space.selectedTabIDs = [next.id]
+            } else if let first = space.tabs.first {
+                space.selectedID = first.id
+                space.selectedTabIDs = [first.id]
+            } else {
+                space.selectedID = nil
+            }
+        }
+        parked[spaceID] = space
     }
 
     /// Call only after the window controller has resolved close confirmation.
@@ -1027,7 +1117,7 @@ final class TerminalModel: ObservableObject {
     }
 
     func renameTab(_ id: UUID, to proposed: String) {
-        tab(id: id)?.setDisplayTitle(proposed)
+        allSessions.first { $0.id == id }?.setDisplayTitle(proposed)
     }
 
     func setFolderMembership(_ tabID: UUID, folderID: UUID?) {
@@ -1143,13 +1233,14 @@ final class TerminalModel: ObservableObject {
             sessions.forEach(observe)
             let settledSessions = space.settledTabs.filter { seen.insert($0.id).inserted }.map(TerminalSession.init(descriptor:))
             settledSessions.forEach(observe)
-            let ids = Set(sessions.map(\.id))
-            let selected = space.selectedID.flatMap { ids.contains($0) ? $0 : nil } ?? sessions[0].id
+            let openIDs = Set(sessions.map(\.id))
+            let allIDs = openIDs.union(settledSessions.map(\.id))
+            let selected = space.selectedID.flatMap { allIDs.contains($0) ? $0 : nil } ?? sessions[0].id
             parked[space.id] = ParkedSpace(
                 tabs: sessions,
                 settled: settledSessions,
-                splits: Self.validSplits(space.splits, tabIDs: ids, selectedID: selected),
-                folders: SidebarOutline.sanitized(space.folders, tabIDs: ids),
+                splits: Self.validSplits(space.splits, tabIDs: openIDs, selectedID: selected),
+                folders: SidebarOutline.sanitized(space.folders, tabIDs: openIDs),
                 selectedID: selected,
                 selectedTabIDs: [selected]
             )
@@ -1220,7 +1311,7 @@ final class TerminalModel: ObservableObject {
             closeTab(id)
             return
         }
-        guard let spaceID = spaces.first(where: { parked[$0.id]?.tabs.contains { $0.id == id } == true })?.id,
+        guard let spaceID = spaces.first(where: { self.parked[$0.id]?.tabs.contains { $0.id == id } == true })?.id,
               var space = parked[spaceID],
               let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
         objectWillChange.send()
@@ -1240,7 +1331,8 @@ final class TerminalModel: ObservableObject {
             closeSpace(spaceID)
             return
         }
-        if space.selectedID == id || space.selectedID.map({ selected in !space.tabs.contains { $0.id == selected } }) == true {
+        let remainingIDs = Set(space.tabs.map(\.id)).union(space.settled.map(\.id))
+        if space.selectedID == id || space.selectedID.map({ !remainingIDs.contains($0) }) == true {
             space.selectedID = space.tabs[min(index, space.tabs.count - 1)].id
         }
         if space.selectedTabIDs.isEmpty, let selected = space.selectedID { space.selectedTabIDs = [selected] }
@@ -1263,7 +1355,7 @@ final class TerminalModel: ObservableObject {
     }
 
     private func load(_ space: ParkedSpace, as id: UUID) {
-        let ids = Set(space.tabs.map(\.id))
+        let ids = Set(space.tabs.map(\.id)).union(space.settled.map(\.id))
         let selected = space.selectedID.flatMap { ids.contains($0) ? $0 : nil } ?? space.tabs.first?.id
         activeSpaceID = id
         searchText = ""
@@ -1329,7 +1421,7 @@ final class TerminalModel: ObservableObject {
             switchSpace(to: space.id)
         }
         if settled.contains(where: { $0.id == id }) {
-            reopenTab(id)
+            openSettledTab(id)
         } else {
             select(id)
         }

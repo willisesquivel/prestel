@@ -308,7 +308,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
     @objc func newTab(_ sender: Any?) { model.newTab() }
     @objc func closeTab(_ sender: Any?) { if let id = model.selectedID { requestCloseTab(id) } }
     func requestCloseTab(_ id: UUID) {
-        if model.settled.contains(where: { $0.id == id }) {
+        if model.settledSession(id: id) != nil {
             requestCloseSettledTab(id)
             return
         }
@@ -327,7 +327,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate, NSMe
         }
     }
     func requestCloseSettledTab(_ id: UUID) {
-        guard let tab = model.settled.first(where: { $0.id == id }) else { return }
+        guard let tab = model.settledSession(id: id) else { return }
         guard CloseConfirmation.confirm(tabs: tab.hasActiveJobs ? [tab] : [], action: "Close Tab") else { return }
         var transaction = Transaction()
         transaction.disablesAnimations = true

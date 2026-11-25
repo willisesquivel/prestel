@@ -123,6 +123,22 @@ struct CodeReviewModelTests {
         #expect(model.snapshot?.revision.key.basename == "repo-b")
     }
 
+    @Test func sidebarGitStatsLoadRepositoryTotals() async throws {
+        let root = try GitFixture.make()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let stats = SidebarGitStatsModel(service: GitRepositoryService(), watcher: RepositoryWatcher())
+        defer { stats.stop() }
+        stats.start(directories: [root])
+        let key = SidebarGitStatsModel.standardized(root)
+        let deadline = ContinuousClock().now.advanced(by: .seconds(15))
+        while stats.statsByDirectory[key] == nil, ContinuousClock().now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let totals = try #require(stats.statsByDirectory[key])
+        #expect(totals.additions > 0)
+        #expect(totals.deletions > 0)
+    }
+
     @Test func stageAndUnstageFlipFileImmediatelyBeforeGitFinishes() async throws {
         let root = try GitFixture.make()
         defer { try? FileManager.default.removeItem(atPath: root) }

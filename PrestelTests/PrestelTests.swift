@@ -221,6 +221,7 @@ struct PrestelTests {
     @Test func tabContextMenuIncludesArchive() {
         let hit = TabRowHitNSView(frame: .zero)
         hit.onArchive = {}
+        hit.onNewFolder = {}
         hit.onClose = {}
         let event = NSEvent.mouseEvent(
             with: .rightMouseDown,
@@ -251,7 +252,7 @@ struct PrestelTests {
         #expect(model.filteredSettled.isEmpty)
     }
 
-    @Test func settledTabsAreOnlyReachedByReopening() {
+    @Test func settledTabsOpenInPlaceAndOnlyReopenExplicitly() {
         let model = TerminalModel()
         let keep = model.selectedID!
         let settled = model.newTab()
@@ -260,9 +261,25 @@ struct PrestelTests {
         #expect(model.settled.map(\.id) == [settled.id])
         #expect(model.selectedID == keep)
         model.reveal(settled.id)
+        #expect(model.settled.map(\.id) == [settled.id])
+        #expect(!model.tabs.contains { $0.id == settled.id })
+        #expect(model.selectedID == settled.id)
+        #expect(model.selectedTab?.id == settled.id)
+        model.reopenTab(settled.id)
         #expect(model.settled.isEmpty)
         #expect(model.tabs.map(\.id) == [settled.id, keep])
         #expect(model.selectedID == settled.id)
+    }
+
+    @Test func closingTheSelectedSettledTabChoosesAnotherTab() {
+        let model = TerminalModel()
+        let fallback = model.selectedID!
+        let settled = model.newTab().id
+        model.settleTab(settled)
+        model.reveal(settled)
+        model.closeSettledTab(settled)
+        #expect(model.settled.isEmpty)
+        #expect(model.selectedID == fallback)
     }
 
     @Test func settledTabsBelongToTheirSpaceAndRestore() throws {
@@ -283,8 +300,21 @@ struct PrestelTests {
         #expect(restored.settledBySpace.map(\.space.id) == [home, work])
         restored.reveal(homeSettled)
         #expect(restored.activeSpaceID == home)
-        #expect(restored.tabs.first?.id == homeSettled)
-        #expect(restored.settled.isEmpty)
+        #expect(restored.selectedID == homeSettled)
+        #expect(restored.settled.map(\.id) == [homeSettled])
+        #expect(!restored.tabs.contains { $0.id == homeSettled })
+    }
+
+    @Test func selectedSettledTabRestoresSelectedAndSettled() throws {
+        let model = TerminalModel()
+        let settled = model.newTab().id
+        model.settleTab(settled)
+        model.reveal(settled)
+        let descriptor = try JSONDecoder().decode(WindowDescriptor.self, from: JSONEncoder().encode(model.descriptor))
+        let restored = TerminalModel(restoration: descriptor)
+        #expect(restored.selectedID == settled)
+        #expect(restored.settled.map(\.id) == [settled])
+        #expect(restored.selectedTab?.id == settled)
     }
 
     @Test func closingTheLastOpenTabReopensTheNewestSettledOne() {
