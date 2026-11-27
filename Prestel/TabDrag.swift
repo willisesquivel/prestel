@@ -221,7 +221,7 @@ final class TabDragCoordinator: ObservableObject {
         }
         setHoveredRow(best?.key)
         if let best, best.view.showsTabCloseButton,
-           TabCloseMetrics.frame(in: best.view.bounds).contains(best.local) {
+           best.view.closeFrame().contains(best.local) {
             setCloseHover(best.key)
         } else {
             setCloseHover(nil)
@@ -739,20 +739,40 @@ final class TabDragCoordinator: ObservableObject {
         }
         guard let app = AppDelegate.current,
               let source = app.controllers[payload.sourceWindowID],
-              source.model.tabs.contains(where: { $0.id == payload.tabID }) else { return }
+              source.model.openSessionInAnySpace(id: payload.tabID) != nil || source.model.settledSession(id: payload.tabID) != nil else { return }
+        let draggedActiveOpenTabs = payload.tabIDs.allSatisfy { id in source.model.tabs.contains { $0.id == id } }
 
         switch destination {
         case .list(let pin) where pin.windowID == payload.sourceWindowID:
-            source.model.moveTabs(
-                payload.tabIDs,
-                to: pin.canonicalIndex,
-                folderID: pin.folderID,
-                assignsFolder: true
-            )
+            let visibleIDs = visibleRowFrames(in: pin.windowID)
+                .sorted { $0.frame.midY > $1.frame.midY }
+                .compactMap(\.id)
+            let settledIDs = Set(source.model.settled.map(\.id))
+            let targetTouchesSettled = visibleIDs.indices.contains(pin.insertionIndex - 1) && settledIDs.contains(visibleIDs[pin.insertionIndex - 1])
+                || visibleIDs.indices.contains(pin.insertionIndex) && settledIDs.contains(visibleIDs[pin.insertionIndex])
+            if settledIDs.contains(payload.tabID), targetTouchesSettled {
+                let settledInsertion = visibleIDs.prefix(pin.insertionIndex).filter { settledIDs.contains($0) }.count
+                source.model.moveSettled(payload.tabID, toVisibleIndex: settledInsertion)
+                return
+            }
+            if draggedActiveOpenTabs {
+                source.model.moveTabs(
+                    payload.tabIDs,
+                    to: pin.canonicalIndex,
+                    folderID: pin.folderID,
+                    assignsFolder: true
+                )
+            } else {
+                let tabs = source.model.detachTabsInAnySpace(payload.tabIDs)
+                guard !tabs.isEmpty else { return }
+                source.model.adopt(tabs, at: pin.canonicalIndex, selecting: payload.tabID)
+                source.model.setFolderMembership(tabs.map(\.id), folderID: pin.folderID)
+                source.refresh()
+            }
             return
         case .list(let pin):
             guard let dest = app.controllers[pin.windowID] else { return }
-            let tabs = source.model.detachTabs(payload.tabIDs)
+            let tabs = source.model.detachTabsInAnySpace(payload.tabIDs)
             guard !tabs.isEmpty else { return }
             dest.model.adopt(tabs, at: pin.canonicalIndex, selecting: payload.tabID)
             dest.model.setFolderMembership(tabs.map(\.id), folderID: pin.folderID)
@@ -770,7 +790,7 @@ final class TabDragCoordinator: ObservableObject {
             break
         }
 
-        let tabs = source.model.detachTabs(payload.tabIDs)
+        let tabs = source.model.detachTabsInAnySpace(payload.tabIDs)
         guard !tabs.isEmpty else { return }
         let created = app.createWindow(adopting: tabs, selectedID: payload.tabID, near: screenPoint)
         closeIfEmpty(source)
@@ -784,14 +804,14 @@ final class TabDragCoordinator: ObservableObject {
         app: AppDelegate
     ) {
         guard payload.tabIDs.count == 1 else { return }
-        if preview.windowID == payload.sourceWindowID {
+        if preview.windowID == payload.sourceWindowID, source.model.tabs.contains(where: { $0.id == payload.tabID }) {
             source.model.split(with: payload.tabID, on: preview.side)
             source.refresh()
             DispatchQueue.main.async { source.focusTerminal() }
             return
         }
         guard let dest = app.controllers[preview.windowID] else { return }
-        guard let tab = source.model.detachTab(payload.tabID) else { return }
+        guard let tab = source.model.detachTabsInAnySpace([payload.tabID]).first else { return }
         dest.model.adopt(tab, at: dest.model.tabs.count, selecting: false)
         dest.model.split(with: tab.id, on: preview.side)
         dest.refresh()
@@ -1047,10 +1067,10 @@ enum TabCloseMetrics {
     /// Matches the sidebar row hover fill: ease-in-out over 0.14s.
     static let fadeDuration: TimeInterval = 0.14
 
-    static func frame(in bounds: CGRect) -> CGRect {
+    static func frame(in bounds: CGRect, centerY: CGFloat? = nil) -> CGRect {
         CGRect(
             x: bounds.maxX - trailingInset - side,
-            y: bounds.midY - side / 2,
+            y: (centerY ?? bounds.midY) - side / 2,
             width: side,
             height: side
         )
@@ -1117,17 +1137,30 @@ final class TabCloseChromeView: NSView {
         let label = NSColor.labelColor.usingColorSpace(.sRGB) ?? .labelColor
         let glyph = label.withAlphaComponent(label.alphaComponent * SidebarIconStyle.opacity)
         let configuration = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [glyph]))
-        guard let image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
+        guard let symbol = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) else { return }
         let side: CGFloat = 9
-        image.draw(
-            in: NSRect(
-                x: (bounds.width - side) / 2,
-                y: (bounds.height - side) / 2,
-                width: side,
-                height: side
-            ),
+        let target = NSRect(
+            x: (bounds.width - side) / 2,
+            y: (bounds.height - side) / 2,
+            width: side,
+            height: side
+        )
+        let tinted = NSImage(size: target.size, flipped: true) { rect in
+            symbol.draw(
+                in: rect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1,
+                respectFlipped: true,
+                hints: nil
+            )
+            glyph.setFill()
+            rect.fill(using: .sourceIn)
+            return true
+        }
+        tinted.draw(
+            in: target,
             from: .zero,
             operation: .sourceOver,
             fraction: 1,
@@ -1164,6 +1197,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
     var allowsDrag = true
     var fillsHeight = false
     var closeButtonEnabled = true
+    var closeButtonCenterYFromTop: CGFloat?
     var isFolder = false
 
     func makeNSView(context: Context) -> TabRowHitNSView {
@@ -1195,6 +1229,7 @@ struct TabRowHitRepresentable: NSViewRepresentable {
         nsView.allowsDrag = allowsDrag
         nsView.fillsHeight = fillsHeight
         nsView.closeButtonEnabled = closeButtonEnabled
+        nsView.closeButtonCenterYFromTop = closeButtonCenterYFromTop
         nsView.isFolder = isFolder
     }
 
@@ -1239,6 +1274,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     var allowsDrag = true
     var fillsHeight = false
     var closeButtonEnabled = true
+    var closeButtonCenterYFromTop: CGFloat?
     var isFolder = false
 
     private var mouseDownEvent: NSEvent?
@@ -1306,8 +1342,13 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
     }
 
+    func closeFrame() -> CGRect {
+        let centerY = closeButtonCenterYFromTop.map { isFlipped ? $0 : bounds.height - $0 }
+        return TabCloseMetrics.frame(in: bounds, centerY: centerY)
+    }
+
     private func positionCloseChrome() {
-        closeChrome.frame = TabCloseMetrics.frame(in: bounds)
+        closeChrome.frame = closeFrame()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -1523,7 +1564,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
     private var rowKey: UUID? { isFolder ? listRowID : tabID }
 
     private func closeButtonContains(_ event: NSEvent) -> Bool {
-        TabCloseMetrics.frame(in: bounds).contains(convert(event.locationInWindow, from: nil))
+        closeFrame().contains(convert(event.locationInWindow, from: nil))
     }
 
     @objc private func closeFromMenu(_ sender: Any?) {
@@ -1622,7 +1663,7 @@ final class TabRowHitNSView: NSView, NSDraggingSource {
         }
         let ordered = [payload.tabID] + payload.tabIDs.filter { $0 != payload.tabID }
         return ordered.compactMap { id in
-            guard let tab = model.tab(id: id) else { return nil }
+            guard let tab = model.allSessions.first(where: { $0.id == id }) else { return nil }
             return TabDragPreview.Item(
                 title: tab.displayTitle,
                 symbol: tab.kind == .settings ? "gearshape.fill" : "terminal"

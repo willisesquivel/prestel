@@ -20,6 +20,7 @@ struct SidebarFooter: View {
 /// Strength of the sidebar's glyph icons: the bell, the + and the tab close X.
 enum SidebarIconStyle {
     static let opacity: Double = 0.62
+    static var color: Color { Color(nsColor: .labelColor).opacity(opacity) }
 }
 
 private enum FooterMetrics {
@@ -58,7 +59,7 @@ private struct FooterIconButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(isOn ? Color.accentColor : Color.primary.opacity(SidebarIconStyle.opacity))
+                .foregroundStyle(isOn ? Color.accentColor : SidebarIconStyle.color)
                 .frame(width: FooterMetrics.iconSide, height: FooterMetrics.iconSide)
                 .background {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -141,7 +142,7 @@ private struct SpaceMenu: View {
                     .truncationMode(.tail)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(Color.primary.opacity(0.45))
+                    .foregroundStyle(SidebarIconStyle.color)
             }
             .frame(height: FooterMetrics.barHeight)
             .contentShape(Rectangle())

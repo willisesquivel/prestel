@@ -78,6 +78,7 @@ struct PrestelTests {
         let first = model.selectedID!
         let settled = model.newTab().id
         model.settleTab(settled)
+        model.select(first)
         model.select(settled)
         #expect(model.selectedID == first)
         for number in [0, 2, 8, 10] {
@@ -148,7 +149,7 @@ struct PrestelTests {
         #expect(model.tabs.map(\.id) == [second.id])
         #expect(model.settled.map(\.id) == [first.id])
         #expect(model.settled.first === first)
-        #expect(model.selectedID == second.id)
+        #expect(model.selectedID == first.id)
         #expect(model.recentlyClosed.isEmpty)
         #expect(first.state == .ready)
         model.reopenTab(first.id)
@@ -158,14 +159,13 @@ struct PrestelTests {
         #expect(model.tabs.first === first)
     }
 
-    @Test func archivingTheLastTabOpensAReplacement() {
+    @Test func settlingTheLastTabKeepsItSelectedInPlace() {
         let model = TerminalModel()
         let first = model.selectedTab!
         model.settleTab(first.id)
         #expect(model.settled.map(\.id) == [first.id])
-        #expect(model.tabs.count == 1)
-        #expect(model.tabs[0].id != first.id)
-        #expect(model.selectedID == model.tabs[0].id)
+        #expect(model.tabs.isEmpty)
+        #expect(model.selectedID == first.id)
     }
 
     @Test func archiveDissolvesASplitPair() {
@@ -179,7 +179,7 @@ struct PrestelTests {
         #expect(model.visibleSplit == nil)
         #expect(model.settled.map(\.id) == [second])
         #expect(model.tabs.map(\.id) == [first])
-        #expect(model.selectedID == first)
+        #expect(model.selectedID == second)
     }
 
     @Test func archivedTabsRestoreAndLegacyWindowsDecode() throws {
@@ -187,6 +187,7 @@ struct PrestelTests {
         let keep = model.selectedID!
         let settled = model.newTab(directory: "/private/tmp")
         model.settleTab(settled.id)
+        model.select(keep)
         let encoded = try JSONEncoder().encode(model.descriptor)
         let descriptor = try JSONDecoder().decode(WindowDescriptor.self, from: encoded)
         #expect(descriptor.archivedTabs.map(\.id) == [settled.id])
@@ -257,6 +258,7 @@ struct PrestelTests {
         let keep = model.selectedID!
         let settled = model.newTab()
         model.settleTab(settled.id)
+        model.select(keep)
         model.select(settled.id)
         #expect(model.settled.map(\.id) == [settled.id])
         #expect(model.selectedID == keep)
@@ -269,6 +271,120 @@ struct PrestelTests {
         #expect(model.settled.isEmpty)
         #expect(model.tabs.map(\.id) == [settled.id, keep])
         #expect(model.selectedID == settled.id)
+    }
+
+    @Test func sidebarFlightStartsAtTheRowsPreviousPosition() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactSettled, frame: CGRect(x: 8, y: 180, width: 150, height: 43))])
+        let glide = animator.glides.first
+        #expect(glide != nil)
+        #expect(glide?.from == CGRect(x: 8, y: 100, width: 150, height: 29))
+        #expect(glide?.to == CGRect(x: 8, y: 180, width: 150, height: 43))
+        #expect(animator.shouldHideForFlight(id, form: .compactSettled))
+    }
+
+    @Test func sidebarFlightSurvivesATemporaryRemovalPass() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        animator.updateFrames([:])
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactSettled, frame: CGRect(x: 8, y: 180, width: 150, height: 43))])
+        #expect(animator.glides.count == 1)
+    }
+
+    @Test func sidebarFlightIgnoresOrdinaryLayoutMovement() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 140, width: 150, height: 29))])
+        #expect(animator.glides.isEmpty)
+    }
+
+    @Test func sidebarFlightHidesTheNewFormUntilItCanStartAtTheOldPosition() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        #expect(!animator.shouldHideForFlight(id, form: .compactSettled))
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        #expect(animator.shouldHideForFlight(id, form: .compactSettled))
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactSettled, frame: CGRect(x: 8, y: 180, width: 150, height: 43))])
+        #expect(animator.shouldHideForFlight(id, form: .compactSettled))
+    }
+
+    @Test func sidebarFlightCanStartBeforeTheRowsFormChanges() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        animator.prepareSettle(id, activity: false)
+        #expect(animator.glides.count == 1)
+        #expect(animator.shouldHideForFlight(id, form: .compactOpen))
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactSettled, frame: CGRect(x: 8, y: 180, width: 150, height: 43))])
+        #expect(animator.glides.count == 1)
+        #expect(animator.glides.first?.to == CGRect(x: 8, y: 180, width: 150, height: 43))
+    }
+
+    @Test func sidebarFlightArriveRevealsTheNewRowBeforeFinish() {
+        let animator = SidebarFlightAnimator()
+        let id = UUID()
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactOpen, frame: CGRect(x: 8, y: 100, width: 150, height: 29))])
+        animator.updateFrames([id: SidebarFlightFrame(form: .compactSettled, frame: CGRect(x: 8, y: 180, width: 150, height: 43))])
+        let glide = animator.glides.first
+        #expect(glide != nil)
+        #expect(animator.shouldHideForFlight(id, form: .compactSettled))
+        if let glide {
+            animator.arrive(glide.id)
+        }
+        #expect(!animator.shouldHideForFlight(id, form: .compactSettled))
+        #expect(animator.glides.count == 1)
+        if let glide {
+            animator.finish(glide.id)
+        }
+        #expect(animator.glides.isEmpty)
+    }
+
+    @Test func reopeningAnUnselectedSettledTabDoesNotStealSelection() {
+        let model = TerminalModel()
+        let keep = model.selectedID!
+        let settled = model.newTab().id
+        model.settleTab(settled)
+        model.select(keep)
+        model.reopenTab(settled)
+        #expect(model.tabs.map(\.id) == [settled, keep])
+        #expect(model.selectedID == keep)
+    }
+
+    @Test func draggingASettledTabDetachesItAliveForAdoption() {
+        let model = TerminalModel()
+        let keep = model.selectedID!
+        let settled = model.newTab().id
+        model.settleTab(settled)
+        let dragged = model.detachTabsInAnySpace([settled])
+        #expect(dragged.map(\.id) == [settled])
+        #expect(model.settled.isEmpty)
+        #expect(model.tabs.map(\.id) == [keep])
+        #expect(model.selectedID == keep)
+        model.adopt(dragged, at: 0, selecting: settled)
+        #expect(model.tabs.map(\.id) == [settled, keep])
+        #expect(model.selectedID == settled)
+    }
+
+    @Test func draggingTabsOutOfAnotherSpaceKeepsThatSpaceAlive() {
+        let model = TerminalModel()
+        let home = model.activeSpaceID
+        let homeTab = model.selectedID!
+        let work = model.newSpace()
+        let workTab = model.selectedID!
+        let survivor = model.newTab().id
+        let workSettled = model.newTab().id
+        model.settleTab(workSettled)
+        model.switchSpace(to: home)
+        let dragged = model.detachTabsInAnySpace([workTab, workSettled])
+        #expect(Set(dragged.map(\.id)) == Set([workTab, workSettled]))
+        #expect(model.activeSpaceID == home)
+        #expect(model.selectedID == homeTab)
+        #expect(model.sessions(inSpace: work).map(\.id) == [survivor])
+        #expect((model.settledBySpace.first { $0.space.id == work }?.tabs ?? []).isEmpty)
     }
 
     @Test func closingTheSelectedSettledTabChoosesAnotherTab() {
@@ -1321,6 +1437,15 @@ struct PrestelTests {
     }
 
     @Test func closeButtonStaysHiddenUntilTheRowIsHovered() async throws {
+        let previousActivitySetting = UserDefaults.standard.object(forKey: SidebarDefaults.activityView) as? Bool
+        UserDefaults.standard.set(false, forKey: SidebarDefaults.activityView)
+        defer {
+            if let previousActivitySetting {
+                UserDefaults.standard.set(previousActivitySetting, forKey: SidebarDefaults.activityView)
+            } else {
+                UserDefaults.standard.removeObject(forKey: SidebarDefaults.activityView)
+            }
+        }
         let model = TerminalModel()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 172, height: 400),
@@ -1343,7 +1468,7 @@ struct PrestelTests {
             if let row = view as? TabRowHitNSView { return [row] }
             return view.subviews.flatMap { hitRows(in: $0) }
         }
-        let row = try #require(hitRows(in: host).first { $0.tabID != nil })
+        let row = try #require(hitRows(in: host).first { $0.tabID != nil && $0.closeButtonEnabled })
         #expect(!row.isShowingCloseButton)
         TabDragCoordinator.shared.setHoveredRow(row.tabID)
         #expect(row.isShowingCloseButton)
@@ -2832,6 +2957,9 @@ struct SafeFileOpenerTests {
     @Test func revealsMissingFiles() {
         #expect(SafeFileOpener.runsWhenOpened(URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).txt")))
     }
+
+
+
 }
 
 private final class StubDragFormation: TabDragFormationCarrying {

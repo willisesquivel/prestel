@@ -10,7 +10,11 @@ struct SidebarView: View {
     @State private var renaming: SidebarRenameTarget?
     @AppStorage(SidebarDefaults.activityView) private var showsActivity = false
     @Namespace private var rowSpace
+    @StateObject private var gitStats = SidebarGitStatsModel()
+    @StateObject private var flightAnimator = SidebarFlightAnimator()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var activitySpaceHeaders: [UUID: SidebarActivitySpaceHeaderFrame] = [:]
+    @State private var activityHeaderCompression: CGFloat = UserDefaults.standard.bool(forKey: SidebarDefaults.activityView) ? 0 : 1
 
     private var rowWidth: CGFloat { width - ShellMetrics.sidebarInset * 2 }
 
@@ -25,17 +29,21 @@ struct SidebarView: View {
                 SidebarActivityList(
                     model: model,
                     width: rowWidth,
+                    compression: $activityHeaderCompression,
                     closeTab: closeTab,
                     closeSettledTab: closeSettledTab,
                     renamingTabID: renamingTabID,
                     beginRename: { beginRename(.tab($0)) },
                     commitRename: { commitRename(.tab($0), $1) },
-                    cancelRename: { renaming = nil }
+                    cancelRename: { renaming = nil },
+                    gitStats: gitStats
                 )
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, ShellMetrics.sidebarInset)
+                    .allowsHitTesting(showsActivity)
             } else {
                 tabList
+                    .allowsHitTesting(!showsActivity)
             }
         }
         .environment(\.sidebarRowNamespace, rowSpace)
@@ -61,6 +69,57 @@ struct SidebarView: View {
         .scrollClipDisabled()
         .scrollEdgeEffectStyle(.hard, for: .vertical)
         .frame(width: width)
+        .coordinateSpace(name: SidebarFlightCoordinate.space)
+        .overlay(alignment: .topLeading) {
+            SidebarFlightGhostLayer()
+        }
+        .overlay(alignment: .topLeading) {
+            if !activitySpaceHeaders.isEmpty {
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(activitySpaceHeaders), id: \.key) { _, header in
+                        ActivityHeader(title: header.title, isFirst: header.isFirst, width: header.frame.width)
+                            .frame(width: header.frame.width, height: header.frame.height)
+                            .position(
+                                x: header.frame.midX,
+                                y: header.frame.midY - header.expansion * activityHeaderCompression
+                            )
+                            .opacity(1 - activityHeaderCompression)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+            }
+        }
+        .environmentObject(flightAnimator)
+        .onPreferenceChange(SidebarFlightFramesPreferenceKey.self) { frames in
+            flightAnimator.updateFrames(frames)
+        }
+        .onPreferenceChange(SidebarActivitySpaceHeadersPreferenceKey.self) { headers in
+            if !headers.isEmpty {
+                activitySpaceHeaders = headers
+            }
+        }
+        .onChange(of: showsActivity) { _, isOn in
+            if reduceMotion {
+                activityHeaderCompression = isOn ? 0 : 1
+            } else {
+                withAnimation(.smooth(duration: 0.3)) {
+                    activityHeaderCompression = isOn ? 0 : 1
+                }
+            }
+        }
+        .onAppear {
+            activityHeaderCompression = showsActivity ? 0 : 1
+            gitStats.start(directories: sidebarGitDirectories)
+        }
+        .onChange(of: sidebarGitDirectories) { _, directories in
+            gitStats.update(directories: directories)
+        }
+        .onDisappear { gitStats.stop() }
+    }
+
+    private var sidebarGitDirectories: [String] {
+        Array(Set(model.allSessions.filter { $0.kind == .terminal }.map { SidebarGitStatsModel.standardized($0.directory) })).sorted()
     }
 
     private var tabList: some View {
@@ -258,6 +317,8 @@ private struct FolderSection: View {
 
 private struct SidebarItemRow: View {
     @ObservedObject var model: TerminalModel
+    @EnvironmentObject private var flightAnimator: SidebarFlightAnimator
+    @AppStorage(SidebarDefaults.activityView) private var activityView = false
     let item: SidebarTabItem
     var previousItem: SidebarTabItem?
     var nextItem: SidebarTabItem?
@@ -280,7 +341,15 @@ private struct SidebarItemRow: View {
                 )
             }
             .animation(.easeInOut(duration: 0.16), value: model.selectedTabIDs)
-            .sidebarRowMatch(item.members.first ?? item.id, enabled: acceptsPointer)
+            .sidebarRowMatch(.tab(item.members.first ?? item.id), enabled: acceptsPointer)
+            .sidebarFlightFrame(
+                item.members.first ?? item.id,
+                form: .compactOpen,
+                appearance: flightAppearance,
+                enabled: acceptsPointer && !activityView && !item.isPair
+            )
+            .opacity(!activityView && flightAnimator.shouldHideForFlight(item.members.first ?? item.id, form: .compactOpen) ? 0 : 1)
+            .animation(.easeOut(duration: 0.12), value: flightAnimator.shouldHideForFlight(item.members.first ?? item.id, form: .compactOpen))
     }
 
     @ViewBuilder
@@ -305,7 +374,10 @@ private struct SidebarItemRow: View {
                 onClose: closeTab,
                 onSplitWithActive: { model.split(with: $0, on: .trailing) },
                 onUnsplit: { model.unsplit(tabID: leading.id) },
-                onArchive: { model.settleTab($0) },
+                onArchive: {
+                    flightAnimator.prepareSettle($0, activity: false)
+                    model.settleTab($0)
+                },
                 onBeginRename: { beginRename(.tab($0)) },
                 onDoubleClick: { model.focusTab($0) },
                 onCommitRename: { commitRename(.tab($0), $1) },
@@ -334,7 +406,10 @@ private struct SidebarItemRow: View {
                 splitWithActiveEnabled: model.selectedID != session.id,
                 onSplitWithActive: { model.split(with: session.id, on: .trailing) },
                 onUnsplit: model.split(containing: session.id) == nil ? nil : { model.unsplit(tabID: session.id) },
-                onArchive: { model.settleTab(session.id) },
+                onArchive: {
+                    flightAnimator.prepareSettle(session.id, activity: false)
+                    model.settleTab(session.id)
+                },
                 onBeginRename: { beginRename(.tab(session.id)) },
                 onDoubleClick: { model.focusTab(session.id) },
                 onCommitRename: { commitRename(.tab(session.id), $0) },
@@ -344,6 +419,17 @@ private struct SidebarItemRow: View {
                 folderDestinations: folderDestinations(for: session.id)
             )
         }
+    }
+
+    private var flightAppearance: SidebarFlightAppearance {
+        let id = item.members.first ?? item.id
+        let session = model.tab(id: id)
+        return SidebarFlightAppearance(
+            title: session?.displayTitle ?? "",
+            symbol: session?.kind == .settings ? "gearshape.fill" : "terminal",
+            selected: model.selectedTabIDs.contains(id),
+            fill: model.selectedTabIDs.contains(id) ? 0.16 : 0
+        )
     }
 
     private func folderDestinations(for tabID: UUID) -> [(title: String, handler: () -> Void)] {
@@ -573,6 +659,8 @@ private struct SidebarRow: View {
 }
 
 private struct CombinedSidebarRow: View {
+    @EnvironmentObject private var flightAnimator: SidebarFlightAnimator
+    @AppStorage(SidebarDefaults.activityView) private var activityView = false
     let windowID: UUID
     let listRowID: UUID
     let leading: TerminalSession
@@ -640,7 +728,8 @@ private struct CombinedSidebarRow: View {
         isHovered: Bool
     ) -> some View {
         let renamingThis = renaming == .tab(session.id)
-        if renamingThis {
+        Group {
+            if renamingThis {
             segmentLabel(session: session, isSelected: isSelected, isHovered: isHovered)
         } else {
             Button {
@@ -678,7 +767,21 @@ private struct CombinedSidebarRow: View {
             }
             .accessibilityAddTraits(isSelected ? .isSelected : [])
             .accessibilityLabel(session.displayTitle)
+            }
         }
+        .sidebarFlightFrame(
+            session.id,
+            form: .compactOpen,
+            appearance: SidebarFlightAppearance(
+                title: session.displayTitle,
+                symbol: session.kind == .settings ? "gearshape.fill" : "terminal",
+                selected: isSelected,
+                fill: isSelected ? 0.16 : 0
+            ),
+            enabled: acceptsPointer && !activityView
+        )
+        .opacity(!activityView && flightAnimator.shouldHideForFlight(session.id, form: .compactOpen) ? 0 : 1)
+        .animation(.easeOut(duration: 0.12), value: flightAnimator.shouldHideForFlight(session.id, form: .compactOpen))
     }
 
     private func segmentLabel(
@@ -763,7 +866,7 @@ private struct FolderSidebarRow: View {
                 .fill(backgroundColor)
         }
         .overlay {
-            if !isRenaming {
+            if !isRenaming, !showsActivity {
                 TabRowHitRepresentable(
                     windowID: windowID,
                     tabID: nil,
@@ -785,7 +888,7 @@ private struct FolderSidebarRow: View {
         // slides back from its first tab's row when it closes (see `SidebarActivityList`).
         .opacity(showsActivity ? 0 : 1)
         .animation(showsActivity ? .easeOut(duration: 0.06) : nil, value: showsActivity)
-        .sidebarRowMatch(folder.id)
+        .sidebarRowMatch(.folder(folder.id))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(folder.name), folder")
         .accessibilityAddTraits(.isButton)
@@ -824,6 +927,7 @@ struct SidebarInlineName: NSViewRepresentable {
     var isRenaming: Bool
     var onCommit: (String) -> Void
     var onCancel: () -> Void
+    var horizontalInset: CGFloat = 2
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -864,6 +968,10 @@ struct SidebarInlineName: NSViewRepresentable {
     }
 
     private func apply(to textView: SidebarInlineNameView, context: Context) {
+        if textView.horizontalInset != horizontalInset {
+            textView.horizontalInset = horizontalInset
+            textView.textContainerInset = NSSize(width: horizontalInset, height: 0)
+        }
         textView.onCommit = onCommit
         textView.onCancel = onCancel
         let font = Self.labelFont(selected: isSelected)
@@ -948,7 +1056,7 @@ final class SidebarInlineNameView: NSTextView {
     private var committed = false
     private var mouseDownMonitor: Any?
     private var appliedStyle: String?
-    private let horizontalInset: CGFloat = 2
+    var horizontalInset: CGFloat = 2
 
     var isEditingMode = false {
         didSet {

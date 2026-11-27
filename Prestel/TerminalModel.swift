@@ -627,7 +627,7 @@ final class TerminalModel: ObservableObject {
 
     /// Remove a tab from this window without terminating its process or recording recently-closed.
     @discardableResult
-    func detachTab(_ id: UUID) -> TerminalSession? {
+    func detachTab(_ id: UUID, closingEmptySpace: Bool = true) -> TerminalSession? {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
         let partner = split(containing: id)?.partner(of: id)
         detachFromFolders(id)
@@ -646,7 +646,7 @@ final class TerminalModel: ObservableObject {
             selectedTabIDs = [selectedID]
             selectionAnchorID = selectedID
         }
-        closeEmptyActiveSpace()
+        if closingEmptySpace { closeEmptyActiveSpace() }
         return tab
     }
 
@@ -710,17 +710,121 @@ final class TerminalModel: ObservableObject {
     /// Hide a live session from the sidebar without terminating its process.
     func settleTab(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        if tabs.count == 1 { newTab() }
-        guard let tab = detachTab(id) else { return }
-        settled.append(tab)
-        observe(tab)
+        let wasSelected = selectedID == id
+        Self.animateSettle {
+            guard let tab = detachTab(id, closingEmptySpace: false) else { return }
+            settled.append(tab)
+            observe(tab)
+            if wasSelected { openSettledTab(id) }
+        }
+    }
+
+    func openSessionInAnySpace(id: UUID) -> TerminalSession? {
+        tabs.first { $0.id == id } ?? spaces.lazy.compactMap { self.parked[$0.id]?.tabs.first { $0.id == id } }.first
+    }
+
+    func detachTabsInAnySpace(_ ids: [UUID]) -> [TerminalSession] {
+        var detached: [TerminalSession] = []
+        let activeOpenIDs = ids.filter { id in tabs.contains { $0.id == id } }
+        if !activeOpenIDs.isEmpty {
+            detached.append(contentsOf: detachTabs(activeOpenIDs))
+        }
+        for id in ids where !detached.contains(where: { $0.id == id }) {
+            if let tab = detachSettledTabForDrag(id) ?? detachParkedTabForDrag(id) {
+                detached.append(tab)
+            }
+        }
+        return detached
+    }
+
+    private func detachSettledTabForDrag(_ id: UUID) -> TerminalSession? {
+        guard let index = settled.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = settled.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        selectedTabIDs.remove(id)
+        if selectionAnchorID == id { selectionAnchorID = nil }
+        let removedThroughCursor = history.prefix(historyIndex + 1).filter { $0 == id }.count
+        history.removeAll { $0 == id }
+        historyIndex -= removedThroughCursor
+        if selectedID == id {
+            selectedID = nil
+            if let next = settled.indices.contains(index) ? settled[index] : settled.last {
+                openSettledTab(next.id)
+            } else if let first = tabs.first {
+                select(first.id)
+            }
+        }
+        return tab
+    }
+
+    private func detachParkedTabForDrag(_ id: UUID) -> TerminalSession? {
+        guard let spaceID = spaces.first(where: { space in
+            self.parked[space.id]?.tabs.contains { $0.id == id } == true || self.parked[space.id]?.settled.contains { $0.id == id } == true
+        })?.id, var space = parked[spaceID] else { return nil }
+        objectWillChange.send()
+        if let index = space.tabs.firstIndex(where: { $0.id == id }) {
+            let tab = space.tabs.remove(at: index)
+            subscriptions.removeValue(forKey: id)
+            space.splits.removeAll { $0.contains(id) }
+            for folder in space.folders.indices {
+                space.folders[folder].tabIDs.removeAll { $0 == id }
+            }
+            space.selectedTabIDs.remove(id)
+            if space.tabs.isEmpty {
+                if let newest = space.settled.popLast() {
+                    space.tabs = [newest]
+                } else {
+                    parked.removeValue(forKey: spaceID)
+                    spaces.removeAll { $0.id == spaceID }
+                    return tab
+                }
+            }
+            let remainingIDs = Set(space.tabs.map(\.id)).union(space.settled.map(\.id))
+            if space.selectedID == id || space.selectedID.map({ !remainingIDs.contains($0) }) == true {
+                let replacement = space.tabs[min(index, space.tabs.count - 1)].id
+                space.selectedID = replacement
+                space.selectedTabIDs = [replacement]
+            } else if space.selectedTabIDs.isEmpty, let selected = space.selectedID {
+                space.selectedTabIDs = [selected]
+            }
+            parked[spaceID] = space
+            return tab
+        }
+        guard let index = space.settled.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = space.settled.remove(at: index)
+        subscriptions.removeValue(forKey: id)
+        space.selectedTabIDs.remove(id)
+        if space.selectedID == id {
+            if let next = space.settled.indices.contains(index) ? space.settled[index] : space.settled.last {
+                space.selectedID = next.id
+                space.selectedTabIDs = [next.id]
+            } else if let first = space.tabs.first {
+                space.selectedID = first.id
+                space.selectedTabIDs = [first.id]
+            } else {
+                space.selectedID = nil
+            }
+        }
+        parked[spaceID] = space
+        return tab
+    }
+
+    func moveSettled(_ id: UUID, toVisibleIndex visibleIndex: Int) {
+        var visible = Array(settled.reversed())
+        guard let from = visible.firstIndex(where: { $0.id == id }) else { return }
+        let tab = visible.remove(at: from)
+        visible.insert(tab, at: min(max(visibleIndex, 0), visible.count))
+        Self.animateSettle { settled = Array(visible.reversed()) }
     }
 
     func reopenTab(_ id: UUID) {
-        guard let index = settled.firstIndex(where: { $0.id == id }) else { return }
-        let tab = settled.remove(at: index)
-        subscriptions.removeValue(forKey: id)
-        adopt(tab, at: 0, selecting: true)
+        Self.animateSettle {
+            guard let index = settled.firstIndex(where: { $0.id == id }) else { return }
+            let shouldSelect = selectedID == id || selectedID == nil
+            let tab = settled.remove(at: index)
+            subscriptions.removeValue(forKey: id)
+            adopt(tab, at: 0, selecting: shouldSelect)
+        }
     }
 
     func reopenTabInAnySpace(_ id: UUID) {
@@ -744,24 +848,24 @@ final class TerminalModel: ObservableObject {
         }
         guard let spaceID = spaces.first(where: { self.parked[$0.id]?.tabs.contains { $0.id == id } == true })?.id,
               var space = parked[spaceID],
-              let index = space.tabs.firstIndex(where: { $0.id == id }),
-              space.tabs.count > 1 else { return }
-        objectWillChange.send()
-        let tab = space.tabs.remove(at: index)
-        space.settled.append(tab)
-        space.splits.removeAll { $0.contains(id) }
-        for folder in space.folders.indices {
-            space.folders[folder].tabIDs.removeAll { $0 == id }
+              let index = space.tabs.firstIndex(where: { $0.id == id }) else { return }
+        Self.animateSettle {
+            objectWillChange.send()
+            let tab = space.tabs.remove(at: index)
+            space.settled.append(tab)
+            space.splits.removeAll { $0.contains(id) }
+            for folder in space.folders.indices {
+                space.folders[folder].tabIDs.removeAll { $0 == id }
+            }
+            space.selectedTabIDs.remove(id)
+            if space.selectedID == id {
+                space.selectedID = id
+                space.selectedTabIDs = [id]
+            } else if space.selectedTabIDs.isEmpty, let selected = space.selectedID {
+                space.selectedTabIDs = [selected]
+            }
+            parked[spaceID] = space
         }
-        space.selectedTabIDs.remove(id)
-        if space.selectedID == id {
-            let replacement = space.tabs[min(index, space.tabs.count - 1)].id
-            space.selectedID = replacement
-            space.selectedTabIDs = [replacement]
-        } else if space.selectedTabIDs.isEmpty, let selected = space.selectedID {
-            space.selectedTabIDs = [selected]
-        }
-        parked[spaceID] = space
     }
 
     func closeSettledTab(_ id: UUID) {
@@ -1085,7 +1189,12 @@ final class TerminalModel: ObservableObject {
     /// tabs in or out of folders) so rows, siblings and backgrounds move together.
     static func animateSidebar(_ body: () -> Void) {
         let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        withAnimation(reduce ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.25), body)
+        withAnimation(reduce ? .easeOut(duration: 0.18) : .spring(response: 0.32, dampingFraction: 0.9), body)
+    }
+
+    static func animateSettle(_ body: () -> Void) {
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withAnimation(reduce ? .easeOut(duration: 0.2) : .spring(response: 0.6, dampingFraction: 0.86), body)
     }
 
     func renameFolder(_ id: UUID, to proposed: String) {
@@ -1339,8 +1448,8 @@ final class TerminalModel: ObservableObject {
         parked[spaceID] = space
     }
 
-    /// A space always holds an open tab. When its last one leaves, the newest settled
-    /// tab reopens; with none settled, the space goes too.
+    /// Closing or dragging away the last open tab reopens the newest settled one; with
+    /// none settled, the space goes too. Settling itself may leave every tab settled.
     private func closeEmptyActiveSpace() {
         guard tabs.isEmpty else { return }
         if let newest = settled.last {
